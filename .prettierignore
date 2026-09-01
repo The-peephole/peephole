@@ -1,0 +1,8 @@
+.output
+.wxt
+coverage
+node_modules
+package-lock.json
+CODEX.md
+README.md
+docs

@@ -2,145 +2,141 @@
 
 > Preview a GitHub repository before you clone it.
 
-Peephole is a browser extension that helps developers quickly understand whether a GitHub repository can be previewed, how it is likely to run, and what configuration it needs — before cloning it locally.
-
-The first version does **not** try to become another StackBlitz. Instead, Peephole analyzes the repository, finds the fastest available preview path, and falls back to StackBlitz only when needed.
+Peephole is a Chrome extension and isolated preview service for understanding and previewing supported public GitHub repositories without cloning them locally or handing the repository to a third-party online IDE.
 
 ## Problem
 
-When browsing GitHub, developers often want to answer a simple question:
+Developers often open a repository because they want to answer one question:
 
-> "What does this project actually look like?"
+> What does this project actually look like?
 
-Today, that frequently requires:
-
-1. cloning the repository,
-2. installing dependencies,
-3. checking environment variables,
-4. finding the correct run command,
-5. discovering that a backend or API key is required,
-6. or waiting for an online IDE to import the entire repository.
-
-That is excessive when the real intent is only to inspect the project quickly.
+Today that can require cloning the repository, installing dependencies, finding the right command, supplying environment variables, and discovering too late that the project needs a backend or unsupported tooling.
 
 ## Product Goal
 
-Peephole should answer, as quickly as possible:
+Peephole should quickly answer:
 
-- What framework is this repository using?
-- Is there already a live deployment?
-- Does it require environment variables?
-- Does it depend on an external backend/API?
-- Which package manager does it use?
-- What command is likely to start it?
-- Can it be opened in StackBlitz?
-- What is the fastest preview route?
+- what framework and package manager the repository uses,
+- what build or development command is expected,
+- whether environment variables or external services are required,
+- whether a confirmed deployment already exists,
+- whether Peephole can build a safe preview,
+- and why a preview is unavailable when it cannot.
 
-## MVP
+## v0.1 Scope
 
-Peephole v0.1 targets public GitHub repositories and focuses on frontend-oriented JavaScript/TypeScript projects.
+v0.1 targets public, frontend-oriented JavaScript and TypeScript repositories.
 
-Initial framework targets:
+The first native-preview compatibility contract is intentionally narrow:
 
-- React
-- Vite
-- Next.js
-- Vue
-- Svelte
-- generic `package.json` projects
+- static HTML/CSS/JavaScript repositories,
+- root-level Vite applications using React, Vue, or Svelte,
+- repositories that can build without secret environment values,
+- repositories with a deterministic package manager and build command,
+- static output that can be served from an isolated Peephole preview origin.
 
-Initial analysis targets:
-
-- `package.json`
-- lock files
-- `.env.example`
-- `.env.sample`
-- `.env.template`
-- `README.md`
-- `vite.config.*`
-- `next.config.*`
-- `vercel.json`
-- `netlify.toml`
-- GitHub Pages
-- repository homepage metadata
+Peephole may analyze a broader set of repositories than it can run. Unsupported repositories must receive a clear explanation instead of a best-effort unsafe execution attempt.
 
 ## Preview Strategy
-
-Peephole does not immediately create an execution environment.
 
 ```text
 GitHub Repository
         |
         v
-Peephole Analyzer
+Peephole Extension
         |
-        +-- Existing live preview found --> Open Preview
+        v
+Repository Analysis + Preview Eligibility
         |
-        +-- No live preview
-                |
-                +-- StackBlitz-compatible --> Open in StackBlitz
-                |
-                +-- Unsupported/uncertain --> Show analysis only
+        +-- Confirmed deployment found --> Show/Open deployment
+        |
+        +-- Native static preview supported
+        |       |
+        |       v
+        |   Isolated Peephole build job --> Peephole preview
+        |
+        +-- Unsupported or blocked --> Analysis and evidence only
 ```
+
+StackBlitz is not part of the preview architecture. The temporary action from the first UI milestone has been removed; unsupported states now stay inside Peephole.
+
+## Trust Boundary
+
+The Chrome extension is a controller and presentation surface. It never installs dependencies or executes repository source code.
+
+Untrusted build commands run only in an isolated Peephole worker with strict CPU, memory, process, disk, time, and network limits. Built assets are served from a separate preview origin so repository content cannot inherit extension or control-plane privileges.
+
+See [Preview runtime](docs/PREVIEW_RUNTIME.md) for the execution model and threat boundaries.
 
 ## Non-goals for v0.1
 
-The first release will **not**:
+v0.1 will not:
 
-- run arbitrary remote source code inside the extension,
-- support every programming language,
-- support every monorepo structure,
-- automatically provision backend infrastructure,
-- inject secret environment values,
+- run arbitrary code inside the extension,
 - guarantee that every repository is runnable,
-- implement a custom WebContainer runtime,
-- calculate a misleading numeric "previewability score".
+- support private repositories,
+- provision backend services, databases, or secret values,
+- support Docker-based projects or arbitrary languages,
+- keep persistent Node/SSR application servers alive,
+- automatically choose an application inside every monorepo,
+- implement AI-generated analysis,
+- calculate a misleading numeric previewability score.
 
 ## Proposed Stack
+
+Extension:
 
 - WXT
 - React
 - TypeScript
 - Chrome Manifest V3
+- Chrome Side Panel
+
+Analysis and preview service:
+
 - GitHub REST API
+- Preview control API and job queue
+- isolated, disposable build workers
+- static artifact storage and a dedicated preview domain
+
+The exact worker isolation technology is an infrastructure decision, but it must satisfy the security requirements in the architecture and runtime documents.
 
 ## Planned UX
 
-A GitHub repository page receives a Peephole action.
+1. Open a GitHub repository.
+2. Click the single `Peephole` action.
+3. A side panel shows repository identity and analysis status.
+4. For supported repositories, `Build preview` starts an isolated job.
+5. The panel displays progress and then the preview.
+6. Unsupported repositories show blockers and detected evidence without attempting execution.
 
-```text
-┌──────────────────────────────────┐
-│  ◉ Peephole                      │
-│                                  │
-│  React + Vite                    │
-│  TypeScript                      │
-│                                  │
-│  PREVIEW                         │
-│  ✓ Live deployment found        │
-│                                  │
-│  ENVIRONMENT                     │
-│  ⚠ VITE_API_URL                 │
-│                                  │
-│  RUNTIME                         │
-│  npm · npm run dev              │
-│                                  │
-│  [ Open Preview ]                │
-│  [ Open in StackBlitz ]          │
-└──────────────────────────────────┘
-```
+## Current Status
+
+The extension shell and the first metadata slice are implemented:
+
+- repository URL detection,
+- GitHub action insertion,
+- owner/repository panel,
+- idempotent client-side navigation handling,
+- typed GitHub REST metadata client,
+- background service-worker API broker,
+- default branch and commit SHA resolution,
+- lazy loading, request cancellation, rate-limit errors, and commit-aware memory caching.
+
+Known-file fetching, repository analysis, the preview API, isolated runners, artifact hosting, and native side-panel preview are not implemented yet.
 
 ## Documentation
 
 - [Product specification](docs/PRODUCT_SPEC.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Preview runtime](docs/PREVIEW_RUNTIME.md)
 - [Repository analysis specification](docs/REPOSITORY_ANALYSIS.md)
 - [MVP roadmap](docs/MVP_ROADMAP.md)
+- [Implementation checklist](docs/IMPLEMENTATION_CHECKLIST.md)
 - [Test plan](docs/TEST_PLAN.md)
 - [Technical decisions](docs/DECISIONS.md)
 - [Codex implementation guide](CODEX.md)
 
 ## Working Principle
 
-Peephole should prefer **inspection before execution**.
-
-A repository should only be executed when analysis cannot provide a faster route to a useful preview.
+Prefer inspection before execution, and execute only after eligibility is established. When execution is necessary, treat the repository as hostile and run it outside the browser extension in a short-lived sandbox.
