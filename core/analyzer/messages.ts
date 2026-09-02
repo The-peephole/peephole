@@ -1,36 +1,36 @@
 import type {
-  RepositoryIdentity,
-  RepositoryMetadata,
-  RepositoryMetadataLoader,
-} from "../../types/repository"
-import { GitHubApiError, type GitHubApiErrorCode } from "./client"
+  RepositoryAnalysis,
+  RepositoryAnalysisLoader,
+} from "../../types/analysis"
+import type { RepositoryIdentity } from "../../types/repository"
+import { GitHubApiError, type GitHubApiErrorCode } from "../github/client"
 
-export const LOAD_REPOSITORY_METADATA =
-  "peephole:github:load-repository-metadata"
-export const CANCEL_REPOSITORY_METADATA =
-  "peephole:github:cancel-repository-metadata"
+export const LOAD_REPOSITORY_ANALYSIS =
+  "peephole:github:load-repository-analysis"
+export const CANCEL_REPOSITORY_ANALYSIS =
+  "peephole:github:cancel-repository-analysis"
 
-interface LoadRepositoryMetadataMessage {
-  type: typeof LOAD_REPOSITORY_METADATA
+interface LoadRepositoryAnalysisMessage {
+  type: typeof LOAD_REPOSITORY_ANALYSIS
   requestId: string
   repository: RepositoryIdentity
 }
 
-interface CancelRepositoryMetadataMessage {
-  type: typeof CANCEL_REPOSITORY_METADATA
+interface CancelRepositoryAnalysisMessage {
+  type: typeof CANCEL_REPOSITORY_ANALYSIS
   requestId: string
 }
 
-export type RepositoryMetadataMessage =
-  LoadRepositoryMetadataMessage | CancelRepositoryMetadataMessage
+export type RepositoryAnalysisMessage =
+  LoadRepositoryAnalysisMessage | CancelRepositoryAnalysisMessage
 
-interface RepositoryMetadataSuccessResponse {
+interface RepositoryAnalysisSuccessResponse {
   ok: true
   requestId: string
-  metadata: RepositoryMetadata
+  analysis: RepositoryAnalysis
 }
 
-interface RepositoryMetadataErrorResponse {
+interface RepositoryAnalysisErrorResponse {
   ok: false
   requestId: string
   error: {
@@ -41,16 +41,12 @@ interface RepositoryMetadataErrorResponse {
   }
 }
 
-export type RepositoryMetadataResponse =
-  RepositoryMetadataSuccessResponse | RepositoryMetadataErrorResponse
+export type RepositoryAnalysisResponse =
+  RepositoryAnalysisSuccessResponse | RepositoryAnalysisErrorResponse
 
-export type RepositoryMetadataMessageHandler = (
-  message: unknown,
-) => Promise<RepositoryMetadataResponse> | undefined
-
-export function createRepositoryMetadataMessageHandler(
-  loadRepositoryMetadata: RepositoryMetadataLoader,
-): RepositoryMetadataMessageHandler {
+export function createRepositoryAnalysisMessageHandler(
+  loadRepositoryAnalysis: RepositoryAnalysisLoader,
+): (message: unknown) => Promise<RepositoryAnalysisResponse> | undefined {
   const activeRequests = new Map<string, AbortController>()
 
   return (message) => {
@@ -67,15 +63,15 @@ export function createRepositoryMetadataMessageHandler(
     const abortController = new AbortController()
     activeRequests.set(message.requestId, abortController)
 
-    return loadRepositoryMetadata(message.repository, {
+    return loadRepositoryAnalysis(message.repository, {
       signal: abortController.signal,
     })
-      .then<RepositoryMetadataResponse>((metadata) => ({
+      .then<RepositoryAnalysisResponse>((analysis) => ({
         ok: true,
         requestId: message.requestId,
-        metadata,
+        analysis,
       }))
-      .catch<RepositoryMetadataResponse>((error: unknown) => ({
+      .catch<RepositoryAnalysisResponse>((error: unknown) => ({
         ok: false,
         requestId: message.requestId,
         error: serializeError(error),
@@ -88,13 +84,13 @@ export function createRepositoryMetadataMessageHandler(
   }
 }
 
-export interface RepositoryMetadataMessageTransport {
-  send(message: RepositoryMetadataMessage): Promise<unknown>
+export interface RepositoryAnalysisMessageTransport {
+  send(message: RepositoryAnalysisMessage): Promise<unknown>
 }
 
-export function createRepositoryMetadataMessageLoader(
-  transport: RepositoryMetadataMessageTransport,
-): RepositoryMetadataLoader {
+export function createRepositoryAnalysisMessageLoader(
+  transport: RepositoryAnalysisMessageTransport,
+): RepositoryAnalysisLoader {
   return (repository, options = {}) => {
     const requestId = crypto.randomUUID()
     const signal = options.signal
@@ -103,7 +99,7 @@ export function createRepositoryMetadataMessageLoader(
       return Promise.reject(createAbortError())
     }
 
-    return new Promise<RepositoryMetadata>((resolve, reject) => {
+    return new Promise<RepositoryAnalysis>((resolve, reject) => {
       let settled = false
 
       const cleanup = () => signal?.removeEventListener("abort", handleAbort)
@@ -118,7 +114,7 @@ export function createRepositoryMetadataMessageLoader(
       }
       const handleAbort = () => {
         void transport
-          .send({ type: CANCEL_REPOSITORY_METADATA, requestId })
+          .send({ type: CANCEL_REPOSITORY_ANALYSIS, requestId })
           .catch(() => undefined)
         settle(() => reject(createAbortError()))
       }
@@ -126,25 +122,25 @@ export function createRepositoryMetadataMessageLoader(
       signal?.addEventListener("abort", handleAbort, { once: true })
 
       void transport
-        .send({ type: LOAD_REPOSITORY_METADATA, requestId, repository })
+        .send({ type: LOAD_REPOSITORY_ANALYSIS, requestId, repository })
         .then(
           (response) => {
             settle(() => {
               if (
-                !isRepositoryMetadataResponse(response) ||
+                !isRepositoryAnalysisResponse(response) ||
                 response.requestId !== requestId
               ) {
                 reject(
                   new GitHubApiError(
                     "invalid-response",
-                    "The extension returned an invalid GitHub response.",
+                    "The extension returned an invalid analysis response.",
                   ),
                 )
                 return
               }
 
               if (response.ok) {
-                resolve(response.metadata)
+                resolve(response.analysis)
                 return
               }
 
@@ -180,10 +176,10 @@ export function createRepositoryMetadataMessageLoader(
   }
 }
 
-function isLoadMessage(value: unknown): value is LoadRepositoryMetadataMessage {
+function isLoadMessage(value: unknown): value is LoadRepositoryAnalysisMessage {
   return (
     isObject(value) &&
-    value.type === LOAD_REPOSITORY_METADATA &&
+    value.type === LOAD_REPOSITORY_ANALYSIS &&
     isRequestId(value.requestId) &&
     isRepositoryIdentity(value.repository)
   )
@@ -191,17 +187,17 @@ function isLoadMessage(value: unknown): value is LoadRepositoryMetadataMessage {
 
 function isCancelMessage(
   value: unknown,
-): value is CancelRepositoryMetadataMessage {
+): value is CancelRepositoryAnalysisMessage {
   return (
     isObject(value) &&
-    value.type === CANCEL_REPOSITORY_METADATA &&
+    value.type === CANCEL_REPOSITORY_ANALYSIS &&
     isRequestId(value.requestId)
   )
 }
 
-function isRepositoryMetadataResponse(
+function isRepositoryAnalysisResponse(
   value: unknown,
-): value is RepositoryMetadataResponse {
+): value is RepositoryAnalysisResponse {
   if (
     !isObject(value) ||
     typeof value.ok !== "boolean" ||
@@ -211,7 +207,7 @@ function isRepositoryMetadataResponse(
   }
 
   if (value.ok) {
-    return isRepositoryMetadata(value.metadata)
+    return isRepositoryAnalysis(value.analysis)
   }
 
   return (
@@ -223,27 +219,40 @@ function isRepositoryMetadataResponse(
   )
 }
 
-function isRepositoryMetadata(value: unknown): value is RepositoryMetadata {
-  if (!isObject(value) || !isRepositoryIdentity(value)) {
-    return false
-  }
-
-  const metadata = value as unknown as Record<string, unknown>
-
+function isRepositoryAnalysis(value: unknown): value is RepositoryAnalysis {
   return (
-    Number.isInteger(metadata.repositoryId) &&
-    typeof metadata.defaultBranch === "string" &&
-    /^[a-f\d]{40}$/i.test(String(metadata.commitSha)) &&
-    (typeof metadata.homepage === "string" || metadata.homepage === null)
+    isObject(value) &&
+    isRepositoryMetadata(value.repository) &&
+    typeof value.analyzerVersion === "string" &&
+    isObject(value.technologies) &&
+    typeof value.technologies.framework === "string" &&
+    typeof value.packageManager === "string" &&
+    isObject(value.runtime) &&
+    isObject(value.environment) &&
+    isObject(value.deployment) &&
+    isObject(value.workspace) &&
+    isObject(value.preview) &&
+    typeof value.preview.mode === "string" &&
+    Array.isArray(value.preview.blockers) &&
+    Array.isArray(value.inspectedFiles) &&
+    Array.isArray(value.warnings)
+  )
+}
+
+function isRepositoryMetadata(value: unknown): boolean {
+  return (
+    isRepositoryIdentity(value) &&
+    isObject(value) &&
+    Number.isInteger(value.repositoryId) &&
+    typeof value.defaultBranch === "string" &&
+    /^[a-f\d]{40}$/i.test(String(value.commitSha)) &&
+    (typeof value.homepage === "string" || value.homepage === null)
   )
 }
 
 function isRepositoryIdentity(value: unknown): value is RepositoryIdentity {
-  if (!isObject(value)) {
-    return false
-  }
-
   return (
+    isObject(value) &&
     typeof value.owner === "string" &&
     /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(value.owner) &&
     typeof value.repo === "string" &&
@@ -257,11 +266,11 @@ function isRequestId(value: unknown): value is string {
 
 function serializeError(
   error: unknown,
-): RepositoryMetadataErrorResponse["error"] {
+): RepositoryAnalysisErrorResponse["error"] {
   if (isAbortError(error)) {
     return {
       code: "aborted",
-      message: "Repository metadata request was cancelled.",
+      message: "Repository analysis request was cancelled.",
       status: null,
       retryAt: null,
     }
@@ -278,7 +287,7 @@ function serializeError(
 
   return {
     code: "unavailable",
-    message: "Repository metadata could not be loaded.",
+    message: "Repository analysis could not be completed.",
     status: null,
     retryAt: null,
   }

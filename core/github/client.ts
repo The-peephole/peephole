@@ -38,6 +38,21 @@ interface GitHubBranchResponse {
   }
 }
 
+export interface GitHubContentEntry {
+  type: "file" | "dir" | "symlink" | "submodule"
+  name: string
+  path: string
+  size: number
+}
+
+interface GitHubFileContentResponse {
+  type: "file"
+  path: string
+  size: number
+  encoding: "base64"
+  content: string
+}
+
 export interface GitHubClientOptions {
   apiBaseUrl?: string
   fetcher?: typeof fetch
@@ -87,6 +102,46 @@ export class GitHubClient {
     }
   }
 
+  async getRepositoryRootEntries(
+    repository: RepositoryMetadata,
+    signal?: AbortSignal,
+  ): Promise<GitHubContentEntry[]> {
+    const repositoryPath = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}`
+
+    return this.requestJson(
+      `${repositoryPath}/contents?ref=${encodeURIComponent(repository.commitSha)}`,
+      isGitHubContentEntriesResponse,
+      signal,
+    )
+  }
+
+  async getRepositoryTextFile(
+    repository: RepositoryMetadata,
+    path: string,
+    maxBytes: number,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    const repositoryPath = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}`
+    const response = await this.requestOptionalJson(
+      `${repositoryPath}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(repository.commitSha)}`,
+      isGitHubFileContentResponse,
+      signal,
+    )
+
+    if (!response) {
+      return null
+    }
+
+    if (response.size > maxBytes) {
+      throw new GitHubApiError(
+        "invalid-response",
+        `${path} exceeds Peephole's ${maxBytes}-byte analysis limit.`,
+      )
+    }
+
+    return decodeBase64Utf8(response.content, path, maxBytes)
+  }
+
   private async requestJson<T>(
     path: string,
     validate: (value: unknown) => value is T,
@@ -133,6 +188,63 @@ export class GitHubClient {
       throw new GitHubApiError(
         "invalid-response",
         "GitHub returned repository data in an unexpected format.",
+        response.status,
+      )
+    }
+
+    return payload
+  }
+
+  private async requestOptionalJson<T>(
+    path: string,
+    validate: (value: unknown) => value is T,
+    signal?: AbortSignal,
+  ): Promise<T | null> {
+    let response: Response
+
+    try {
+      response = await this.fetcher(`${this.apiBaseUrl}${path}`, {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        },
+        signal,
+      })
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error
+      }
+
+      throw new GitHubApiError(
+        "network",
+        "GitHub could not be reached. Check your connection and try again.",
+      )
+    }
+
+    if (response.status === 404) {
+      return null
+    }
+
+    if (!response.ok) {
+      throw createResponseError(response)
+    }
+
+    let payload: unknown
+
+    try {
+      payload = await response.json()
+    } catch {
+      throw new GitHubApiError(
+        "invalid-response",
+        "GitHub returned an unreadable file response.",
+        response.status,
+      )
+    }
+
+    if (!validate(payload)) {
+      throw new GitHubApiError(
+        "invalid-response",
+        "GitHub returned file data in an unexpected format.",
         response.status,
       )
     }
@@ -237,6 +349,62 @@ function isGitHubBranchResponse(value: unknown): value is GitHubBranchResponse {
     typeof value.commit.sha === "string" &&
     /^[a-f\d]{40}$/i.test(value.commit.sha)
   )
+}
+
+function isGitHubContentEntriesResponse(
+  value: unknown,
+): value is GitHubContentEntry[] {
+  return Array.isArray(value) && value.every(isGitHubContentEntry)
+}
+
+function isGitHubContentEntry(value: unknown): value is GitHubContentEntry {
+  return (
+    isObject(value) &&
+    ["file", "dir", "symlink", "submodule"].includes(String(value.type)) &&
+    typeof value.name === "string" &&
+    typeof value.path === "string" &&
+    typeof value.size === "number" &&
+    value.size >= 0
+  )
+}
+
+function isGitHubFileContentResponse(
+  value: unknown,
+): value is GitHubFileContentResponse {
+  return (
+    isObject(value) &&
+    value.type === "file" &&
+    typeof value.path === "string" &&
+    typeof value.size === "number" &&
+    value.size >= 0 &&
+    value.encoding === "base64" &&
+    typeof value.content === "string"
+  )
+}
+
+function decodeBase64Utf8(
+  content: string,
+  path: string,
+  maxBytes: number,
+): string {
+  try {
+    const binary = atob(content.replace(/\s/g, ""))
+
+    if (binary.length > maxBytes) {
+      throw new Error("decoded content is too large")
+    }
+
+    const bytes = Uint8Array.from(binary, (character) =>
+      character.charCodeAt(0),
+    )
+
+    return new TextDecoder().decode(bytes)
+  } catch {
+    throw new GitHubApiError(
+      "invalid-response",
+      `${path} could not be decoded as repository text.`,
+    )
+  }
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

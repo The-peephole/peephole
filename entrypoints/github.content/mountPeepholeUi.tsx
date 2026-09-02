@@ -1,10 +1,8 @@
 import { createRoot } from "react-dom/client"
 
 import { PeepholeApp } from "../../components/PeepholeApp"
-import type {
-  RepositoryIdentity,
-  RepositoryMetadataLoader,
-} from "../../types/repository"
+import type { RepositoryAnalysisLoader } from "../../types/analysis"
+import type { RepositoryIdentity } from "../../types/repository"
 import stylesheet from "./style.css?inline"
 
 export const PEEPHOLE_HOST_ID = "peephole-extension-root"
@@ -17,7 +15,7 @@ export interface MountedPeepholeUi {
 export function mountPeepholeUi(
   target: HTMLElement,
   repository: RepositoryIdentity,
-  loadRepositoryMetadata: RepositoryMetadataLoader,
+  loadRepositoryAnalysis: RepositoryAnalysisLoader,
 ): MountedPeepholeUi {
   document.querySelector<HTMLElement>("[data-peephole-container]")?.remove()
 
@@ -53,7 +51,7 @@ export function mountPeepholeUi(
   const reactRoot = createRoot(appRoot)
   reactRoot.render(
     <PeepholeApp
-      loadRepositoryMetadata={loadRepositoryMetadata}
+      loadRepositoryAnalysis={loadRepositoryAnalysis}
       repository={repository}
     />,
   )

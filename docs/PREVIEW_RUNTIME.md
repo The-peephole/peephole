@@ -115,7 +115,14 @@ Public repository builds are hostile multi-tenant workloads. Production isolatio
 - aggressive cleanup and orphan reaping,
 - separate queues or capacity controls to contain abuse.
 
-Candidates include microVM-based workers such as Firecracker or a container runtime strengthened by a userspace kernel such as gVisor. The infrastructure choice is not interchangeable with the requirements: network policy, host hardening, patching, and observability remain necessary.
+**Decided (see D-018):** gVisor (`runsc`) on Linux x86_64, as an OCI
+container boundary rather than a bare process. Firecracker is deferred, not
+rejected -- it needs KVM/nested virtualization and a jailer/VM-image
+pipeline that is out of scope for v0.1. The infrastructure choice is not
+interchangeable with the requirements: network policy, host hardening,
+patching, and observability remain necessary regardless of which sandbox
+technology is used, and `SandboxProvisioner`/`CommandRunner` (D-019) keep
+the rest of the runner from depending on gVisor specifically.
 
 ## 9. Preview Origin Security
 
@@ -203,21 +210,33 @@ DELETE /v1/preview-jobs/{jobId}
 
 The API validates that a caller may observe/cancel the job and exposes only sanitized errors.
 
-## 15. Open Infrastructure Decisions
+## 15. Infrastructure Decisions
 
-Before runner implementation, decide and record:
+Decided (D-018, D-020, D-021):
 
-- microVM versus hardened userspace-kernel container boundary,
-- cloud/region and queue provider,
-- maximum archive, workspace, output, and log sizes,
-- per-phase timeouts and compute budgets,
-- initial supported Node and package-manager versions,
+- sandbox boundary: gVisor (`runsc`) on Linux x86_64, Firecracker deferred,
+- initial resource/timeout limits and archive/workspace/output size caps,
+- initial supported runtime: Node 24, npm only,
+- golden paths: static HTML, root-level Vite + React.
+
+Still open -- release blockers, not implementation trivia:
+
+- cloud/region and managed queue provider,
 - artifact storage/CDN and per-job origin routing,
 - anonymous-user quotas and abuse response,
 - registry mirror/proxy strategy,
-- data retention and deletion policy.
-
-These are release blockers, not implementation trivia.
+- data retention and deletion policy,
+- host-side network policy enforcement for the install phase (restricting
+  the sandbox's network namespace to npm-registry-resolved IPs only -- the
+  `runsc --network=sandbox|none` selection exists, but the firewall/veth
+  rules that would actually constrain "sandbox" mode to the registry do
+  not),
+- a prepared, maintained base rootfs image (Node 24 + npm, non-root user,
+  no secrets) for `GVisorSandboxProvisioner` to copy per job,
+- verifying the real `GVisorSandboxProvisioner`/`RunscCommandRunner`
+  adapters against an actual gVisor host (they are implemented against
+  documented `runsc`/OCI behavior and unit-tested via a fake process
+  runner, but have not run against real `runsc` anywhere).
 
 ## 16. Primary References
 

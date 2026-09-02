@@ -5,7 +5,8 @@ import { createRoot } from "react-dom/client"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { PeepholeApp } from "../components/PeepholeApp"
-import type { RepositoryMetadataLoader } from "../types/repository"
+import type { RepositoryAnalysisLoader } from "../types/analysis"
+import { supportedAnalysis } from "./analysisFixture"
 
 ;(
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -23,30 +24,15 @@ describe("PeepholeApp", () => {
     document.body.innerHTML = ""
   })
 
-  it("loads and displays commit-pinned metadata when opened", async () => {
-    const loadRepositoryMetadata = vi
-      .fn<RepositoryMetadataLoader>()
-      .mockResolvedValue({
-        repositoryId: 10270250,
-        owner: "facebook",
-        repo: "react",
-        defaultBranch: "main",
-        commitSha: "0123456789abcdef0123456789abcdef01234567",
-        homepage: "https://react.dev/",
-      })
-    const container = document.createElement("div")
-    document.body.append(container)
+  it("loads and displays repository analysis when opened", async () => {
+    const loadRepositoryAnalysis = vi
+      .fn<RepositoryAnalysisLoader>()
+      .mockResolvedValue(supportedAnalysis)
+    const container = createContainer()
     const root = createRoot(container)
     roots.push(root)
 
-    await act(async () => {
-      root.render(
-        <PeepholeApp
-          loadRepositoryMetadata={loadRepositoryMetadata}
-          repository={{ owner: "facebook", repo: "react" }}
-        />,
-      )
-    })
+    await renderApp(root, loadRepositoryAnalysis)
 
     await act(async () => {
       getButton("Peephole").click()
@@ -54,39 +40,58 @@ describe("PeepholeApp", () => {
 
     expect(container.textContent).toContain("main")
     expect(container.textContent).toContain("0123456")
-    expect(container.textContent).toContain("Repository metadata ready")
+    expect(container.textContent).toContain("React + Vite")
+    expect(container.textContent).toContain("npm run build")
+    expect(container.textContent).toContain("VITE_API_URL")
+    expect(container.textContent).toContain("Native preview compatible")
+    expect(container.textContent).toContain("Native buildCompatible")
     expect(container.textContent).not.toContain("StackBlitz")
-    expect(loadRepositoryMetadata).toHaveBeenCalledTimes(1)
-    expect(
-      container.querySelector<HTMLAnchorElement>("a.peephole__link")?.href,
-    ).toBe("https://react.dev/")
+    expect(loadRepositoryAnalysis).toHaveBeenCalledTimes(1)
   })
 
-  it("shows a safe error and retries metadata loading", async () => {
-    const loadRepositoryMetadata = vi
-      .fn<RepositoryMetadataLoader>()
-      .mockRejectedValueOnce(new Error("GitHub could not be reached."))
-      .mockResolvedValueOnce({
-        repositoryId: 10270250,
-        owner: "facebook",
-        repo: "react",
-        defaultBranch: "main",
-        commitSha: "0123456789abcdef0123456789abcdef01234567",
-        homepage: null,
+  it("renders blockers for an unsupported repository", async () => {
+    const loadRepositoryAnalysis = vi
+      .fn<RepositoryAnalysisLoader>()
+      .mockResolvedValue({
+        ...supportedAnalysis,
+        preview: {
+          ...supportedAnalysis.preview,
+          mode: "unsupported",
+          blockers: [
+            {
+              code: "SECRET_ENV_REQUIRED",
+              message: "Secret-like environment variables are declared.",
+            },
+          ],
+        },
       })
-    const container = document.createElement("div")
-    document.body.append(container)
+    const container = createContainer()
     const root = createRoot(container)
     roots.push(root)
 
+    await renderApp(root, loadRepositoryAnalysis)
+
     await act(async () => {
-      root.render(
-        <PeepholeApp
-          loadRepositoryMetadata={loadRepositoryMetadata}
-          repository={{ owner: "facebook", repo: "react" }}
-        />,
-      )
+      getButton("Peephole").click()
     })
+
+    expect(container.textContent).toContain("Native preview blocked")
+    expect(container.textContent).toContain("Native buildBlocked")
+    expect(container.textContent).toContain(
+      "Secret-like environment variables are declared.",
+    )
+  })
+
+  it("shows a safe error and retries analysis", async () => {
+    const loadRepositoryAnalysis = vi
+      .fn<RepositoryAnalysisLoader>()
+      .mockRejectedValueOnce(new Error("GitHub could not be reached."))
+      .mockResolvedValueOnce(supportedAnalysis)
+    const container = createContainer()
+    const root = createRoot(container)
+    roots.push(root)
+
+    await renderApp(root, loadRepositoryAnalysis)
 
     await act(async () => {
       getButton("Peephole").click()
@@ -98,31 +103,23 @@ describe("PeepholeApp", () => {
       getButton("Retry").click()
     })
 
-    expect(container.textContent).toContain("Repository metadata ready")
-    expect(loadRepositoryMetadata).toHaveBeenCalledTimes(2)
+    expect(container.textContent).toContain("Native preview compatible")
+    expect(loadRepositoryAnalysis).toHaveBeenCalledTimes(2)
   })
 
-  it("aborts metadata loading when the panel closes", async () => {
+  it("aborts analysis when the panel closes", async () => {
     let requestSignal: AbortSignal | undefined
-    const loadRepositoryMetadata = vi.fn<RepositoryMetadataLoader>(
+    const loadRepositoryAnalysis = vi.fn<RepositoryAnalysisLoader>(
       (_repository, options) => {
         requestSignal = options?.signal
         return new Promise(() => undefined)
       },
     )
-    const container = document.createElement("div")
-    document.body.append(container)
+    const container = createContainer()
     const root = createRoot(container)
     roots.push(root)
 
-    await act(async () => {
-      root.render(
-        <PeepholeApp
-          loadRepositoryMetadata={loadRepositoryMetadata}
-          repository={{ owner: "facebook", repo: "react" }}
-        />,
-      )
-    })
+    await renderApp(root, loadRepositoryAnalysis)
 
     await act(async () => {
       getButton("Peephole").click()
@@ -141,6 +138,26 @@ describe("PeepholeApp", () => {
     expect(requestSignal?.aborted).toBe(true)
   })
 })
+
+function createContainer(): HTMLDivElement {
+  const container = document.createElement("div")
+  document.body.append(container)
+  return container
+}
+
+async function renderApp(
+  root: ReturnType<typeof createRoot>,
+  loadRepositoryAnalysis: RepositoryAnalysisLoader,
+): Promise<void> {
+  await act(async () => {
+    root.render(
+      <PeepholeApp
+        loadRepositoryAnalysis={loadRepositoryAnalysis}
+        repository={{ owner: "react", repo: "react-app" }}
+      />,
+    )
+  })
+}
 
 function getButton(label: string): HTMLButtonElement {
   const button = Array.from(document.querySelectorAll("button")).find(

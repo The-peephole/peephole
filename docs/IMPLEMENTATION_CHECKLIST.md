@@ -21,15 +21,16 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Reset repository state when identity changes
 - [x] Avoid unsupported Shadow DOM hosts
 - [ ] Open and synchronize the side panel from the user gesture
-- [ ] Abort or ignore stale analysis and preview responses
+- [x] Abort or ignore stale analysis responses
+- [ ] Abort or ignore stale preview responses
 
 ## Extension UI
 
 - [x] Open a functional panel from the Peephole action
 - [x] Display owner and repository name
 - [x] Display immutable commit identity
-- [ ] Display analysis evidence and blockers
-- [ ] Display preview eligibility
+- [x] Display analysis evidence and blockers
+- [x] Display preview eligibility
 - [ ] Display queued/installing/building/publishing states
 - [ ] Add build, cancel, retry, and expiry controls
 - [ ] Embed only approved Peephole preview-origin URLs
@@ -43,51 +44,79 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Validate background message types and repository identity
 - [x] Fetch repository id, default branch, and head commit SHA
 - [x] Fetch homepage and selected metadata
-- [ ] Fetch `package.json` and lock files
-- [ ] Fetch environment templates and selected config files
+- [x] Fetch `package.json` and inspect recognized lockfile presence
+- [x] Fetch environment templates and selected config files
 - [x] Implement metadata request cancellation and rate-limit handling
 - [x] Cache metadata by repository id and commit SHA
-- [ ] Cache analysis by repository id, commit SHA, and analyzer version
+- [x] Cache analysis by repository id, commit SHA, and analyzer version
 - [x] Never log credentials or secret-like values
 
 ## Analyzer
 
-- [ ] Detect static repositories and Vite React/Vue/Svelte
-- [ ] Detect TypeScript
-- [ ] Detect package manager and frozen-install command
-- [ ] Detect build command and static output directory
-- [ ] Detect declared environment variable names
-- [ ] Detect external API/backend hints
-- [ ] Detect confirmed versus configured deployments
-- [ ] Detect monorepo ambiguity and unsupported tooling
-- [ ] Return evidence, warnings, and blockers
-- [ ] Return a versioned preview-eligibility result
+- [x] Detect static repositories and Vite React/Vue/Svelte
+- [x] Detect TypeScript
+- [x] Detect package manager and frozen-install command
+- [x] Detect build command and static output directory
+- [x] Detect declared environment variable names
+- [x] Detect external API/backend hints
+- [x] Detect confirmed versus configured deployments
+- [x] Detect monorepo ambiguity and unsupported tooling
+- [x] Return evidence, warnings, and blockers
+- [x] Return a versioned preview-eligibility result
 
 ## Preview Control Plane
 
-- [ ] Define shared `RepositoryRef`, `BuildPlan`, and `PreviewJob` schemas
-- [ ] Implement create/status/cancel endpoints
-- [ ] Validate commit SHA and build plan server-side
-- [ ] Add idempotency keys and lifecycle persistence
-- [ ] Add queue integration and fake-runner adapter
-- [ ] Add artifact signing and expiry
-- [ ] Add user/repository/IP quotas and abuse throttling
-- [ ] Add structured, non-sensitive error codes
-- [ ] Ensure the API process cannot execute build commands
+- [x] Define shared `RepositoryRef`, `BuildPlan`, and `PreviewJob` schemas
+- [x] Implement create/status/cancel endpoints
+- [x] Validate commit SHA and build plan server-side
+- [x] Add idempotency keys and lifecycle persistence
+- [x] Add queue integration and fake-runner adapter
+- [x] Add artifact signing and expiry
+- [x] Add user/repository/IP quotas and abuse throttling
+- [x] Add structured, non-sensitive error codes
+- [x] Ensure the API process cannot execute build commands
 
 ## Isolated Static Runner
 
-- [ ] Select and document the production isolation technology
-- [ ] Create a fresh non-root sandbox per job
-- [ ] Download only the requested public commit archive
-- [ ] Enforce archive size, expanded size, and file-count limits
-- [ ] Use frozen dependency installation
-- [ ] Restrict install egress to approved registries
+- [x] Define the worker's fetch/install/build/publish port contracts
+- [x] Drive fetch -> install -> build -> publish through the control-plane
+      phase state machine (fake adapters, then real adapters)
+- [x] Enforce archive size, expanded size, and file-count limits
+- [x] Validate output path and prevent traversal/symlink escape
+- [x] Guarantee workspace cleanup on success, failure, and cancellation
+- [x] Select and document the production isolation technology (D-018: gVisor)
+- [x] Download only the requested public commit archive (real: `GitHubCommitArchiveFetcher`)
+- [x] Real archive extraction rejecting traversal/absolute paths/symlinks/device files
+- [x] Real npm install/build/output/publish adapters, proven end to end for
+      both golden paths against real GitHub archives
+- [x] `GVisorSandboxProvisioner`/`RunscCommandRunner` written (OCI bundle,
+      non-root uid/gid, CPU/memory/PID quotas, cancellation-safe cleanup) --
+      **not run against a real gVisor host**; verified only via a fake
+      process runner (no Linux kernel in this environment)
+- [x] Enforce a real, active job wall-clock budget: every install/build
+      command's timeout is clamped to the job's remaining time
+      (`services/preview-worker/local/jobDeadline.ts`), so
+      `HostCommandRunner`/`RunscCommandRunner` actually kill the running
+      process once the total job timeout is exceeded, not just mark the job
+      failed after the fact
+- [x] Enforce a real workspace disk-usage quota: `directorySizeExceeds`
+      checks the workspace tree after install and after build, independent
+      of the source archive/output size checks (catches a build that
+      writes far more to disk than either bound would show)
+- [x] Reap orphan jobs: `LocalDevSandboxReaper` (real, tested against real
+      temp directories) and `GVisorOrphanReaper` (written against `runsc
+      list --format json`, cross-referencing bundle age; **unverified
+      against a real runsc binary** -- see below)
+- [ ] Create a fresh non-root sandbox per job on a **real** gVisor host
+- [ ] Use frozen dependency installation with registry-only egress (network
+      policy selection exists in the `runsc` CLI wiring; host-side
+      firewall/veth enforcement does not)
 - [ ] Block loopback, private, link-local, and metadata networks
-- [ ] Enforce CPU, memory, process, disk, output, and wall-time limits
-- [ ] Validate output path and prevent traversal/symlink escape
-- [ ] Publish static artifacts with restrictive headers
-- [ ] Destroy workspaces and reap orphan jobs
+- [ ] Enforce CPU, memory, and PID limits **on a real gVisor host** (limits
+      are wired into the OCI config; unverified)
+- [ ] Publish static artifacts with restrictive headers (local-fs stand-in
+      only, no HTTP serving layer yet)
+- [ ] Prepare and maintain the base rootfs image gVisor copies per job
 
 ## Preview Delivery
 
@@ -103,10 +132,18 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] GitHub URL parser unit tests
 - [x] GitHub action insertion and reconciliation tests
 - [x] client-side navigation tests
-- [ ] analyzer and eligibility fixture tests
-- [ ] preview API state-machine and idempotency tests
-- [ ] fake-runner integration tests
-- [ ] static HTML and Vite golden-path builds
+- [x] analyzer and eligibility fixture tests
+- [x] preview API state-machine and idempotency tests
+- [x] fake-runner integration tests
+- [x] preview worker fetch/install/build/publish contract tests (fake adapters)
+- [x] archive and output policy unit tests (size, file-count, path safety)
+- [x] static HTML and Vite golden-path builds (real network + real npm/vite,
+      gated behind `PEEPHOLE_REAL_NETWORK_TESTS=1`; unsandboxed development
+      proof, not run through gVisor)
+- [x] gVisor OCI/`runsc` CLI wiring tests (fake process runner; real runsc untested)
+- [x] job wall-clock budget and workspace disk-quota enforcement tests
+- [x] orphan-sandbox reaper tests (real directories for the dev reaper,
+      fake `runsc list` output for the gVisor reaper)
 - [ ] malicious install/build fixture tests
 - [ ] resource and network isolation tests
 - [ ] artifact path and origin isolation tests

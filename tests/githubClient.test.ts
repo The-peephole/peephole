@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { GitHubApiError, GitHubClient } from "../core/github/client"
+import type { RepositoryMetadata } from "../types/repository"
 
 const repositoryResponse = {
   id: 10270250,
@@ -13,6 +14,15 @@ const repositoryResponse = {
 
 const branchResponse = {
   commit: { sha: "0123456789abcdef0123456789abcdef01234567" },
+}
+
+const metadata: RepositoryMetadata = {
+  repositoryId: 10270250,
+  owner: "facebook",
+  repo: "react",
+  defaultBranch: "main",
+  commitSha: branchResponse.commit.sha,
+  homepage: "https://react.dev/",
 }
 
 describe("GitHubClient", () => {
@@ -157,6 +167,76 @@ describe("GitHubClient", () => {
 
     expect(metadata.homepage).toBeNull()
   })
+
+  it("lists root entries at the resolved commit SHA", async () => {
+    const entries = [
+      { type: "file", name: "package.json", path: "package.json", size: 42 },
+      { type: "dir", name: "src", path: "src", size: 0 },
+    ]
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse(entries))
+    const client = new GitHubClient({ fetcher })
+
+    await expect(client.getRepositoryRootEntries(metadata)).resolves.toEqual(
+      entries,
+    )
+    expect(fetcher).toHaveBeenCalledWith(
+      `https://api.github.com/repos/facebook/react/contents?ref=${metadata.commitSha}`,
+      expect.any(Object),
+    )
+  })
+
+  it("decodes a commit-pinned UTF-8 text file", async () => {
+    const content = '{"name":"café"}'
+    const encoded = bytesToBase64(new TextEncoder().encode(content))
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        type: "file",
+        path: "package.json",
+        size: new TextEncoder().encode(content).byteLength,
+        encoding: "base64",
+        content: encoded,
+      }),
+    )
+    const client = new GitHubClient({ fetcher })
+
+    await expect(
+      client.getRepositoryTextFile(metadata, "package.json", 1_024),
+    ).resolves.toBe(content)
+    expect(fetcher).toHaveBeenCalledWith(
+      `https://api.github.com/repos/facebook/react/contents/package.json?ref=${metadata.commitSha}`,
+      expect.any(Object),
+    )
+  })
+
+  it("treats a missing optional file as absent", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 404 }))
+    const client = new GitHubClient({ fetcher })
+
+    await expect(
+      client.getRepositoryTextFile(metadata, ".env.example", 1_024),
+    ).resolves.toBeNull()
+  })
+
+  it("rejects file metadata that exceeds the configured byte limit", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        type: "file",
+        path: "package.json",
+        size: 2_048,
+        encoding: "base64",
+        content: "e30=",
+      }),
+    )
+    const client = new GitHubClient({ fetcher })
+
+    await expect(
+      client.getRepositoryTextFile(metadata, "package.json", 1_024),
+    ).rejects.toMatchObject({ code: "invalid-response" })
+  })
 })
 
 function jsonResponse(value: unknown): Response {
@@ -164,4 +244,8 @@ function jsonResponse(value: unknown): Response {
     status: 200,
     headers: { "content-type": "application/json" },
   })
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes))
 }

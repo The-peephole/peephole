@@ -44,7 +44,8 @@ a {
 .peephole__trigger:focus-visible,
 .peephole__close:focus-visible,
 .peephole__link:focus-visible,
-.peephole__retry:focus-visible {
+.peephole__retry:focus-visible,
+.peephole__evidence summary:focus-visible {
   outline: 2px solid #2f81f7;
   outline-offset: 2px;
 }
@@ -67,11 +68,13 @@ a {
   border-radius: 10px;
   box-shadow: 0 16px 40px rgb(0 0 0 / 45%);
   color: #f0f6fc;
+  max-height: min(720px, calc(100vh - 120px));
+  overflow-y: auto;
   padding: 16px;
   position: absolute;
   right: 0;
   top: calc(100% + 10px);
-  width: min(320px, calc(100vw - 24px));
+  width: min(390px, calc(100vw - 24px));
   z-index: 1000;
 }
 
@@ -186,12 +189,38 @@ a {
   gap: 2px;
 }
 
-.peephole__status--ready strong {
+.peephole__status--ready strong,
+.peephole__status--info strong {
   color: #3fb950;
 }
 
-.peephole__status--ready span {
+.peephole__status--ready span,
+.peephole__status--info span,
+.peephole__status--blocked span {
   color: #8b949e;
+}
+
+.peephole__status--info,
+.peephole__status--blocked {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.peephole__status--info {
+  border-color: #1f6feb;
+}
+
+.peephole__status--info strong {
+  color: #58a6ff;
+}
+
+.peephole__status--blocked {
+  border-color: #9e6a03;
+}
+
+.peephole__status--blocked strong {
+  color: #d29922;
 }
 
 .peephole__status--error {
@@ -219,6 +248,108 @@ a {
   border-top-color: #58a6ff;
   height: 14px;
   width: 14px;
+}
+
+.peephole__analysis {
+  display: grid;
+  gap: 12px;
+}
+
+.peephole__section {
+  border-top: 1px solid #21262d;
+  padding-top: 10px;
+}
+
+.peephole__section h3 {
+  color: #8b949e;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  margin: 0 0 6px;
+  text-transform: uppercase;
+}
+
+.peephole__section--blocked {
+  border-top-color: #9e6a03;
+}
+
+.peephole__facts {
+  margin: 0;
+}
+
+.peephole__facts .peephole__detail {
+  padding: 5px 0;
+}
+
+.peephole__chips,
+.peephole__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.peephole__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.peephole__chips li {
+  background: #1f2937;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  color: #c9d1d9;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  padding: 3px 7px;
+}
+
+.peephole__list {
+  color: #c9d1d9;
+  display: grid;
+  font-size: 11px;
+  gap: 5px;
+  line-height: 1.45;
+}
+
+.peephole__list li {
+  padding-left: 12px;
+  position: relative;
+}
+
+.peephole__list li::before {
+  color: #8b949e;
+  content: "•";
+  left: 0;
+  position: absolute;
+}
+
+.peephole__section--blocked .peephole__list li::before {
+  color: #d29922;
+}
+
+.peephole__muted {
+  color: #8b949e;
+  font-size: 11px;
+  margin: 0;
+}
+
+.peephole__evidence {
+  border-top: 1px solid #21262d;
+  color: #8b949e;
+  font-size: 11px;
+  padding-top: 10px;
+}
+
+.peephole__evidence summary {
+  cursor: pointer;
+}
+
+.peephole__evidence .peephole__list {
+  margin-top: 8px;
+}
+
+.peephole__evidence p {
+  margin: 8px 0 0;
 }
 
 @keyframes peephole-spin {

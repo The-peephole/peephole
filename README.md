@@ -112,7 +112,7 @@ The exact worker isolation technology is an infrastructure decision, but it must
 
 ## Current Status
 
-The extension shell and the first metadata slice are implemented:
+The extension shell, commit-pinned repository input, and deterministic analysis slice are implemented:
 
 - repository URL detection,
 - GitHub action insertion,
@@ -121,9 +121,13 @@ The extension shell and the first metadata slice are implemented:
 - typed GitHub REST metadata client,
 - background service-worker API broker,
 - default branch and commit SHA resolution,
-- lazy loading, request cancellation, rate-limit errors, and commit-aware memory caching.
+- bounded known-file inspection for the root manifest, recognized lockfiles, environment templates, and Vite configuration,
+- framework, TypeScript, package-manager, build-plan, environment, deployment, and workspace detection,
+- versioned native-preview eligibility with evidence, warnings, and blockers,
+- lazy loading, request cancellation, rate-limit errors, and commit-aware analysis caching,
+- analysis results rendered in the repository panel.
 
-Known-file fetching, repository analysis, the preview API, isolated runners, artifact hosting, and native side-panel preview are not implemented yet.
+The extension still does not install dependencies or execute repository code. The preview API, isolated runners, artifact hosting, build controls, and native side-panel preview are not implemented yet.
 
 ## Documentation
 

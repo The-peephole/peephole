@@ -37,58 +37,107 @@ The temporary StackBlitz action from this milestone was removed before Milestone
 
 ## Milestone 2 - Repository Metadata
 
-**Status:** In progress
+**Status:** Complete
 
 **Goal:** Establish an immutable, bounded analysis input.
 
 - [x] fetch repository id, default branch, and head commit SHA
 - [x] fetch homepage and relevant repository metadata
-- fetch `package.json`, lock files, environment templates, and selected config files
+- [x] inspect `package.json`, recognized lockfile presence, environment templates, and selected config files
 - [x] cache resolved metadata by repository id and commit SHA
 - [x] handle malformed content, request cancellation, and rate limits
-- [ ] handle bounded known-file fetching and missing-file results
+- [x] handle bounded known-file fetching and missing-file results
 
 ## Milestone 3 - Analysis and Preview Eligibility
 
+**Status:** Complete
+
 **Goal:** Decide whether a repository fits the v0.1 contract without executing it.
 
-- framework and TypeScript detection
-- package manager and frozen-install command
-- build command and output-directory detection
-- environment and external-service blockers
-- existing deployment evidence
-- monorepo ambiguity detection
-- eligibility result with evidence and blockers
+- [x] framework and TypeScript detection
+- [x] package manager and frozen-install command
+- [x] build command and output-directory detection
+- [x] environment and external-service blockers
+- [x] existing deployment evidence
+- [x] monorepo ambiguity detection
+- [x] eligibility result with evidence and blockers
 
 Acceptance: fixtures resolve deterministically to `existing-deployment`, `native-static-build`, or `unsupported`.
 
 ## Milestone 4 - Preview Control Plane
 
+**Status:** Complete
+
 **Goal:** Create safe, observable, commit-pinned jobs.
 
-- create/status/cancel API
-- idempotency and cache lookup
-- job queue and lifecycle persistence
-- signed, expiring artifact references
-- rate limits, per-user/repository quotas, and structured failure codes
-- fake-runner integration tests
+- [x] create/status/cancel API
+- [x] idempotency and cache lookup
+- [x] job queue and lifecycle persistence
+- [x] signed, expiring artifact references
+- [x] rate limits, per-user/repository quotas, and structured failure codes
+- [x] fake-runner integration tests
+
+This milestone is API- and storage-only: no build command is ever executed by
+this process. Execution is deferred to the isolated runner in Milestone 5.
 
 ## Milestone 5 - Isolated Static Runner
 
+**Status:** Real adapters proven for both golden paths in an unsandboxed
+development runner, with active timeout/disk-quota enforcement and orphan
+reaping; gVisor adapter and its reaper are written but unverified on real
+gVisor. Remaining work needs a real Linux/gVisor host and infra decisions
+this environment cannot provide (see D-018..D-021 and PREVIEW_RUNTIME.md
+§15).
+
 **Goal:** Build the first supported repositories without third-party IDEs.
 
-- fresh sandbox per job
-- archive download at exact commit SHA
-- repository size and file-count limits
-- deterministic install with registry-only egress
-- bounded build command and output validation
-- static artifact publication
-- workspace destruction and orphan cleanup
+- [x] fetch/install/build/publish worker contract (`services/preview-worker`) driving
+      `PreviewControlPlane` phase transitions, verified with fake adapters
+- [x] archive and output size/file-count/path-safety policy
+      (`core/runner/archivePolicy.ts`), enforced regardless of runner backend
+- [x] guaranteed workspace cleanup on success, failure, or concurrent cancellation
+- [x] production isolation technology selected and documented (D-018: gVisor,
+      Firecracker deferred)
+- [x] real `GitHubCommitArchiveFetcher`: commit-pinned codeload download,
+      real tar parsing, streamed compressed-size cap
+- [x] real archive extraction (`services/preview-worker/local/archiveExtractor.ts`,
+      the `tar` package) rejecting traversal/absolute paths/symlinks/device files
+- [x] real `NpmDependencyInstaller`/`NpmBuildExecutor`/`LocalOutputResolver`/
+      `LocalArtifactPublisher`, proven end to end against real GitHub archives
+      for both golden paths (`tests/realStaticHtmlGoldenPath.test.ts`,
+      `tests/realViteReactGoldenPath.test.ts`, gated behind
+      `PEEPHOLE_REAL_NETWORK_TESTS=1`)
+- [x] `GVisorSandboxProvisioner`/`RunscCommandRunner`: real OCI-bundle +
+      `runsc` CLI code, CPU/memory/PID quotas, non-root, cancellation-safe
+      cleanup -- written against documented `runsc`/OCI behavior and tested
+      via a fake process runner, but **never run against a real gVisor
+      host** (this repo's environment has no Linux kernel)
+- [x] real, active job wall-clock timeout: every install/build command's
+      timeout is clamped to the job's remaining budget
+      (`jobDeadline.ts`), so exceeding it kills the actual running process
+      instead of only flipping the job's status after the fact
+- [x] real workspace disk-usage quota, checked after install and after
+      build independent of archive/output size checks
+- [x] orphan-sandbox reaping: `LocalDevSandboxReaper` (real, tested) and
+      `GVisorOrphanReaper` (written against `runsc list --format json`,
+      unverified against a real binary)
+- [ ] fresh non-root sandbox per job on a **real** gVisor host (unverified)
+- [ ] deterministic install with registry-only egress (network policy not enforced)
+- [ ] CPU/memory/PID limits actually enforced on a **real** gVisor host (unverified)
+- [ ] static artifact publication with restrictive headers (local-fs stand-in only)
+- [ ] prepared base rootfs image for `GVisorSandboxProvisioner`
 
-Start with two golden paths:
+The dev proof (`LocalDevSandboxProvisioner` + `HostCommandRunner`) runs
+install/build directly on the host with **no isolation at all** and must
+never be pointed at untrusted or arbitrary repository content -- see
+D-019 and the adapters' own doc comments.
 
-1. static HTML repository,
-2. root-level Vite React repository.
+Golden paths (both proven for real, not with fakes):
+
+1. static HTML repository (`octocat/Spoon-Knife`),
+2. root-level Vite + React repository
+   (`ppsssj/peephole-fixture-vite-react`, a fixture authored for this
+   project, npm only).
 
 Add Vue and Svelte only after the same contract and security tests pass.
 

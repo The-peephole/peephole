@@ -6,6 +6,7 @@ import {
   mountPeepholeUi,
   PEEPHOLE_HOST_ID,
 } from "../entrypoints/github.content/mountPeepholeUi"
+import { supportedAnalysis } from "./analysisFixture"
 
 describe("mountPeepholeUi", () => {
   afterEach(() => {
@@ -22,14 +23,7 @@ describe("mountPeepholeUi", () => {
         owner: "react",
         repo: "react",
       },
-      async () => ({
-        repositoryId: 10270250,
-        owner: "react",
-        repo: "react",
-        defaultBranch: "main",
-        commitSha: "0123456789abcdef0123456789abcdef01234567",
-        homepage: "https://react.dev/",
-      }),
+      async () => supportedAnalysis,
     )
     const shadowHost = document.getElementById(PEEPHOLE_HOST_ID)
 

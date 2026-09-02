@@ -103,3 +103,81 @@ Preview artifacts must not share a cookie or origin boundary with the control UI
 **Status:** Accepted
 
 GitHub DOM receives only a compact action. Analysis, progress, and previews live in a stable side panel, avoiding fragile large DOM injection and GitHub page CSP constraints.
+
+## D-018 - gVisor (`runsc`) is the v0.1 sandbox boundary; Firecracker deferred
+
+**Status:** Accepted
+
+Use a gVisor (`runsc`)-backed OCI container as the isolation boundary for
+install/build execution, targeting Linux x86_64. gVisor intercepts syscalls
+in userspace and does not require nested virtualization or a
+Firecracker-style microVM host, which keeps the deployment target closer to
+an ordinary container host while still giving untrusted repository builds a
+real kernel boundary instead of a bare process.
+
+Firecracker is excluded from v0.1 scope, not rejected outright: it needs
+KVM/nested-virtualization support on the host and a jailer/VM-image
+pipeline that is a larger operational lift than one team should take on
+alongside the rest of the v0.1 surface. Revisit if gVisor's syscall
+emulation proves insufficient for a supported framework (performance or
+compatibility), or if the deployment target moves to bare metal/KVM-capable
+hosts where Firecracker's stronger boundary is worth the added ops cost.
+
+Nothing about the worker/adapter contracts (`SandboxProvisioner`,
+`CommandRunner`) assumes gVisor specifically -- see D-019.
+
+## D-019 - The runner depends on a `SandboxProvisioner`/`CommandRunner` port, never a specific sandbox technology
+
+**Status:** Accepted
+
+`PreviewJobWorker` and the npm install/build adapters only see
+`SandboxProvisioner` (allocate/destroy a workspace) and `CommandRunner` (run
+a command against that workspace) -- both defined in
+`services/preview-worker/ports.ts` and
+`services/preview-worker/local/commandRunner.ts`. Swapping the concrete
+implementation (`LocalDevSandboxProvisioner`/`HostCommandRunner` for
+development, `GVisorSandboxProvisioner`/`RunscCommandRunner` for gVisor)
+changes nothing else in the pipeline.
+
+This is not speculative future-proofing: it is what let Milestone 5 prove
+the fetch -> extract -> install -> build -> publish pipeline for real in a
+Windows development environment with no Linux kernel at all, while writing
+the actual gVisor adapter as real (if locally unverified) code against the
+same contract. If gVisor is later replaced or supplemented (e.g. by
+Firecracker per D-018's revisit condition), only a new pair of adapters is
+required.
+
+## D-020 - Initial runner resource and timeout limits
+
+**Status:** Accepted
+
+Central config (`core/runner/runnerLimits.ts`, `core/runner/archivePolicy.ts`):
+
+| Limit | Value |
+| --- | --- |
+| CPU | 1 vCPU |
+| Memory | 1 GiB |
+| PIDs | 128 |
+| Total job timeout | 180s |
+| Build timeout | 120s |
+| Compressed archive | 50 MB |
+| Extracted workspace | 250 MB |
+| Max files | 20,000 |
+| Published artifact output | 100 MB |
+
+These are starting points for the two golden paths (static HTML; root Vite
++ React), not a tuned production budget. Revisit once real gVisor
+measurements exist.
+
+## D-021 - v0.1 golden paths are static HTML and root-level Vite + React on npm only
+
+**Status:** Accepted
+
+The real (non-fake) runner adapters implement exactly two repository
+shapes: static HTML with no install/build step, and a root-level Vite +
+React app installed with `npm ci` (requires a root `package-lock.json`) and
+built with the `package.json` `build` script, publishing `dist/` at a fixed
+path. pnpm/yarn/bun, monorepos, Next.js, Vue, and Svelte are recognized by
+the analyzer's contract but have no real runner adapter yet; a plan
+requesting one of them fails fast with a clear error rather than being
+silently attempted.
