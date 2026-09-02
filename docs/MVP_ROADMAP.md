@@ -76,6 +76,12 @@ Acceptance: fixtures resolve deterministically to `existing-deployment`, `native
 - [x] signed, expiring artifact references
 - [x] rate limits, per-user/repository quotas, and structured failure codes
 - [x] fake-runner integration tests
+- [x] real Node HTTP ingress with bounded JSON, request timeouts,
+      liveness/readiness probes, safe errors, and graceful shutdown
+- [x] provider-neutral PostgreSQL job/cache/quota persistence and leased queue
+- [x] server-side exact-commit revalidation and build-plan resolution
+- [ ] production composition with persistent storage, durable queue, requester
+      authentication, and deployed service configuration
 
 This milestone is API- and storage-only: no build command is ever executed by
 this process. Execution is deferred to the isolated runner in Milestone 5.
@@ -121,6 +127,8 @@ this environment cannot provide (see D-018..D-021 and PREVIEW_RUNTIME.md
 - [x] orphan-sandbox reaping: `LocalDevSandboxReaper` (real, tested) and
       `GVisorOrphanReaper` (written against `runsc list --format json`,
       unverified against a real binary)
+- [x] durable queue consumer loop with lease acknowledgement, delayed retry,
+      and graceful polling shutdown
 - [ ] fresh non-root sandbox per job on a **real** gVisor host (unverified)
 - [ ] deterministic install with registry-only egress (network policy not enforced)
 - [ ] CPU/memory/PID limits actually enforced on a **real** gVisor host (unverified)

@@ -75,6 +75,12 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Add user/repository/IP quotas and abuse throttling
 - [x] Add structured, non-sensitive error codes
 - [x] Ensure the API process cannot execute build commands
+- [x] Expose the control-plane contract through a bounded Node HTTP ingress
+- [x] Add liveness, dependency readiness, request timeouts, and graceful shutdown
+- [x] Add a PostgreSQL schema and persistent job/artifact-cache/quota adapters
+- [x] Add a PostgreSQL leased queue with expired-lease recovery
+- [x] Revalidate repository identity, commit, and build plan server-side
+- [ ] Compose the API with production-persistent job, queue, cache, quota, and authentication adapters
 
 ## Isolated Static Runner
 
@@ -107,6 +113,8 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       temp directories) and `GVisorOrphanReaper` (written against `runsc
       list --format json`, cross-referencing bundle age; **unverified
       against a real runsc binary** -- see below)
+- [x] Connect the durable queue to the worker contract with lease,
+      acknowledgement, delayed retry, and abortable polling
 - [ ] Create a fresh non-root sandbox per job on a **real** gVisor host
 - [ ] Use frozen dependency installation with registry-only egress (network
       policy selection exists in the `runsc` CLI wiring; host-side
@@ -144,6 +152,8 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] job wall-clock budget and workspace disk-quota enforcement tests
 - [x] orphan-sandbox reaper tests (real directories for the dev reaper,
       fake `runsc list` output for the gVisor reaper)
+- [x] PostgreSQL adapter SQL/transaction and durable worker-loop unit tests
+- [ ] PostgreSQL integration test against a real database
 - [ ] malicious install/build fixture tests
 - [ ] resource and network isolation tests
 - [ ] artifact path and origin isolation tests

@@ -86,6 +86,44 @@ describe("GitHubClient", () => {
     )
   })
 
+  it("revalidates repository identity and an exact requested commit", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+      .mockResolvedValueOnce(jsonResponse({ sha: branchResponse.commit.sha }))
+    const client = new GitHubClient({ fetcher })
+
+    await expect(
+      client.getRepositoryMetadataAtCommit({
+        repositoryId: repositoryResponse.id,
+        owner: "facebook",
+        name: "react",
+        commitSha: branchResponse.commit.sha,
+      }),
+    ).resolves.toEqual(metadata)
+
+    expect(fetcher.mock.calls[1]?.[0]).toBe(
+      `https://api.github.com/repos/facebook/react/commits/${branchResponse.commit.sha}`,
+    )
+  })
+
+  it("rejects a mismatched repository id before resolving a commit", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+    const client = new GitHubClient({ fetcher })
+
+    await expect(
+      client.getRepositoryMetadataAtCommit({
+        repositoryId: 999,
+        owner: "facebook",
+        name: "react",
+        commitSha: branchResponse.commit.sha,
+      }),
+    ).rejects.toMatchObject({ code: "not-found" })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
   it("encodes repository and branch path segments", async () => {
     const fetcher = vi
       .fn<typeof fetch>()

@@ -41,6 +41,21 @@ export interface PreviewQueue {
   cancel(jobId: string): Promise<void>
 }
 
+export interface PreviewQueueLease {
+  job: QueuedPreviewJob
+  attempts: number
+}
+
+export interface PreviewQueueConsumer {
+  lease(
+    workerId: string,
+    now: Date,
+    leaseMs: number,
+  ): Promise<PreviewQueueLease | null>
+  acknowledge(jobId: string, workerId: string): Promise<boolean>
+  release(jobId: string, workerId: string, availableAt: Date): Promise<boolean>
+}
+
 export interface PreviewArtifactCache {
   get(
     cacheKey: string,

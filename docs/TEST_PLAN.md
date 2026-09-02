@@ -92,6 +92,12 @@ Use a fake GitHub client, queue, artifact store, and runner to verify:
 - signed URL expiry,
 - API inability to invoke a shell directly.
 
+Database adapter tests verify parameter binding, transaction boundaries,
+idempotency conflicts, row-locked state transitions, quota rollback, and queue
+lease/acknowledgement/retry SQL. Before deployment, run the same lifecycle
+against a real PostgreSQL instance, including two concurrent workers, expired
+lease recovery, cancellation races, and a database restart.
+
 ## 5. Runner Golden Paths
 
 Maintain commit-pinned local fixtures for:

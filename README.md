@@ -127,6 +127,49 @@ If the variable is absent, repository analysis still works and `Build preview`
 is shown disabled with a configuration explanation. This repository defines the
 HTTP contract but does not yet bundle or deploy a public control-plane server.
 
+## Preview API Service Boundary
+
+The control plane now has a real Node HTTP ingress for:
+
+```text
+POST   /v1/preview-jobs
+GET    /v1/preview-jobs/{jobId}
+DELETE /v1/preview-jobs/{jobId}
+GET    /healthz
+GET    /readyz
+```
+
+It applies bounded JSON bodies, request timeouts, no-store/nosniff response
+headers, safe error serialization, dependency readiness, and graceful server
+shutdown. A provider-neutral PostgreSQL composition now persists jobs, artifact
+cache metadata, fixed-window quota counters, and a lease-based durable queue.
+The queue uses short database leases so another worker can recover work after a
+worker process exits. A separate worker loop leases, runs, acknowledges, or
+delays failed deliveries without importing PostgreSQL into the build worker.
+
+Before accepting a job, the server-side resolver verifies the repository id and
+exact commit against GitHub, repeats the bounded known-file analysis, and emits
+only a build plan supported by the implemented static/Vite React npm runner.
+The extension's analysis result is never trusted as an executable plan.
+
+Server configuration is read from `PEEPHOLE_API_HOST`, `PEEPHOLE_API_PORT`,
+`PEEPHOLE_API_MAX_BODY_BYTES`, and `PEEPHOLE_API_REQUEST_TIMEOUT_MS`.
+PostgreSQL configuration uses `PEEPHOLE_DATABASE_URL`, optional
+`PEEPHOLE_DATABASE_POOL_SIZE`, and optional `PEEPHOLE_DATABASE_SSL_CA` for a
+remote provider's trusted CA. Remote database connections require verified TLS.
+The initial schema is in
+`services/preview-api/postgres/migrations/001_initial.sql`.
+
+After pointing `PEEPHOLE_POSTGRES_TEST_URL` at a disposable test database, run
+`npm test -- --run tests/postgresIntegration.test.ts` to apply the idempotent
+schema and verify concurrent leasing plus expired-lease recovery. The test
+removes the jobs it creates but intentionally leaves the schema in place.
+
+This is still infrastructure code, not a deployed public service. Requester
+authentication, hosted artifact storage/delivery, a prepared gVisor host, and a
+real PostgreSQL deployment test remain required. The in-memory adapters and
+local host runner remain test/development-only.
+
 ## Current Status
 
 Milestones 0-4 are complete. The local development runner has proven both
@@ -148,6 +191,10 @@ golden paths, and Milestone 6 is now in progress:
 - a typed Preview API client with bounded response validation,
 - commit-pinned build creation, status polling, cancellation, retry, and stale-request cleanup in the side panel,
 - preview control-plane and worker contracts,
+- a tested Node HTTP ingress with liveness/readiness and bounded request handling,
+- PostgreSQL job/cache/quota persistence and a leased durable queue,
+- a queue-driven worker loop with acknowledgement and delayed retry,
+- exact-commit GitHub revalidation and server-owned build-plan resolution,
 - real local-development adapters for static HTML and root Vite + React/npm
   golden paths,
 - gVisor adapter code with limits and cleanup wiring, pending verification on

@@ -181,3 +181,21 @@ path. pnpm/yarn/bun, monorepos, Next.js, Vue, and Svelte are recognized by
 the analyzer's contract but have no real runner adapter yet; a plan
 requesting one of them fails fast with a clear error rather than being
 silently attempted.
+
+## D-022 - PostgreSQL is the initial durable control-plane store and queue
+
+**Status:** Accepted
+
+Use PostgreSQL for preview-job state, build-artifact cache metadata,
+fixed-window quota counters, and the initial durable work queue. Workers claim
+one row atomically with `FOR UPDATE SKIP LOCKED`, attach a bounded lease, and
+acknowledge by deleting the leased row. An expired lease makes work available
+to another worker after a process crash; an unexpected worker exception delays
+and releases the row for retry.
+
+The queue remains behind `PreviewQueue`/`PreviewQueueConsumer` ports, so this
+decision does not couple build execution to PostgreSQL or prevent adopting a
+managed queue after operational evidence warrants it. The managed PostgreSQL
+vendor and region remain deployment choices. Unit tests validate the SQL and
+transaction contracts, but a real-database concurrency/restart test is still a
+release requirement.

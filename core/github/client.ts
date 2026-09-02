@@ -2,6 +2,7 @@ import type {
   RepositoryIdentity,
   RepositoryMetadata,
 } from "../../types/repository"
+import type { PreviewRepositoryRef } from "../../types/preview"
 
 const DEFAULT_API_BASE_URL = "https://api.github.com"
 const GITHUB_API_VERSION = "2026-03-10"
@@ -36,6 +37,10 @@ interface GitHubBranchResponse {
   commit: {
     sha: string
   }
+}
+
+interface GitHubCommitResponse {
+  sha: string
 }
 
 export interface GitHubContentEntry {
@@ -98,6 +103,53 @@ export class GitHubClient {
       repo: details.name,
       defaultBranch: details.default_branch,
       commitSha: branch.commit.sha,
+      homepage: normalizeHomepage(details.homepage),
+    }
+  }
+
+  async getRepositoryMetadataAtCommit(
+    repository: PreviewRepositoryRef,
+    signal?: AbortSignal,
+  ): Promise<RepositoryMetadata> {
+    const repositoryPath = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`
+    const details = await this.requestJson(
+      repositoryPath,
+      isGitHubRepositoryResponse,
+      signal,
+    )
+
+    if (
+      details.private ||
+      details.id !== repository.repositoryId ||
+      details.owner.login.toLowerCase() !== repository.owner.toLowerCase() ||
+      details.name.toLowerCase() !== repository.name.toLowerCase()
+    ) {
+      throw new GitHubApiError(
+        "not-found",
+        "The requested public repository identity could not be verified.",
+        404,
+      )
+    }
+
+    const commit = await this.requestJson(
+      `${repositoryPath}/commits/${encodeURIComponent(repository.commitSha)}`,
+      isGitHubCommitResponse,
+      signal,
+    )
+
+    if (commit.sha.toLowerCase() !== repository.commitSha.toLowerCase()) {
+      throw new GitHubApiError(
+        "invalid-response",
+        "GitHub returned a different commit than requested.",
+      )
+    }
+
+    return {
+      repositoryId: details.id,
+      owner: details.owner.login,
+      repo: details.name,
+      defaultBranch: details.default_branch,
+      commitSha: commit.sha,
       homepage: normalizeHomepage(details.homepage),
     }
   }
@@ -348,6 +400,14 @@ function isGitHubBranchResponse(value: unknown): value is GitHubBranchResponse {
     isObject(value.commit) &&
     typeof value.commit.sha === "string" &&
     /^[a-f\d]{40}$/i.test(value.commit.sha)
+  )
+}
+
+function isGitHubCommitResponse(value: unknown): value is GitHubCommitResponse {
+  return (
+    isObject(value) &&
+    typeof value.sha === "string" &&
+    /^[a-f\d]{40}$/i.test(value.sha)
   )
 }
 

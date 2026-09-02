@@ -212,16 +212,18 @@ The API validates that a caller may observe/cancel the job and exposes only sani
 
 ## 15. Infrastructure Decisions
 
-Decided (D-018, D-020, D-021):
+Decided (D-018, D-020, D-021, D-022):
 
 - sandbox boundary: gVisor (`runsc`) on Linux x86_64, Firecracker deferred,
 - initial resource/timeout limits and archive/workspace/output size caps,
 - initial supported runtime: Node 24, npm only,
 - golden paths: static HTML, root-level Vite + React.
+- initial control-plane persistence and durable work claiming: PostgreSQL with
+  short worker leases; managed PostgreSQL provider remains deployment-specific.
 
 Still open -- release blockers, not implementation trivia:
 
-- cloud/region and managed queue provider,
+- cloud/region and managed PostgreSQL provider,
 - artifact storage/CDN and per-job origin routing,
 - anonymous-user quotas and abuse response,
 - registry mirror/proxy strategy,
