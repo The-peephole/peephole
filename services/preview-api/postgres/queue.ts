@@ -50,32 +50,37 @@ export class PostgresPreviewQueue
     leaseMs: number,
   ): Promise<PreviewQueueLease | null> {
     validateWorkerLease(workerId, leaseMs)
-    const leaseExpiresAt = new Date(now.getTime() + leaseMs)
     const result = await this.database.query<QueueRow>(
       `
-        WITH candidate AS (
-          SELECT job_id
-          FROM peephole_preview_queue
+        WITH lease_clock AS (
+          SELECT GREATEST($2::timestamptz, clock_timestamp()) AS lease_now
+        ), candidate AS (
+          SELECT queue.job_id, lease_clock.lease_now
+          FROM peephole_preview_queue AS queue
+          CROSS JOIN lease_clock
           WHERE (
-            status = 'queued' AND available_at <= $2
+            queue.status = 'queued'
+            AND queue.available_at <= lease_clock.lease_now
           ) OR (
-            status = 'leased' AND lease_expires_at <= $2
+            queue.status = 'leased'
+            AND queue.lease_expires_at <= lease_clock.lease_now
           )
-          ORDER BY available_at ASC, created_at ASC
-          FOR UPDATE SKIP LOCKED
+          ORDER BY queue.available_at ASC, queue.created_at ASC
+          FOR UPDATE OF queue SKIP LOCKED
           LIMIT 1
         )
         UPDATE peephole_preview_queue AS queue
         SET status = 'leased',
             lease_owner = $1,
-            lease_expires_at = $3,
+            lease_expires_at = candidate.lease_now
+              + ($3::double precision * interval '1 millisecond'),
             attempts = queue.attempts + 1,
-            updated_at = $2
+            updated_at = candidate.lease_now
         FROM candidate
         WHERE queue.job_id = candidate.job_id
         RETURNING queue.payload, queue.attempts
       `,
-      [workerId, now, leaseExpiresAt],
+      [workerId, now, leaseMs],
     )
     const row = result.rows[0]
 

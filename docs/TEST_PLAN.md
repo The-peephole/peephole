@@ -94,9 +94,9 @@ Use a fake GitHub client, queue, artifact store, and runner to verify:
 
 Database adapter tests verify parameter binding, transaction boundaries,
 idempotency conflicts, row-locked state transitions, quota rollback, and queue
-lease/acknowledgement/retry SQL. Before deployment, run the same lifecycle
-against a real PostgreSQL instance, including two concurrent workers, expired
-lease recovery, cancellation races, and a database restart.
+lease/acknowledgement/retry SQL. Local PostgreSQL 18.4 verifies two concurrent
+workers and expired-lease recovery. Before deployment, additionally verify
+cancellation races and database-restart recovery in the deployed environment.
 
 ## 5. Runner Golden Paths
 

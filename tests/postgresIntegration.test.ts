@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import type { QueryResultRow } from "pg"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { readPostgresConfig } from "../services/preview-api/postgres/config"
@@ -75,14 +76,29 @@ describeWithPostgres("PostgreSQL integration", () => {
       job: second,
     })
     await queue.enqueue(toQueuedJob(second))
+    const secondLeaseTime = new Date()
 
     await expect(
-      queue.lease("integration-worker-a", now, 1_000),
+      queue.lease("integration-worker-a", secondLeaseTime, 1_000),
     ).resolves.toMatchObject({ attempts: 1 })
+    const leasedRow = await database.query<LeaseExpiryRow>(
+      `
+        SELECT lease_expires_at
+        FROM peephole_preview_queue
+        WHERE job_id = $1
+      `,
+      [second.id],
+    )
+    const leaseExpiresAt = leasedRow.rows[0]?.lease_expires_at
+
+    if (!leaseExpiresAt) {
+      throw new Error("Expected the integration queue row to have a lease.")
+    }
+
     await expect(
       queue.lease(
         "integration-worker-b",
-        new Date(now.getTime() + 1_001),
+        new Date(new Date(leaseExpiresAt).getTime() + 1),
         1_000,
       ),
     ).resolves.toMatchObject({
@@ -91,6 +107,10 @@ describeWithPostgres("PostgreSQL integration", () => {
     })
   })
 })
+
+interface LeaseExpiryRow extends QueryResultRow {
+  lease_expires_at: Date | string
+}
 
 function createJob(): StoredPreviewJob {
   const id = randomUUID()

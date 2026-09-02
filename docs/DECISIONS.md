@@ -197,5 +197,6 @@ The queue remains behind `PreviewQueue`/`PreviewQueueConsumer` ports, so this
 decision does not couple build execution to PostgreSQL or prevent adopting a
 managed queue after operational evidence warrants it. The managed PostgreSQL
 vendor and region remain deployment choices. Unit tests validate the SQL and
-transaction contracts, but a real-database concurrency/restart test is still a
-release requirement.
+transaction contracts; local PostgreSQL 18.4 verifies concurrent claiming and
+expired-lease recovery. A database-restart recovery test remains a release
+requirement.

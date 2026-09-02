@@ -165,10 +165,11 @@ After pointing `PEEPHOLE_POSTGRES_TEST_URL` at a disposable test database, run
 schema and verify concurrent leasing plus expired-lease recovery. The test
 removes the jobs it creates but intentionally leaves the schema in place.
 
-This is still infrastructure code, not a deployed public service. Requester
-authentication, hosted artifact storage/delivery, a prepared gVisor host, and a
-real PostgreSQL deployment test remain required. The in-memory adapters and
-local host runner remain test/development-only.
+This is still infrastructure code, not a deployed public service. The database
+schema, concurrent worker claiming, and expired-lease recovery have been
+verified against local PostgreSQL 18.4. Requester authentication, hosted
+artifact storage/delivery, and a prepared gVisor host remain required. The
+in-memory adapters and local host runner remain test/development-only.
 
 ## Current Status
 

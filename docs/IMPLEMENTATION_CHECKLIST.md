@@ -153,7 +153,8 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] orphan-sandbox reaper tests (real directories for the dev reaper,
       fake `runsc list` output for the gVisor reaper)
 - [x] PostgreSQL adapter SQL/transaction and durable worker-loop unit tests
-- [ ] PostgreSQL integration test against a real database
+- [x] PostgreSQL integration test against local PostgreSQL 18.4, including
+      concurrent claiming and expired-lease recovery
 - [ ] malicious install/build fixture tests
 - [ ] resource and network isolation tests
 - [ ] artifact path and origin isolation tests

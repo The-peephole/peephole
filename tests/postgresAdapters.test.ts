@@ -105,8 +105,12 @@ describe("PostgreSQL preview adapters", () => {
       queue.release(job.id, "worker-1", new Date(job.updatedAt)),
     ).resolves.toBe(true)
 
-    expect(database.queries[0]?.text).toContain("FOR UPDATE SKIP LOCKED")
+    expect(database.queries[0]?.text).toContain(
+      "FOR UPDATE OF queue SKIP LOCKED",
+    )
     expect(database.queries[0]?.text).toContain("lease_expires_at")
+    expect(database.queries[0]?.text).toContain("clock_timestamp()")
+    expect(database.queries[0]?.values?.[2]).toBe(300_000)
   })
 
   it("uses a transaction and hashed quota scopes", async () => {
