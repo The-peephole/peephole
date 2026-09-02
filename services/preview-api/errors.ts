@@ -1,12 +1,6 @@
-export type PreviewApiErrorCode =
-  | "INVALID_REQUEST"
-  | "UNSUPPORTED_REPOSITORY"
-  | "NOT_FOUND"
-  | "FORBIDDEN"
-  | "CONFLICT"
-  | "RATE_LIMITED"
-  | "INVALID_TRANSITION"
-  | "INTERNAL_ERROR"
+import type { PreviewApiErrorCode } from "../../types/preview"
+
+export type { PreviewApiErrorCode } from "../../types/preview"
 
 export class PreviewControlError extends Error {
   constructor(

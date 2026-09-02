@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 
 import type {
   Framework,
@@ -11,6 +11,7 @@ import type { RepositoryIdentity } from "../types/repository"
 interface RepositoryAnalysisViewProps {
   repository: RepositoryIdentity
   loadRepositoryAnalysis: RepositoryAnalysisLoader
+  renderPreviewControls?: (analysis: RepositoryAnalysis) => ReactNode
 }
 
 type AnalysisState =
@@ -21,6 +22,7 @@ type AnalysisState =
 export function RepositoryAnalysisView({
   repository,
   loadRepositoryAnalysis,
+  renderPreviewControls,
 }: RepositoryAnalysisViewProps) {
   const [analysisState, setAnalysisState] = useState<AnalysisState>({
     status: "loading",
@@ -68,6 +70,7 @@ export function RepositoryAnalysisView({
       <AnalysisContent
         analysisState={analysisState}
         onRetry={() => setRequestVersion((version) => version + 1)}
+        renderPreviewControls={renderPreviewControls}
       />
     </>
   )
@@ -130,9 +133,11 @@ function Detail({ label, value }: { label: string; value: string }) {
 function AnalysisContent({
   analysisState,
   onRetry,
+  renderPreviewControls,
 }: {
   analysisState: AnalysisState
   onRetry: () => void
+  renderPreviewControls?: (analysis: RepositoryAnalysis) => ReactNode
 }) {
   if (analysisState.status === "loading") {
     return (
@@ -163,6 +168,7 @@ function AnalysisContent({
   return (
     <div className="peephole__analysis">
       <PreviewStatus mode={analysis.preview.mode} />
+      {renderPreviewControls?.(analysis)}
 
       <section className="peephole__section">
         <h3>Stack</h3>

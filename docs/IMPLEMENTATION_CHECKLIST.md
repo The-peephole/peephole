@@ -9,7 +9,7 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Add unit-test setup
 - [x] Produce a Chrome MV3 production build
 - [x] Add Chrome Side Panel entrypoint and permission
-- [ ] Document extension-to-preview-API configuration
+- [x] Document extension-to-preview-API configuration
 
 ## GitHub Integration
 
@@ -22,7 +22,7 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Avoid unsupported Shadow DOM hosts
 - [x] Open and synchronize the side panel from the user gesture
 - [x] Abort or ignore stale analysis responses
-- [ ] Abort or ignore stale preview responses
+- [x] Abort or ignore stale preview responses
 
 ## Extension UI
 
@@ -31,8 +31,8 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Display immutable commit identity
 - [x] Display analysis evidence and blockers
 - [x] Display preview eligibility
-- [ ] Display queued/installing/building/publishing states
-- [ ] Add build, cancel, retry, and expiry controls
+- [x] Display queued/fetching/installing/building/publishing states
+- [x] Add build, cancel, retry, and expiry controls
 - [ ] Embed only approved Peephole preview-origin URLs
 - [x] Remove the transitional StackBlitz action and URL generator
 - [ ] Add keyboard, focus, contrast, and screen-reader checks

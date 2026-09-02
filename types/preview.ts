@@ -64,6 +64,16 @@ export interface CreatePreviewJobRequest {
   contractVersion: string
 }
 
+export type PreviewApiErrorCode =
+  | "INVALID_REQUEST"
+  | "UNSUPPORTED_REPOSITORY"
+  | "NOT_FOUND"
+  | "FORBIDDEN"
+  | "CONFLICT"
+  | "RATE_LIMITED"
+  | "INVALID_TRANSITION"
+  | "INTERNAL_ERROR"
+
 export interface PreviewRequester {
   subject: string
   ip: string

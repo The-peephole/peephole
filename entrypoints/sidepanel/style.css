@@ -249,6 +249,92 @@ a {
   margin: 6px 0 0;
 }
 
+.peephole__preview-action,
+.peephole__job {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.peephole__preview-action {
+  display: grid;
+  gap: 8px;
+}
+
+.peephole__primary,
+.peephole__secondary {
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.peephole__primary {
+  background: #238636;
+  border: 1px solid #2ea043;
+  color: #fff;
+  min-height: 34px;
+  padding: 6px 12px;
+}
+
+.peephole__primary:hover:not(:disabled) {
+  background: #2ea043;
+}
+
+.peephole__primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.peephole__secondary {
+  background: #21262d;
+  border: 1px solid #8b949e;
+  color: #f0f6fc;
+  justify-self: start;
+  padding: 5px 10px;
+}
+
+.peephole__primary:focus-visible,
+.peephole__secondary:focus-visible {
+  outline: 2px solid #2f81f7;
+  outline-offset: 2px;
+}
+
+.peephole__action-note,
+.peephole__job p {
+  color: #8b949e;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.peephole__job {
+  display: grid;
+  gap: 8px;
+}
+
+.peephole__job-heading {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.peephole__job--ready {
+  border-color: #238636;
+}
+
+.peephole__job--ready strong {
+  color: #3fb950;
+}
+
+.peephole__job--error {
+  border-color: #da3633;
+}
+
+.peephole__job--error strong {
+  color: #ff7b72;
+}
+
 @keyframes peephole-spin {
   to {
     transform: rotate(360deg);

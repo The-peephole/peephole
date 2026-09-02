@@ -1,5 +1,8 @@
 .output/
 .wxt/
+.env
+.env.local
+.env.*.local
 node_modules/
 coverage/
 *.zip

@@ -1,15 +1,21 @@
 import { RepositoryAnalysisView } from "../../components/RepositoryAnalysisView"
+import { PreviewJobPanel } from "../../components/PreviewJobPanel"
+import type { PreviewApi } from "../../core/preview/apiClient"
 import type { RepositoryAnalysisLoader } from "../../types/analysis"
 import type { RepositoryIdentity } from "../../types/repository"
 
 interface SidePanelAppProps {
   repository: RepositoryIdentity | null
   loadRepositoryAnalysis: RepositoryAnalysisLoader
+  previewApi: PreviewApi | null
+  previewConfigurationError?: string | null
 }
 
 export function SidePanelApp({
   repository,
   loadRepositoryAnalysis,
+  previewApi,
+  previewConfigurationError = null,
 }: SidePanelAppProps) {
   return (
     <main className="peephole-panel">
@@ -24,6 +30,14 @@ export function SidePanelApp({
         <RepositoryAnalysisView
           loadRepositoryAnalysis={loadRepositoryAnalysis}
           repository={repository}
+          renderPreviewControls={(analysis) => (
+            <PreviewJobPanel
+              analysis={analysis}
+              configurationError={previewConfigurationError}
+              key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}`}
+              previewApi={previewApi}
+            />
+          )}
         />
       ) : (
         <section className="peephole__empty">

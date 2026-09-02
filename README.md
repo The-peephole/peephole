@@ -110,6 +110,23 @@ The exact worker isolation technology is an infrastructure decision, but it must
 5. The panel displays progress and then the preview.
 6. Unsupported repositories show blockers and detected evidence without attempting execution.
 
+## Preview API Configuration
+
+The extension reads the public control-plane base URL at build time:
+
+```text
+WXT_PREVIEW_API_BASE_URL=https://api.example.com
+```
+
+Copy `.env.example` to `.env.local` for local development. HTTPS is required
+except for `localhost`, `127.0.0.1`, or `[::1]`. The configured origin is added
+to the generated Chrome host permissions; never place credentials or secrets
+in a `WXT_` variable.
+
+If the variable is absent, repository analysis still works and `Build preview`
+is shown disabled with a configuration explanation. This repository defines the
+HTTP contract but does not yet bundle or deploy a public control-plane server.
+
 ## Current Status
 
 Milestones 0-4 are complete. The local development runner has proven both
@@ -128,6 +145,8 @@ golden paths, and Milestone 6 is now in progress:
 - versioned native-preview eligibility with evidence, warnings, and blockers,
 - lazy loading, request cancellation, rate-limit errors, and commit-aware analysis caching,
 - analysis and eligibility rendered in the native side panel,
+- a typed Preview API client with bounded response validation,
+- commit-pinned build creation, status polling, cancellation, retry, and stale-request cleanup in the side panel,
 - preview control-plane and worker contracts,
 - real local-development adapters for static HTML and root Vite + React/npm
   golden paths,
@@ -135,9 +154,9 @@ golden paths, and Milestone 6 is now in progress:
   a real Linux/gVisor host.
 
 The extension never installs dependencies or executes repository code. The
-side panel is not yet connected to a deployed preview API: build/cancel
-controls, hosted artifacts, trusted preview embedding, and real gVisor
-infrastructure verification remain unfinished.
+Preview API connection is configurable but no public service is deployed yet.
+Hosted artifacts, trusted preview embedding, and real gVisor infrastructure
+verification remain unfinished.
 
 ## Documentation
 
