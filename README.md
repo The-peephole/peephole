@@ -171,6 +171,56 @@ verified against local PostgreSQL 18.4. Requester authentication, hosted
 artifact storage/delivery, and a prepared gVisor host remain required. The
 in-memory adapters and local host runner remain test/development-only.
 
+## Local Development Preview Path
+
+`services/local-preview/devServer.ts` wires the real (non-fake) pieces above
+into a single process you can run on a development machine:
+
+```text
+Chrome side panel --> Preview API (real Node HTTP ingress)
+                            |
+                            v
+                    PostgreSQL job/queue/cache/quota
+                            |
+                            v
+              local worker loop (no sandbox -- see below)
+                            |
+                            v
+        LocalArtifactHost: one loopback HTTP origin per artifact
+```
+
+Run it with:
+
+```text
+npm run dev:preview-server
+```
+
+It reads `.env.local` for `PEEPHOLE_DATABASE_URL` and the API host/port,
+applies the PostgreSQL schema, and starts both the API and a worker loop in
+one process. `WXT_PREVIEW_API_BASE_URL=http://localhost:8787` in `.env.local`
+points the extension build at it.
+
+This launcher is **not** a preview of the production architecture:
+
+- there is no authentication -- every request is attributed to a single
+  fixed local identity;
+- install/build commands run directly on the host process with no sandbox,
+  network restriction, or resource limit (this repository has no Linux
+  kernel to run gVisor against on Windows -- see D-018 in
+  [Technical decisions](docs/DECISIONS.md));
+- artifacts are served from `127.0.0.1`/`[::1]` only, from a store that is
+  never swept, so nothing but a developer's own machine can reach a build.
+
+Because of the second point, only build repositories whose source you already
+trust. The Chrome side panel now embeds a `ready` job's artifact in a
+sandboxed iframe when, and only when, its URL resolves to one of those
+loopback origins (`core/preview/config.ts#isTrustedPreviewArtifactUrl`); any
+other origin is shown as a plain "not approved for embedding" message
+instead of an iframe. This full path --
+GitHub source in, a built static site served back out -- has been run
+end-to-end against a real public repository (`octocat/Spoon-Knife`) via the
+Preview API's HTTP contract.
+
 ## Current Status
 
 Milestones 0-4 are complete. The local development runner has proven both
@@ -199,12 +249,44 @@ golden paths, and Milestone 6 is now in progress:
 - real local-development adapters for static HTML and root Vite + React/npm
   golden paths,
 - gVisor adapter code with limits and cleanup wiring, pending verification on
-  a real Linux/gVisor host.
+  a real Linux/gVisor host,
+- a loopback-only local artifact host (`LocalArtifactHost`) serving each
+  build from its own origin with restrictive headers and expiry,
+- a single-process local development launcher
+  (`services/local-preview/devServer.ts`, `npm run dev:preview-server`)
+  composing the real Postgres-backed API and worker loop together,
+- trusted-origin validation and sandboxed iframe embedding of a `ready`
+  job's artifact in the Chrome side panel.
 
 The extension never installs dependencies or executes repository code. The
 Preview API connection is configurable but no public service is deployed yet.
-Hosted artifacts, trusted preview embedding, and real gVisor infrastructure
-verification remain unfinished.
+Hosted artifacts, a registrable preview domain, requester authentication,
+and real gVisor infrastructure verification remain unfinished. Local preview
+embedding depends on the development-only, unsandboxed launcher above, so it
+must not be pointed at repositories you don't already trust.
+
+This full path has now been driven from a real unpacked Chrome extension
+against a real GitHub repository, end to end: `Build preview` in the actual
+side panel through to a real Vite + React build rendered in the embedded
+iframe.
+
+## Local Development Setup
+
+1. Have a local PostgreSQL server running; create a database/role for it and
+   put the connection string in `PEEPHOLE_DATABASE_URL` in `.env.local`
+   (copy `.env.example` as a starting point).
+2. `npm run dev:preview-server` -- applies the schema and starts the Preview
+   API + worker loop. Keep this running.
+3. `npm run build`, then load `.output/chrome-mv3` as an unpacked extension
+   at `chrome://extensions` (enable Developer mode first).
+4. Open a supported public GitHub repository, click the `Peephole` action,
+   and `Build preview`.
+
+Use `http://127.0.0.1:8787`, not `http://localhost:8787`, for
+`WXT_PREVIEW_API_BASE_URL` -- Chrome can resolve `localhost` to the IPv6
+loopback address first, which nothing is listening on since the API server
+binds to `127.0.0.1` only, and this can surface as the preview request
+simply failing to reach the service.
 
 ## Documentation
 

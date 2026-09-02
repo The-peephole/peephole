@@ -1,0 +1,124 @@
+:root {
+  color: #f0f6fc;
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0d1117;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.peephole-options {
+  margin: 0 auto;
+  max-width: 560px;
+  padding: 32px 24px 48px;
+}
+
+.peephole-options h1 {
+  font-size: 20px;
+  margin: 0 0 20px;
+}
+
+.peephole-options h2 {
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+
+.peephole-options section {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.peephole-options p {
+  color: #8b949e;
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0 0 12px;
+}
+
+.peephole-options code {
+  background: #0d1117;
+  border-radius: 4px;
+  color: #79c0ff;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  padding: 1px 5px;
+}
+
+.peephole-options__status {
+  color: #e6edf3;
+}
+
+.peephole-options__field {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.peephole-options input {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #f0f6fc;
+  font: inherit;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.peephole-options input:focus-visible {
+  outline: 2px solid #2f81f7;
+  outline-offset: 2px;
+}
+
+.peephole-options__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.peephole-options button {
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 6px 14px;
+}
+
+.peephole-options button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.peephole-options__primary {
+  background: #238636;
+  border: 1px solid #2ea043;
+  color: #fff;
+}
+
+.peephole-options__primary:hover:not(:disabled) {
+  background: #2ea043;
+}
+
+.peephole-options__secondary {
+  background: #21262d;
+  border: 1px solid #8b949e;
+  color: #f0f6fc;
+}
+
+.peephole-options button:focus-visible {
+  outline: 2px solid #2f81f7;
+  outline-offset: 2px;
+}
+
+.peephole-options__message {
+  color: #3fb950;
+  margin: 12px 0 0;
+}

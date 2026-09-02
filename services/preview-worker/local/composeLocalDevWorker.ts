@@ -28,7 +28,7 @@ export { CommandExecutionError }
  */
 export function composeLocalDevWorker(
   controlPlane: PreviewControlPlane,
-  options: { commandRunner?: CommandRunner } = {},
+  options: { commandRunner?: CommandRunner; artifactStorageDir?: string } = {},
 ): PreviewJobWorker {
   const byteStore = new ArchiveByteStore()
   const extraction = new ExtractionState()
@@ -42,6 +42,8 @@ export function composeLocalDevWorker(
     new NpmDependencyInstaller(byteStore, extraction, commandRunner),
     new NpmBuildExecutor(commandRunner),
     new LocalOutputResolver(byteStore, extraction, locations),
-    new LocalArtifactPublisher(locations),
+    new LocalArtifactPublisher(locations, {
+      storageDir: options.artifactStorageDir,
+    }),
   )
 }

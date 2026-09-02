@@ -200,3 +200,70 @@ vendor and region remain deployment choices. Unit tests validate the SQL and
 transaction contracts; local PostgreSQL 18.4 verifies concurrent claiming and
 expired-lease recovery. A database-restart recovery test remains a release
 requirement.
+
+## D-023 - A single-process local development launcher stands in for a deployed Preview API/worker, with a loopback-only artifact host in place of a preview domain
+
+**Status:** Accepted
+
+`services/local-preview/devServer.ts` composes the real (non-fake)
+Postgres-backed control plane (`composePostgresControlPlane`), a worker loop
+running the same unsandboxed adapters as the golden-path tests
+(`composeLocalDevWorker` -- `LocalDevSandboxProvisioner`/`HostCommandRunner`,
+per D-019), and a new `LocalArtifactHost`
+(`services/local-preview/artifactHost.ts`) into one Node process, run with
+`npm run dev:preview-server`.
+
+`LocalArtifactHost` binds a fresh `127.0.0.1` TCP port -- and therefore a
+fresh origin -- per published artifact, since D-016's registrable preview
+domain does not exist yet. It sets `cache-control: no-store`,
+`x-content-type-options: nosniff`, a locked-down `permissions-policy`,
+rejects path traversal/symlinks, and returns HTTP 410 once the artifact's
+signed expiry passes. The Chrome side panel embeds a `ready` job's artifact
+in a sandboxed iframe (`sandbox="allow-scripts allow-same-origin
+allow-forms"`) only when its URL passes
+`core/preview/config.ts#isTrustedPreviewArtifactUrl` (loopback HTTP only),
+and the extension's own manifest CSP additionally restricts `frame-src` to
+`http://127.0.0.1:*`.
+
+This is deliberately **not** a preview of the production architecture:
+`devServer.ts`'s `resolveRequester` returns one fixed identity for every
+request (no authentication), and the worker has no sandbox, network
+restriction, or resource limit (this environment has no Linux kernel to run
+gVisor against, per D-018). Consequently this launcher must only ever build
+repositories the operator already trusts, on their own machine -- it is a
+development tool for proving the fetch -> build -> serve -> embed path end
+to end (verified against real GitHub repositories through a real unpacked
+Chrome extension), not a step toward relaxing D-013's isolation requirement.
+
+## D-024 - GitHub token: client-side storage only, never a `WXT_` build variable
+
+**Status:** Accepted
+
+Unauthenticated GitHub REST calls are capped at 60 requests/hour per IP.
+Peephole's own design intentionally doubles that cost per `Build preview`
+click: the side panel analyzes a repository, and the control plane
+independently re-fetches and re-validates the same repository server-side
+before scheduling a job (see the Preview Control Plane security
+requirements) rather than trusting the client's analysis. A token (no
+scopes required for public repositories) raises the limit to 5,000/hour and
+is worth supporting even though v0.1 has no user-account model.
+
+Any `WXT_`-prefixed environment variable is compiled directly into the
+built extension bundle and is trivially readable by anyone who unpacks it
+(see the existing warning in `.env.example`/`core/preview/config.ts`), so a
+personal access token must never be one. Instead:
+
+- **Client:** an options page (`entrypoints/options/`) writes the token to
+  `chrome.storage.local` (`core/github/tokenStorage.ts`) -- local to the
+  browser profile, never synced, never bundled. `GitHubClient` accepts a
+  `getToken` hook (`core/github/client.ts`) resolved fresh on every request
+  so a token saved after the background service worker starts still takes
+  effect, and attaches it as `Authorization: Bearer <token>` only when
+  present.
+- **Server:** `services/local-preview/devServer.ts` reads
+  `PEEPHOLE_GITHUB_TOKEN` from the Node process environment
+  (`.env.local`/deployment secrets), never from a `WXT_` variable, and
+  passes it to its own `GitHubClient` instance through the same hook.
+
+The token is never logged (see "Never log credentials or secret-like
+values" in `docs/IMPLEMENTATION_CHECKLIST.md`).

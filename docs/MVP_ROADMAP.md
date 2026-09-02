@@ -81,7 +81,9 @@ Acceptance: fixtures resolve deterministically to `existing-deployment`, `native
 - [x] provider-neutral PostgreSQL job/cache/quota persistence and leased queue
 - [x] server-side exact-commit revalidation and build-plan resolution
 - [ ] production composition with persistent storage, durable queue, requester
-      authentication, and deployed service configuration
+      authentication, and deployed service configuration (a local-dev-only
+      composition without authentication now exists:
+      `services/local-preview/devServer.ts`, see D-023)
 
 This milestone is API- and storage-only: no build command is ever executed by
 this process. Execution is deferred to the isolated runner in Milestone 5.
@@ -132,7 +134,11 @@ this environment cannot provide (see D-018..D-021 and PREVIEW_RUNTIME.md
 - [ ] fresh non-root sandbox per job on a **real** gVisor host (unverified)
 - [ ] deterministic install with registry-only egress (network policy not enforced)
 - [ ] CPU/memory/PID limits actually enforced on a **real** gVisor host (unverified)
-- [ ] static artifact publication with restrictive headers (local-fs stand-in only)
+- [x] static artifact publication with restrictive headers, development-only
+      (`services/local-preview/artifactHost.ts`: a fresh loopback HTTP
+      origin per artifact, `no-store`, `nosniff`, a locked-down
+      `permissions-policy`, and 410 once expired) -- not the production
+      artifact store/CDN, see D-023
 - [ ] prepared base rootfs image for `GVisorSandboxProvisioner`
 
 The dev proof (`LocalDevSandboxProvisioner` + `HostCommandRunner`) runs
@@ -151,10 +157,14 @@ Add Vue and Svelte only after the same contract and security tests pass.
 
 ## Milestone 6 - Native Side-Panel Preview
 
-**Status:** In progress. Repository context, analysis, eligibility, and errors
-live in Chrome Side Panel. The build/status/cancel client flow is implemented
-against a build-time configured Preview API; deployment and trusted preview
-delivery are not connected yet.
+**Status:** In progress. Repository context, analysis, eligibility, errors,
+and the build/status/cancel client flow all live in Chrome Side Panel against
+a build-time configured Preview API. Trusted-origin preview embedding is
+connected end to end for local development
+(`services/local-preview/devServer.ts`, D-023) and has been driven from a
+real unpacked Chrome extension against a real GitHub repository. A deployed
+production service (a real preview domain, requester authentication, a real
+gVisor host) is not connected.
 
 **Goal:** Complete the user-facing Peephole flow.
 
@@ -163,7 +173,10 @@ delivery are not connected yet.
 - [x] synchronize repository context across GitHub client-side navigation
 - [x] show preview job progress and errors
 - [x] start and cancel preview jobs through the configured HTTP API
-- [ ] embed only trusted Peephole preview-origin URLs
+- [x] embed only trusted Peephole preview-origin URLs (loopback-only for now:
+      `core/preview/config.ts#isTrustedPreviewArtifactUrl` plus a manifest
+      `frame-src` CSP restricted to `http://127.0.0.1:*`; no production
+      preview domain exists yet, see D-023)
 - [x] detach stale preview requests on GitHub navigation
 
 ## Milestone 7 - Security and Reliability Gate

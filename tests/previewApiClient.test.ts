@@ -41,6 +41,33 @@ const job: PreviewJob = {
 }
 
 describe("PreviewApiClient", () => {
+  it("calls fetch with a receiver that satisfies native fetch's own branding check", async () => {
+    // Chrome's native `fetch` throws "Illegal invocation" unless invoked with
+    // `this === globalThis` (or another WindowOrWorkerGlobalScope). Storing
+    // `options.fetch ?? globalThis.fetch` without binding it, then calling it
+    // as `this.fetch(...)`, reproduces exactly that failure in a real
+    // browser while every other test here (which injects a plain vi.fn())
+    // stays green either way. This test asserts the receiver explicitly
+    // instead of relying on a real native fetch implementation.
+    const originalFetch = globalThis.fetch
+    const brandedFetch = function (
+      this: unknown,
+    ): ReturnType<typeof fetch> {
+      if (this !== globalThis) {
+        throw new TypeError("Failed to execute 'fetch': Illegal invocation")
+      }
+      return Promise.resolve(jsonResponse(200, job))
+    } as typeof fetch
+    globalThis.fetch = brandedFetch
+
+    try {
+      const client = new PreviewApiClient("https://api.example.test/")
+      await expect(client.get(job.id)).resolves.toEqual(job)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   it("creates a commit-pinned preview job with an idempotency key", async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

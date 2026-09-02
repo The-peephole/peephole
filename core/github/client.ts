@@ -61,15 +61,27 @@ interface GitHubFileContentResponse {
 export interface GitHubClientOptions {
   apiBaseUrl?: string
   fetcher?: typeof fetch
+  /**
+   * Resolves a GitHub personal access token to send as a bearer credential,
+   * or null/undefined to make an unauthenticated request. Read lazily (and
+   * possibly async) on every request so a token set after construction --
+   * e.g. saved from the extension's options page while the background
+   * service worker is already running -- takes effect immediately. Never
+   * logged; see "Never log credentials or secret-like values" in
+   * docs/IMPLEMENTATION_CHECKLIST.md.
+   */
+  getToken?: () => string | null | undefined | Promise<string | null | undefined>
 }
 
 export class GitHubClient {
   private readonly apiBaseUrl: string
   private readonly fetcher: typeof fetch
+  private readonly getToken: () => Promise<string | null | undefined>
 
   constructor(options: GitHubClientOptions = {}) {
     this.apiBaseUrl = options.apiBaseUrl ?? DEFAULT_API_BASE_URL
     this.fetcher = (options.fetcher ?? globalThis.fetch).bind(globalThis)
+    this.getToken = async () => options.getToken?.()
   }
 
   async getRepositoryMetadata(
@@ -194,6 +206,16 @@ export class GitHubClient {
     return decodeBase64Utf8(response.content, path, maxBytes)
   }
 
+  private async buildHeaders(): Promise<Record<string, string>> {
+    const token = await this.getToken()
+
+    return {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": GITHUB_API_VERSION,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    }
+  }
+
   private async requestJson<T>(
     path: string,
     validate: (value: unknown) => value is T,
@@ -203,10 +225,7 @@ export class GitHubClient {
 
     try {
       response = await this.fetcher(`${this.apiBaseUrl}${path}`, {
-        headers: {
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        },
+        headers: await this.buildHeaders(),
         signal,
       })
     } catch (error) {
@@ -256,10 +275,7 @@ export class GitHubClient {
 
     try {
       response = await this.fetcher(`${this.apiBaseUrl}${path}`, {
-        headers: {
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        },
+        headers: await this.buildHeaders(),
         signal,
       })
     } catch (error) {

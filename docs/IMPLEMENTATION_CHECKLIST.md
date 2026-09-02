@@ -33,7 +33,10 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Display preview eligibility
 - [x] Display queued/fetching/installing/building/publishing states
 - [x] Add build, cancel, retry, and expiry controls
-- [ ] Embed only approved Peephole preview-origin URLs
+- [x] Embed only approved Peephole preview-origin URLs (loopback-only
+      allowlist: `isTrustedPreviewArtifactUrl` plus a manifest
+      `frame-src` CSP restricted to `http://127.0.0.1:*`/`http://[::1]:*`;
+      no production preview domain exists yet, so nothing else is approved)
 - [x] Remove the transitional StackBlitz action and URL generator
 - [ ] Add keyboard, focus, contrast, and screen-reader checks
 
@@ -81,6 +84,10 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Add a PostgreSQL leased queue with expired-lease recovery
 - [x] Revalidate repository identity, commit, and build plan server-side
 - [ ] Compose the API with production-persistent job, queue, cache, quota, and authentication adapters
+      (`services/local-preview/devServer.ts` composes the persistent
+      Postgres job/queue/cache/quota adapters for local development, but
+      `resolveRequester` is a single fixed dev identity -- no real
+      authentication)
 
 ## Isolated Static Runner
 
@@ -122,17 +129,34 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [ ] Block loopback, private, link-local, and metadata networks
 - [ ] Enforce CPU, memory, and PID limits **on a real gVisor host** (limits
       are wired into the OCI config; unverified)
-- [ ] Publish static artifacts with restrictive headers (local-fs stand-in
-      only, no HTTP serving layer yet)
+- [x] Publish static artifacts with restrictive headers via
+      `LocalArtifactHost` (`services/local-preview/artifactHost.ts`): a
+      dedicated loopback HTTP origin per artifact, `cache-control: no-store`,
+      `x-content-type-options: nosniff`, a locked-down `permissions-policy`,
+      path-traversal/symlink rejection, and 410 once expired -- development-
+      only, not the production artifact store
 - [ ] Prepare and maintain the base rootfs image gVisor copies per job
 
 ## Preview Delivery
 
 - [ ] Provision a registrable preview domain separate from control UI
-- [ ] Use per-job or equivalent isolated origins
-- [ ] Ensure preview requests receive no control-plane cookies or tokens
+      (dev-only substitute: a distinct loopback origin/port per artifact)
+- [x] Use per-job or equivalent isolated origins (`LocalArtifactHost` binds
+      a fresh TCP port -- and therefore a fresh origin -- per artifact;
+      loopback-only, not a registrable per-job subdomain)
+- [x] Ensure preview requests receive no control-plane cookies or tokens
+      (the control plane sets no cookies at all; the extension's API client
+      always sends `credentials: "omit"`; the artifact origin's port differs
+      from the control-plane API's, so no cookie would be shared even if one
+      existed)
 - [ ] Set restrictive CSP, permissions, MIME, and framing headers
-- [ ] Expire artifacts and return a clear expired state
+      (`permissions-policy`, `x-content-type-options: nosniff`, and MIME
+      types are set on every artifact response; the artifact response itself
+      still sends no `Content-Security-Policy` or framing header -- only the
+      extension's own manifest CSP restricts who may frame it)
+- [x] Expire artifacts and return a clear expired state (`LocalArtifactHost`
+      returns HTTP 410 once `expiresAt` passes; verified in
+      `tests/localArtifactHost.test.ts`)
 - [ ] Prevent preview content from reaching privileged extension messaging
 
 ## Tests
@@ -155,10 +179,27 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] PostgreSQL adapter SQL/transaction and durable worker-loop unit tests
 - [x] PostgreSQL integration test against local PostgreSQL 18.4, including
       concurrent claiming and expired-lease recovery
+- [x] local artifact host tests: per-artifact loopback origin, traversal
+      rejection, and expiry (410) (`tests/localArtifactHost.test.ts`)
+- [x] side-panel trusted-origin embedding tests: sandboxed iframe for a
+      loopback artifact, refusal for a non-loopback origin
+      (`tests/PreviewJobPanel.test.tsx`, `tests/previewConfig.test.ts`)
 - [ ] malicious install/build fixture tests
 - [ ] resource and network isolation tests
 - [ ] artifact path and origin isolation tests
-- [ ] end-to-end Chrome side-panel test
+- [x] end-to-end Chrome side-panel test (manual only, no automated
+      end-to-end test exists yet): an unpacked build of the extension, a
+      real GitHub repository, `Build preview` clicked in the real side
+      panel, through to a real Vite + React build rendered in the embedded
+      iframe. Caught and fixed a real bug this way --
+      `PreviewApiClient` stored `options.fetch ?? globalThis.fetch`
+      unbound, so calling it as `this.fetch(...)` tripped Chrome's native
+      `fetch` receiver check (`TypeError: Illegal invocation`), silently
+      swallowed into a generic "could not be reached" error with no
+      network request ever sent and no console output -- every existing
+      unit test injected a plain mock and never exercised the real
+      receiver. Fixed in `core/preview/apiClient.ts` and covered by a
+      receiver-checking regression test in `tests/previewApiClient.test.ts`.
 
 ## Before v0.1
 

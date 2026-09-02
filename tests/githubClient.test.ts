@@ -51,6 +51,39 @@ describe("GitHubClient", () => {
     ).resolves.toMatchObject({ repositoryId: 10270250 })
   })
 
+  it("sends a bearer token from getToken when one is available", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+      .mockResolvedValueOnce(jsonResponse(branchResponse))
+    const client = new GitHubClient({
+      fetcher,
+      getToken: () => "test-token-value",
+    })
+
+    await client.getRepositoryMetadata({ owner: "react", repo: "react" })
+
+    for (const [, init] of fetcher.mock.calls) {
+      const headers = init?.headers as Record<string, string>
+      expect(headers.Authorization).toBe("Bearer test-token-value")
+    }
+  })
+
+  it("omits the Authorization header when getToken resolves nothing", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+      .mockResolvedValueOnce(jsonResponse(branchResponse))
+    const client = new GitHubClient({ fetcher, getToken: () => null })
+
+    await client.getRepositoryMetadata({ owner: "react", repo: "react" })
+
+    for (const [, init] of fetcher.mock.calls) {
+      const headers = init?.headers as Record<string, string>
+      expect(headers.Authorization).toBeUndefined()
+    }
+  })
+
   it("loads public repository metadata and its default-branch commit", async () => {
     const fetcher = vi
       .fn<typeof fetch>()

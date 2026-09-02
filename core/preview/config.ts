@@ -49,3 +49,27 @@ export function parsePreviewApiBaseUrl(
 export function getPreviewApiHostPermission(baseUrl: string): string {
   return `${new URL(baseUrl).origin}/*`
 }
+
+/**
+ * A preview artifact may only be embedded from a loopback HTTP origin. This
+ * is the local-development artifact host's trust boundary (D-018): Peephole
+ * has not yet provisioned a dedicated, registrable preview domain (see
+ * IMPLEMENTATION_CHECKLIST.md, "Preview Delivery"), so no HTTPS origin is
+ * approved for embedding yet.
+ */
+export function isTrustedPreviewArtifactUrl(value: string): boolean {
+  let url: URL
+
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+
+  return (
+    !url.username &&
+    !url.password &&
+    url.protocol === "http:" &&
+    LOCAL_HTTP_HOSTS.has(url.hostname)
+  )
+}

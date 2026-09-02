@@ -78,7 +78,7 @@ export class PreviewApiClient implements PreviewApi {
     private readonly baseUrl: string,
     options: PreviewApiClientOptions = {},
   ) {
-    this.fetch = options.fetch ?? globalThis.fetch
+    this.fetch = (options.fetch ?? globalThis.fetch).bind(globalThis)
     this.createIdempotencyKey =
       options.createIdempotencyKey ?? (() => `preview-${crypto.randomUUID()}`)
   }

@@ -34,7 +34,7 @@ export class LocalArtifactPublisher implements ArtifactPublisher {
     output: ResolvedOutput,
   ): Promise<PublishedArtifact> {
     const sourceDir = this.locations.take(jobId)
-    const artifactId = `artifact-${jobId}-${randomUUID()}`
+    const artifactId = `artifact-${randomUUID()}`
     const destinationDir = path.join(this.storageDir, artifactId)
 
     for (const entry of output.entries) {

@@ -9,6 +9,7 @@ import {
 
 import type { PreviewApi } from "../core/preview/apiClient"
 import { createBuildPlanFromAnalysis } from "../core/preview/buildPlan"
+import { isTrustedPreviewArtifactUrl } from "../core/preview/config"
 import type { RepositoryAnalysis } from "../types/analysis"
 import type { CreatePreviewJobRequest, PreviewJob } from "../types/preview"
 
@@ -124,7 +125,9 @@ export function PreviewJobPanel({
         <p>{state.message}</p>
         <button
           className="peephole__secondary"
-          onClick={() => setState({ status: "idle" })}
+          onClick={() =>
+            startPreview(previewApi, request, activeRequest, setState)
+          }
           type="button"
         >
           Retry
@@ -140,15 +143,7 @@ export function PreviewJobPanel({
   const { job } = state
 
   if (job.status === "ready") {
-    return (
-      <section className="peephole__job peephole__job--ready" role="status">
-        <strong>Preview ready</strong>
-        <p>
-          The artifact is ready. Trusted-origin validation and embedding are the
-          next delivery step.
-        </p>
-      </section>
-    )
+    return <ReadyPreview job={job} />
   }
 
   if (job.status === "failed") {
@@ -198,6 +193,42 @@ export function PreviewJobPanel({
       >
         Cancel
       </button>
+    </section>
+  )
+}
+
+function ReadyPreview({ job }: { job: PreviewJob }) {
+  const artifactUrl = job.artifact?.url ?? null
+  const trusted = artifactUrl !== null && isTrustedPreviewArtifactUrl(artifactUrl)
+
+  return (
+    <section className="peephole__job peephole__job--ready" role="status">
+      <strong>Preview ready</strong>
+      {trusted && artifactUrl ? (
+        <>
+          <iframe
+            className="peephole__preview-frame"
+            referrerPolicy="no-referrer"
+            sandbox="allow-scripts allow-same-origin allow-forms"
+            src={artifactUrl}
+            title="Peephole preview"
+          />
+          <a
+            className="peephole__link"
+            href={artifactUrl}
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            Open in a new tab
+          </a>
+        </>
+      ) : (
+        <p>
+          {artifactUrl
+            ? "This build's preview origin is not approved for embedding."
+            : "The artifact is ready but no preview URL was returned."}
+        </p>
+      )}
     </section>
   )
 }

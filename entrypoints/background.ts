@@ -3,10 +3,11 @@ import { RepositoryAnalysisService } from "../core/analyzer/repositoryAnalysisSe
 import { GitHubClient } from "../core/github/client"
 import { KnownRepositoryFilesLoader } from "../core/github/knownFiles"
 import { RepositoryMetadataCache } from "../core/github/repositoryMetadataCache"
+import { getStoredGitHubToken } from "../core/github/tokenStorage"
 import { createSidePanelMessageHandler } from "../core/sidepanel/messages"
 
 export default defineBackground(() => {
-  const githubClient = new GitHubClient()
+  const githubClient = new GitHubClient({ getToken: getStoredGitHubToken })
   const metadataCache = new RepositoryMetadataCache(githubClient)
   const analysisService = new RepositoryAnalysisService(
     metadataCache.load,

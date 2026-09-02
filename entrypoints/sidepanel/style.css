@@ -323,6 +323,15 @@ a {
   border-color: #238636;
 }
 
+.peephole__preview-frame {
+  background: #fff;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  height: 60vh;
+  min-height: 320px;
+  width: 100%;
+}
+
 .peephole__job--ready strong {
   color: #3fb950;
 }

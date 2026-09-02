@@ -90,6 +90,23 @@ describe("PreviewJobPanel", () => {
     expect(container.textContent).toContain("Preview cancelled")
   })
 
+  it("resends the create request when Retry is clicked after a failure", async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("The Peephole preview service could not be reached."))
+      .mockResolvedValueOnce(queuedJob)
+    const api = createApi({ create })
+    const container = await renderPanel(api, roots)
+
+    await act(async () => getButton("Build preview").click())
+    expect(container.textContent).toContain("Preview request failed")
+    expect(create).toHaveBeenCalledTimes(1)
+
+    await act(async () => getButton("Retry").click())
+    expect(create).toHaveBeenCalledTimes(2)
+    expect(container.textContent).toContain("Queued")
+  })
+
   it("polls an active job until it is ready", async () => {
     vi.useFakeTimers()
     const readyJob = { ...queuedJob, status: "ready" as const }
@@ -107,6 +124,44 @@ describe("PreviewJobPanel", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
     expect(container.textContent).toContain("Preview ready")
+  })
+
+  it("embeds a sandboxed iframe for a trusted loopback artifact origin", async () => {
+    const readyJob: PreviewJob = {
+      ...queuedJob,
+      status: "ready",
+      artifact: {
+        url: "http://127.0.0.1:54321/",
+        expiresAt: "2026-09-02T01:00:00.000Z",
+      },
+    }
+    const api = createApi({ create: vi.fn().mockResolvedValue(readyJob) })
+    const container = await renderPanel(api, roots)
+
+    await act(async () => getButton("Build preview").click())
+
+    const iframe = container.querySelector("iframe")
+    expect(iframe?.getAttribute("src")).toBe("http://127.0.0.1:54321/")
+    expect(iframe?.getAttribute("sandbox")).toContain("allow-scripts")
+    expect(iframe?.getAttribute("referrerpolicy")).toBe("no-referrer")
+  })
+
+  it("refuses to embed an artifact from an untrusted origin", async () => {
+    const readyJob: PreviewJob = {
+      ...queuedJob,
+      status: "ready",
+      artifact: {
+        url: "https://attacker.example/",
+        expiresAt: "2026-09-02T01:00:00.000Z",
+      },
+    }
+    const api = createApi({ create: vi.fn().mockResolvedValue(readyJob) })
+    const container = await renderPanel(api, roots)
+
+    await act(async () => getButton("Build preview").click())
+
+    expect(container.querySelector("iframe")).toBeNull()
+    expect(container.textContent).toContain("not approved for embedding")
   })
 
   it("aborts an in-flight creation when the panel is detached", async () => {
