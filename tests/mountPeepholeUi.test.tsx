@@ -6,7 +6,6 @@ import {
   mountPeepholeUi,
   PEEPHOLE_HOST_ID,
 } from "../entrypoints/github.content/mountPeepholeUi"
-import { supportedAnalysis } from "./analysisFixture"
 
 describe("mountPeepholeUi", () => {
   afterEach(() => {
@@ -23,7 +22,7 @@ describe("mountPeepholeUi", () => {
         owner: "react",
         repo: "react",
       },
-      async () => supportedAnalysis,
+      async () => undefined,
     )
     const shadowHost = document.getElementById(PEEPHOLE_HOST_ID)
 

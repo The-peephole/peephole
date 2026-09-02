@@ -1,7 +1,6 @@
 import { createRoot } from "react-dom/client"
 
 import { PeepholeApp } from "../../components/PeepholeApp"
-import type { RepositoryAnalysisLoader } from "../../types/analysis"
 import type { RepositoryIdentity } from "../../types/repository"
 import stylesheet from "./style.css?inline"
 
@@ -15,7 +14,7 @@ export interface MountedPeepholeUi {
 export function mountPeepholeUi(
   target: HTMLElement,
   repository: RepositoryIdentity,
-  loadRepositoryAnalysis: RepositoryAnalysisLoader,
+  openSidePanel: (repository: RepositoryIdentity) => Promise<void>,
 ): MountedPeepholeUi {
   document.querySelector<HTMLElement>("[data-peephole-container]")?.remove()
 
@@ -50,10 +49,7 @@ export function mountPeepholeUi(
 
   const reactRoot = createRoot(appRoot)
   reactRoot.render(
-    <PeepholeApp
-      loadRepositoryAnalysis={loadRepositoryAnalysis}
-      repository={repository}
-    />,
+    <PeepholeApp openSidePanel={openSidePanel} repository={repository} />,
   )
 
   return {

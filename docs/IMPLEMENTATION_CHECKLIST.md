@@ -8,7 +8,7 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Configure linting and formatting
 - [x] Add unit-test setup
 - [x] Produce a Chrome MV3 production build
-- [ ] Add Chrome Side Panel entrypoint and permission
+- [x] Add Chrome Side Panel entrypoint and permission
 - [ ] Document extension-to-preview-API configuration
 
 ## GitHub Integration
@@ -20,7 +20,7 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Remove stale UI outside repository context
 - [x] Reset repository state when identity changes
 - [x] Avoid unsupported Shadow DOM hosts
-- [ ] Open and synchronize the side panel from the user gesture
+- [x] Open and synchronize the side panel from the user gesture
 - [x] Abort or ignore stale analysis responses
 - [ ] Abort or ignore stale preview responses
 

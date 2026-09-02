@@ -3,6 +3,7 @@ import { RepositoryAnalysisService } from "../core/analyzer/repositoryAnalysisSe
 import { GitHubClient } from "../core/github/client"
 import { KnownRepositoryFilesLoader } from "../core/github/knownFiles"
 import { RepositoryMetadataCache } from "../core/github/repositoryMetadataCache"
+import { createSidePanelMessageHandler } from "../core/sidepanel/messages"
 
 export default defineBackground(() => {
   const githubClient = new GitHubClient()
@@ -14,6 +15,12 @@ export default defineBackground(() => {
   const handleMessage = createRepositoryAnalysisMessageHandler(
     analysisService.load,
   )
+  const handleSidePanelMessage = createSidePanelMessageHandler(
+    browser.sidePanel,
+  )
 
-  browser.runtime.onMessage.addListener((message) => handleMessage(message))
+  browser.runtime.onMessage.addListener(
+    (message, sender) =>
+      handleSidePanelMessage(message, sender) ?? handleMessage(message),
+  )
 })

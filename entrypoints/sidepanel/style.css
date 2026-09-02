@@ -1,0 +1,256 @@
+:root {
+  color: #f0f6fc;
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0d1117;
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  min-width: 280px;
+}
+button,
+a {
+  font: inherit;
+}
+
+.peephole-panel {
+  min-height: 100vh;
+  padding: 20px 18px 28px;
+}
+.peephole__header {
+  border-bottom: 1px solid #21262d;
+  margin-bottom: 8px;
+  padding-bottom: 16px;
+}
+.peephole__eyebrow {
+  color: #8b949e;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  margin: 0 0 4px;
+  text-transform: uppercase;
+}
+.peephole__title {
+  font-size: 20px;
+  line-height: 1.3;
+  margin: 0;
+}
+.peephole__details {
+  border-bottom: 1px solid #21262d;
+  margin: 0 0 14px;
+  padding: 8px 0;
+}
+.peephole__detail {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 88px minmax(0, 1fr);
+  padding: 7px 0;
+}
+.peephole__detail dt {
+  color: #8b949e;
+  font-size: 12px;
+}
+.peephole__detail dd {
+  color: #e6edf3;
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.peephole__detail code {
+  background: #161b22;
+  border-radius: 4px;
+  color: #79c0ff;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  padding: 2px 5px;
+}
+.peephole__link {
+  color: #58a6ff;
+  text-decoration: none;
+}
+.peephole__link:hover {
+  text-decoration: underline;
+}
+.peephole__link:focus-visible,
+.peephole__retry:focus-visible,
+.peephole__evidence summary:focus-visible {
+  outline: 2px solid #2f81f7;
+  outline-offset: 2px;
+}
+.peephole__status {
+  align-items: center;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  line-height: 1.45;
+  padding: 11px;
+}
+.peephole__status p {
+  flex: 1;
+  margin: 0;
+}
+.peephole__status--ready,
+.peephole__status--info,
+.peephole__status--blocked {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 2px;
+}
+.peephole__status--ready {
+  border-color: #238636;
+}
+.peephole__status--ready strong {
+  color: #3fb950;
+}
+.peephole__status--info {
+  border-color: #1f6feb;
+}
+.peephole__status--info strong {
+  color: #58a6ff;
+}
+.peephole__status--blocked {
+  border-color: #9e6a03;
+}
+.peephole__status--blocked strong {
+  color: #d29922;
+}
+.peephole__status--ready span,
+.peephole__status--info span,
+.peephole__status--blocked span {
+  color: #8b949e;
+}
+.peephole__status--error {
+  border-color: #da3633;
+  color: #ffb3ad;
+}
+.peephole__retry {
+  background: #21262d;
+  border: 1px solid #8b949e;
+  border-radius: 5px;
+  color: #f0f6fc;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.peephole__retry:hover {
+  background: #30363d;
+}
+.peephole__spinner {
+  animation: peephole-spin 0.8s linear infinite;
+  border: 2px solid #30363d;
+  border-radius: 50%;
+  border-top-color: #58a6ff;
+  height: 14px;
+  width: 14px;
+}
+.peephole__analysis {
+  display: grid;
+  gap: 12px;
+}
+.peephole__section {
+  border-top: 1px solid #21262d;
+  padding-top: 11px;
+}
+.peephole__section h3 {
+  color: #8b949e;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  margin: 0 0 6px;
+  text-transform: uppercase;
+}
+.peephole__section--blocked {
+  border-top-color: #9e6a03;
+}
+.peephole__facts {
+  margin: 0;
+}
+.peephole__facts .peephole__detail {
+  padding: 5px 0;
+}
+.peephole__chips,
+.peephole__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.peephole__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.peephole__chips li {
+  background: #1f2937;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  color: #c9d1d9;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  padding: 3px 7px;
+}
+.peephole__list {
+  color: #c9d1d9;
+  display: grid;
+  font-size: 11px;
+  gap: 5px;
+  line-height: 1.45;
+}
+.peephole__list li {
+  padding-left: 12px;
+  position: relative;
+}
+.peephole__list li::before {
+  color: #8b949e;
+  content: "•";
+  left: 0;
+  position: absolute;
+}
+.peephole__section--blocked .peephole__list li::before {
+  color: #d29922;
+}
+.peephole__muted,
+.peephole__empty p {
+  color: #8b949e;
+  font-size: 12px;
+}
+.peephole__muted {
+  margin: 0;
+}
+.peephole__evidence {
+  border-top: 1px solid #21262d;
+  color: #8b949e;
+  font-size: 11px;
+  padding-top: 10px;
+}
+.peephole__evidence summary {
+  cursor: pointer;
+}
+.peephole__evidence .peephole__list {
+  margin-top: 8px;
+}
+.peephole__evidence p {
+  margin: 8px 0 0;
+}
+.peephole__empty {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  margin-top: 16px;
+  padding: 16px;
+}
+.peephole__empty p {
+  line-height: 1.5;
+  margin: 6px 0 0;
+}
+
+@keyframes peephole-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

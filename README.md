@@ -112,11 +112,13 @@ The exact worker isolation technology is an infrastructure decision, but it must
 
 ## Current Status
 
-The extension shell, commit-pinned repository input, and deterministic analysis slice are implemented:
+Milestones 0-4 are complete. The local development runner has proven both
+golden paths, and Milestone 6 is now in progress:
 
 - repository URL detection,
 - GitHub action insertion,
-- owner/repository panel,
+- a compact GitHub action that opens Chrome Side Panel,
+- tab-specific repository context synchronization across GitHub navigation,
 - idempotent client-side navigation handling,
 - typed GitHub REST metadata client,
 - background service-worker API broker,
@@ -125,9 +127,17 @@ The extension shell, commit-pinned repository input, and deterministic analysis 
 - framework, TypeScript, package-manager, build-plan, environment, deployment, and workspace detection,
 - versioned native-preview eligibility with evidence, warnings, and blockers,
 - lazy loading, request cancellation, rate-limit errors, and commit-aware analysis caching,
-- analysis results rendered in the repository panel.
+- analysis and eligibility rendered in the native side panel,
+- preview control-plane and worker contracts,
+- real local-development adapters for static HTML and root Vite + React/npm
+  golden paths,
+- gVisor adapter code with limits and cleanup wiring, pending verification on
+  a real Linux/gVisor host.
 
-The extension still does not install dependencies or execute repository code. The preview API, isolated runners, artifact hosting, build controls, and native side-panel preview are not implemented yet.
+The extension never installs dependencies or executes repository code. The
+side panel is not yet connected to a deployed preview API: build/cancel
+controls, hosted artifacts, trusted preview embedding, and real gVisor
+infrastructure verification remain unfinished.
 
 ## Documentation
 

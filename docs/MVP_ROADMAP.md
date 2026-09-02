@@ -143,13 +143,19 @@ Add Vue and Svelte only after the same contract and security tests pass.
 
 ## Milestone 6 - Native Side-Panel Preview
 
+**Status:** In progress. Repository context, analysis, eligibility, and errors
+now live in Chrome Side Panel; preview-job controls and trusted preview delivery
+are not connected yet.
+
 **Goal:** Complete the user-facing Peephole flow.
 
-- add Chrome Side Panel entrypoint
-- show analysis, eligibility, progress, and errors
-- start and cancel preview jobs
-- embed only trusted Peephole preview-origin URLs
-- detach stale jobs on GitHub navigation
+- [x] add Chrome Side Panel entrypoint
+- [x] move repository analysis, eligibility, and analysis errors into the panel
+- [x] synchronize repository context across GitHub client-side navigation
+- [ ] show preview job progress and errors
+- [ ] start and cancel preview jobs
+- [ ] embed only trusted Peephole preview-origin URLs
+- [ ] detach stale preview jobs on GitHub navigation
 
 ## Milestone 7 - Security and Reliability Gate
 

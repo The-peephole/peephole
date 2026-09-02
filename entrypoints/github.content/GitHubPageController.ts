@@ -11,10 +11,14 @@ type MountUi = (
   repository: RepositoryIdentity,
 ) => MountedPeepholeUi
 
+type RepositoryChangeListener = (repository: RepositoryIdentity | null) => void
+
 const GITHUB_NAVIGATION_EVENTS = ["turbo:load", "pjax:end", "popstate"]
 
 export class GitHubPageController {
   private currentRepositoryKey: string | null = null
+  private currentContextKey: string | null = null
+  private hasReportedRepositoryContext = false
   private mountedUi: MountedPeepholeUi | null = null
   private mutationObserver: MutationObserver | null = null
   private scheduledFrame: number | null = null
@@ -23,6 +27,8 @@ export class GitHubPageController {
     private readonly document: Document,
     private readonly location: Location,
     private readonly mountUi: MountUi,
+    private readonly onRepositoryChange: RepositoryChangeListener = () =>
+      undefined,
   ) {}
 
   start(): void {
@@ -53,6 +59,7 @@ export class GitHubPageController {
     }
 
     this.removeUi()
+    this.updateRepositoryContext(null)
   }
 
   private readonly scheduleSync = (): void => {
@@ -74,10 +81,12 @@ export class GitHubPageController {
 
     if (!repository) {
       this.removeUi()
+      this.updateRepositoryContext(null)
       return
     }
 
     const repositoryKey = getRepositoryKey(repository)
+    this.updateRepositoryContext(repository)
 
     if (
       this.currentRepositoryKey === repositoryKey &&
@@ -96,6 +105,21 @@ export class GitHubPageController {
 
     this.mountedUi = this.mountUi(target, repository)
     this.currentRepositoryKey = repositoryKey
+  }
+
+  private updateRepositoryContext(repository: RepositoryIdentity | null): void {
+    const nextKey = repository ? getRepositoryKey(repository) : null
+
+    if (
+      this.hasReportedRepositoryContext &&
+      nextKey === this.currentContextKey
+    ) {
+      return
+    }
+
+    this.hasReportedRepositoryContext = true
+    this.currentContextKey = nextKey
+    this.onRepositoryChange(repository)
   }
 
   private removeUi(): void {
