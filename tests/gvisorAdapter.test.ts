@@ -31,7 +31,7 @@ describe("buildOciRuntimeSpec", () => {
 
     expect(spec.process.user).toEqual({ uid: 65534, gid: 65534 })
     expect(spec.process.noNewPrivileges).toBe(true)
-    expect(spec.process.capabilities.bounding).toEqual([])
+    expect(spec.process.capabilities.bounding).toEqual(["CAP_NET_BIND_SERVICE"])
     expect(spec.linux.resources.cpu).toEqual({
       quota: 100_000,
       period: 100_000,
@@ -58,6 +58,7 @@ describe("runsc CLI argument construction", () => {
       "--root",
       "/var/run/peephole/runsc",
       "--network=none",
+      "--overlay2=none",
       "run",
       "--bundle",
       "/var/lib/peephole/jobs/job-1/bundle",

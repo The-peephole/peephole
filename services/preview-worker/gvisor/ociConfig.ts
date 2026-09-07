@@ -63,11 +63,17 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
       args: options.command,
       env: options.env,
       cwd: options.cwd,
+      // CAP_NET_BIND_SERVICE matches gVisor's own default OCI spec
+      // (`runsc spec`) and is otherwise low-risk (only lets a process bind
+      // to a port below 1024, which nothing here needs to do to reach
+      // out); it is included because omitting it is one of a few
+      // differences between this spec and the one that's known to
+      // successfully bring up gVisor's --network=sandbox netstack.
       capabilities: {
-        bounding: [],
-        effective: [],
-        inheritable: [],
-        permitted: [],
+        bounding: ["CAP_NET_BIND_SERVICE"],
+        effective: ["CAP_NET_BIND_SERVICE"],
+        inheritable: ["CAP_NET_BIND_SERVICE"],
+        permitted: ["CAP_NET_BIND_SERVICE"],
         ambient: [],
       },
       noNewPrivileges: true,
@@ -76,11 +82,29 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
     hostname: options.hostname,
     mounts: [
       { destination: "/proc", type: "proc", source: "proc" },
+      { destination: "/dev", type: "tmpfs", source: "tmpfs" },
+      {
+        destination: "/sys",
+        type: "sysfs",
+        source: "sysfs",
+        options: ["nosuid", "noexec", "nodev", "ro"],
+      },
       {
         destination: "/tmp",
         type: "tmpfs",
         source: "tmpfs",
         options: ["nosuid", "nodev", "noexec"],
+      },
+      // Harmless with network "none" (nothing can reach a resolver either
+      // way); with network "sandbox", without this the container's stub
+      // resolver has no nameserver at all and every DNS lookup (e.g. the
+      // npm registry) fails with EAI_AGAIN before a single connection is
+      // attempted.
+      {
+        destination: "/etc/resolv.conf",
+        type: "bind",
+        source: "/etc/resolv.conf",
+        options: ["bind", "ro"],
       },
     ],
     linux: {

@@ -103,9 +103,22 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Real npm install/build/output/publish adapters, proven end to end for
       both golden paths against real GitHub archives
 - [x] `GVisorSandboxProvisioner`/`RunscCommandRunner` written (OCI bundle,
-      non-root uid/gid, CPU/memory/PID quotas, cancellation-safe cleanup) --
-      **not run against a real gVisor host**; verified only via a fake
-      process runner (no Linux kernel in this environment)
+      non-root uid/gid, CPU/memory/PID quotas, cancellation-safe cleanup)
+      and now run against a real gVisor host (`runsc`, WSL2 Ubuntu; see
+      `tests/realGvisorSandbox.test.ts`). This surfaced and fixed five real
+      bugs invisible to the fake-process-runner unit tests: `fs.cp`
+      couldn't copy the base image's `/dev` (ENODEV); `fs.cp` silently
+      rewrote relative symlinks (npm, npx, corepack) to absolute paths
+      pointing at the shared base image instead of the per-job copy;
+      `runsc`'s default root overlay (`root:self`) discarded every write
+      once its container exited, so a later container could never see an
+      earlier one's output; the copied workspace/home directories were
+      owned by whatever uid ran the copy, not the sandboxed uid, so the
+      sandboxed process couldn't write into its own workspace or npm
+      cache; and the container's `/etc/resolv.conf` was never mounted, so
+      any DNS lookup failed outright. All fixed in
+      `gvisorSandboxProvisioner.ts`, `runscCli.ts`, `runscCommandRunner.ts`,
+      and `ociConfig.ts`.
 - [x] Enforce a real, active job wall-clock budget: every install/build
       command's timeout is clamped to the job's remaining time
       (`services/preview-worker/local/jobDeadline.ts`), so
@@ -132,20 +145,41 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       PostgreSQL transaction), so an API crash between the two cannot
       strand a `queued` job that the queue never sees
       (`services/preview-api/postgres/jobStore.ts`)
-- [ ] Create a fresh non-root sandbox per job on a **real** gVisor host
-- [ ] Use frozen dependency installation with registry-only egress (network
-      policy selection exists in the `runsc` CLI wiring; host-side
-      firewall/veth enforcement does not)
+- [x] Create a fresh non-root sandbox per job on a **real** gVisor host --
+      verified: `id -u` inside the sandbox reports 65534, and files it
+      writes are owned by uid/gid 65534 on the host
+      (`tests/realGvisorSandbox.test.ts`)
+- [ ] Use frozen dependency installation with registry-only egress. Real
+      testing found this does not work at all yet, not just
+      unrestricted: a bare `runsc run --network=sandbox` never brings the
+      sandbox's virtual network interface up (`ENETUNREACH` on a raw TCP
+      connect to a bare IP, independent of uid/capabilities/mounts).
+      `runsc do` (gVisor's own "testing only" convenience command) works
+      fine on the same host, so the sandbox netstack itself is not
+      broken -- `do` just performs veth/IP/NAT setup that plain
+      `create`/`run` expects a CNI plugin (or equivalent hand-rolled
+      setup) to have already done, which nothing in this repo does yet.
+      See the class doc on `GVisorSandboxProvisioner` and
+      `RunscCommandRunner`.
 - [ ] Block loopback, private, link-local, and metadata networks
-- [ ] Enforce CPU, memory, and PID limits **on a real gVisor host** (limits
-      are wired into the OCI config; unverified)
+      (blocked on the item above: there is no egress to restrict yet)
+- [x] Enforce PID limits **on a real gVisor host** -- verified: a
+      sandboxed fork bomb against a 16-PID limit fails
+      (`tests/realGvisorSandbox.test.ts`)
+- [ ] Enforce CPU and memory limits **on a real gVisor host** (wired into
+      the OCI config and structurally unit-tested; not yet stress-tested
+      against a real limit-exceeding workload)
 - [x] Publish static artifacts with restrictive headers via
       `LocalArtifactHost` (`services/local-preview/artifactHost.ts`): a
       dedicated loopback HTTP origin per artifact, `cache-control: no-store`,
       `x-content-type-options: nosniff`, a locked-down `permissions-policy`,
       path-traversal/symlink rejection, and 410 once expired -- development-
       only, not the production artifact store
-- [ ] Prepare and maintain the base rootfs image gVisor copies per job
+- [x] Prepare the base rootfs image gVisor copies per job:
+      `scripts/gvisor/build-base-rootfs.sh` (debootstrap minbase + the
+      official Node 24 linux-x64 tarball + ca-certificates); run and
+      verified end to end on a real gVisor host. Maintaining it (rebuild
+      cadence, security patching) is ongoing, not a one-time task.
 
 ## Preview Delivery
 
@@ -187,7 +221,12 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] static HTML and Vite golden-path builds (real network + real npm/vite,
       gated behind `PEEPHOLE_REAL_NETWORK_TESTS=1`; unsandboxed development
       proof, not run through gVisor)
-- [x] gVisor OCI/`runsc` CLI wiring tests (fake process runner; real runsc untested)
+- [x] gVisor OCI/`runsc` CLI wiring tests (fake process runner,
+      `tests/gvisorAdapter.test.ts`) plus real-`runsc` sandbox tests
+      (`tests/realGvisorSandbox.test.ts`, gated on
+      `PEEPHOLE_REAL_GVISOR_TESTS`): non-root uid/gid, cross-container
+      disk persistence, and PID-limit enforcement, all against an actual
+      gVisor host
 - [x] job wall-clock budget and workspace disk-quota enforcement tests
 - [x] orphan-sandbox reaper tests (real directories for the dev reaper,
       fake `runsc list` output for the gVisor reaper)

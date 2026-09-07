@@ -21,9 +21,7 @@ import {
   runscRunArgs,
   type RunscNetworkMode,
 } from "./runscCli"
-
-const SANDBOX_UID = 65534
-const SANDBOX_GID = 65534
+import { SANDBOX_GID, SANDBOX_HOME, SANDBOX_UID } from "./sandboxIdentity"
 
 export interface RunscCommandRunnerOptions {
   runscBinaryPath?: string
@@ -40,13 +38,17 @@ export interface RunscCommandRunnerOptions {
  * rootfs; each container is deleted immediately after it exits.
  *
  * `network` defaults to "none" (no network stack at all). Passing
- * "sandbox" for the install phase gives the process a network namespace,
- * but restricting *that* to npm-registry-only egress is a host-side
- * firewall/veth concern this class does not implement -- see the
- * Milestone 5 report's network-policy section.
+ * "sandbox" for the install phase is meant to give the process a network
+ * namespace with npm-registry egress, but this does not work yet: real
+ * testing against a gVisor host (see gvisorSandboxProvisioner.ts's class
+ * doc) found the sandbox's interface never comes up under a bare
+ * `runsc run --network=sandbox`, so install-phase network access is still
+ * unimplemented, not just unrestricted.
  *
- * UNTESTED IN THIS REPOSITORY (no Linux/runsc available); CLI and OCI
- * wiring is verified via a fake `ProcessRunner` instead.
+ * Command execution itself (non-root uid, on-disk persistence across
+ * containers, resource limits) is verified against a real gVisor host --
+ * see tests/realGvisorSandbox.test.ts. CLI/OCI argument construction also
+ * has fake-`ProcessRunner` unit coverage in tests/gvisorAdapter.test.ts.
  */
 export class RunscCommandRunner implements CommandRunner {
   private readonly runscBinaryPath: string
@@ -78,7 +80,13 @@ export class RunscCommandRunner implements CommandRunner {
     const spec = buildOciRuntimeSpec({
       command: [command, ...args],
       cwd: "/workspace",
-      env: Object.entries(options.env ?? {})
+      // SANDBOX_UID has no passwd entry in the base rootfs beyond the
+      // system-default "nobody", whose home is /nonexistent -- without an
+      // explicit HOME, npm tries to write its cache/log files there and
+      // fails. SANDBOX_HOME must be a writable directory owned by
+      // SANDBOX_UID:SANDBOX_GID baked into the base rootfs image (see
+      // scripts/gvisor/build-base-rootfs.sh).
+      env: Object.entries({ HOME: SANDBOX_HOME, ...options.env })
         .filter((entry): entry is [string, string] => entry[1] !== undefined)
         .map(([key, value]) => `${key}=${value}`),
       uid: SANDBOX_UID,

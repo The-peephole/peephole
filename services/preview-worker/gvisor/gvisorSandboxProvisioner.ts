@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto"
-import { cp, mkdir, rm } from "node:fs/promises"
+import { chmod, chown, cp, mkdir, rm } from "node:fs/promises"
 import path from "node:path"
 
 import { DEFAULT_RUNNER_TIMEOUTS } from "../../../core/runner/runnerLimits"
@@ -8,6 +8,7 @@ import type { GVisorPreviewWorkspace } from "./gvisorWorkspace"
 import { NodeProcessRunner } from "./nodeProcessRunner"
 import type { ProcessRunner } from "./processRunner"
 import { runscDeleteArgs, runscKillArgs } from "./runscCli"
+import { SANDBOX_GID, SANDBOX_HOME, SANDBOX_UID } from "./sandboxIdentity"
 
 export interface GVisorSandboxProvisionerOptions {
   runscBinaryPath?: string
@@ -31,10 +32,16 @@ export interface GVisorSandboxProvisionerOptions {
  * against a job cancelled mid-command) before removing the bundle
  * directory, and is idempotent.
  *
- * UNTESTED IN THIS REPOSITORY: no Linux kernel or `runsc` binary is
- * available in this development environment. Written against documented
- * runsc/OCI runtime-spec behavior; verify on a real gVisor host before
- * production use.
+ * Verified against a real gVisor host (runsc, WSL2 Ubuntu): non-root
+ * execution, writes persisting to disk across containers, and PID-limit
+ * enforcement all confirmed real (see tests/realGvisorSandbox.test.ts).
+ * Network egress for the install phase (--network=sandbox) is not: manual
+ * testing found that a bare `runsc run --network=sandbox`, unlike
+ * `runsc do`, never brings the sandbox's network interface up (ENETUNREACH
+ * even for a raw TCP connect) -- `runsc do` performs its own veth/IP/NAT
+ * setup that normally comes from a CNI plugin under a full container
+ * platform, and this class does not do that yet. See
+ * IMPLEMENTATION_CHECKLIST.md, "Isolated Static Runner".
  */
 export class GVisorSandboxProvisioner implements SandboxProvisioner {
   private readonly runscBinaryPath: string
@@ -63,8 +70,40 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
     const rootDir = path.join(containerRoot, "workspace")
 
     await mkdir(bundleDir, { recursive: true })
-    await cp(this.options.baseRootfsImage, containerRoot, { recursive: true })
+    await cp(this.options.baseRootfsImage, containerRoot, {
+      recursive: true,
+      // The OCI runtime populates its own /dev (null, zero, tty, ptmx,
+      // ...); fs.cp can't "copy" those device nodes as regular files
+      // (ENODEV), so the base image's /dev, if any, is never carried into
+      // the bundle.
+      filter: (source) =>
+        !isBaseRootfsDevPath(this.options.baseRootfsImage, source),
+      // Without this, fs.cp resolves each symlink's relative target to an
+      // absolute host path (e.g. base rootfs's npm -> ../lib/node_modules/...
+      // becomes .../<baseRootfsImage>/usr/local/lib/node_modules/...), so
+      // the copy's symlinks point back at the shared base image instead of
+      // themselves -- which the sandboxed container can't see at all,
+      // breaking every symlinked executable (npm, npx, corepack).
+      verbatimSymlinks: true,
+    })
     await mkdir(rootDir, { recursive: true })
+    // Host-side extraction/output code and the sandboxed process (a fixed,
+    // unprivileged uid/gid with no relation to whatever uid this
+    // orchestrator runs as -- see SANDBOX_UID/SANDBOX_GID in
+    // runscCommandRunner.ts) both need to write into rootDir; nothing in it
+    // is sensitive (it becomes this job's downloaded source and build
+    // output, not secrets), and the directory is destroyed with the rest of
+    // the bundle when the job ends.
+    await chmod(rootDir, 0o777)
+    // fs.cp does not preserve source ownership -- the copy is owned by
+    // whichever uid this orchestrator runs as, not the base image's
+    // SANDBOX_UID:SANDBOX_GID, so the sandboxed process's own home
+    // directory (npm's cache/config/log location) needs the same repair.
+    await chown(
+      path.join(containerRoot, SANDBOX_HOME),
+      SANDBOX_UID,
+      SANDBOX_GID,
+    )
 
     const deadline = this.now().getTime() + this.jobTimeoutMs
     const containers = new Set<string>()
@@ -109,4 +148,9 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
       },
     }
   }
+}
+
+function isBaseRootfsDevPath(baseRootfsImage: string, source: string): boolean {
+  const relative = path.relative(baseRootfsImage, source)
+  return relative === "dev" || relative.startsWith(`dev${path.sep}`)
 }
