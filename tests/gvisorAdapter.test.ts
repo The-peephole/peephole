@@ -1,5 +1,4 @@
-import { readFile } from "node:fs/promises"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -109,6 +108,12 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
     baseRootfsImage = await mkdtemp(
       path.join(os.tmpdir(), "peephole-base-rootfs-"),
     )
+    // A real base rootfs image must provide SANDBOX_HOME (see
+    // sandboxIdentity.ts and scripts/gvisor/build-base-rootfs.sh) --
+    // GVisorSandboxProvisioner.allocate chowns it after copying.
+    await mkdir(path.join(baseRootfsImage, "home", "sandbox"), {
+      recursive: true,
+    })
     bundlesRootDir = await mkdtemp(path.join(os.tmpdir(), "peephole-bundles-"))
   })
 
