@@ -38,12 +38,11 @@ export interface RunscCommandRunnerOptions {
  * rootfs; each container is deleted immediately after it exits.
  *
  * `network` defaults to "none" (no network stack at all). Passing
- * "sandbox" for the install phase is meant to give the process a network
- * namespace with npm-registry egress, but this does not work yet: real
- * testing against a gVisor host (see gvisorSandboxProvisioner.ts's class
- * doc) found the sandbox's interface never comes up under a bare
- * `runsc run --network=sandbox`, so install-phase network access is still
- * unimplemented, not just unrestricted.
+ * "sandbox" gives the process a real, routable network namespace (via
+ * `workspace.ensureNetworkNamespace()`, see gvisorSandboxProvisioner.ts)
+ * with outbound NAT and cloud metadata/link-local blocked -- npm-registry-
+ * only egress is not implemented (the registry's IPs aren't stable enough
+ * to allowlist directly); see VethNatNetworkProvisioner's doc comment.
  *
  * Command execution itself (non-root uid, on-disk persistence across
  * containers, resource limits) is verified against a real gVisor host --
@@ -77,6 +76,11 @@ export class RunscCommandRunner implements CommandRunner {
     const containerId = `${workspace.id}-${randomBytes(4).toString("hex")}`
     sandbox.registerContainer(containerId)
 
+    const networkNamespacePath =
+      this.network === "sandbox"
+        ? await sandbox.ensureNetworkNamespace()
+        : undefined
+
     const spec = buildOciRuntimeSpec({
       command: [command, ...args],
       cwd: "/workspace",
@@ -93,6 +97,7 @@ export class RunscCommandRunner implements CommandRunner {
       gid: SANDBOX_GID,
       hostname: "peephole-preview",
       resourceLimits: this.resourceLimits,
+      networkNamespacePath,
     })
 
     await writeFile(

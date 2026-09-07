@@ -7,32 +7,19 @@ import { GVisorSandboxProvisioner } from "../services/preview-worker/gvisor/gvis
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
 import { RunscCommandRunner } from "../services/preview-worker/gvisor/runscCommandRunner"
 
-// Requires a real Linux host with runsc on PATH and root (or equivalent)
-// privilege, plus a prepared base rootfs image (see
+// Requires a real Linux host with runsc, ip, and iptables on PATH and root
+// (or equivalent) privilege, plus a prepared base rootfs image (see
 // scripts/gvisor/build-base-rootfs.sh) -- opt-in, separate from
 // PEEPHOLE_REAL_NETWORK_TESTS, since it needs a real Linux kernel, not just
 // network access.
 //
 // This exercises GVisorSandboxProvisioner/RunscCommandRunner directly
-// rather than through the full PreviewJobWorker pipeline: a real npm
-// install needs outbound network from inside the sandbox
-// (--network=sandbox), and manual testing against a real gVisor host
-// (WSL2 Ubuntu) found that a bare `runsc run --network=sandbox` never
-// brings the sandbox's virtual interface up -- even a raw TCP connect to a
-// bare IP fails with ENETUNREACH, regardless of uid, capabilities, or
-// mounts. `runsc do` (which is its own documented "testing only"
-// convenience path, not what RunscCommandRunner calls) DOES work,
-// confirming gVisor's sandbox netstack is not fundamentally broken on this
-// kernel -- `do` just performs veth/IP/NAT setup that `create`/`run` alone
-// does not, which normally comes from a CNI plugin under a full container
-// platform (Docker/containerd). Giving RunscCommandRunner real network
-// egress needs that same setup done explicitly; it does not exist yet
-// (see IMPLEMENTATION_CHECKLIST.md, "Isolated Static Runner").
-// So this file verifies everything network-independent instead: real
-// non-root execution, real writes landing on host disk across two
-// containers sharing one on-disk rootfs (the exact pattern
-// NpmDependencyInstaller + NpmBuildExecutor rely on), and real PID-limit
-// enforcement.
+// rather than through the full PreviewJobWorker pipeline: real non-root
+// execution, real writes landing on host disk across two containers
+// sharing one on-disk rootfs (the exact pattern NpmDependencyInstaller +
+// NpmBuildExecutor rely on), real PID-limit enforcement, and -- since
+// VethNatNetworkProvisioner replicates runsc do's veth/NAT setup -- real
+// outbound network access and real metadata/link-local blocking.
 const baseRootfsImage =
   process.env.PEEPHOLE_GVISOR_BASE_ROOTFS ?? "/var/lib/peephole/base-rootfs"
 
@@ -137,5 +124,91 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
         }),
       ).rejects.toThrow()
     }, 30_000)
+
+    it("reaches the real internet through network: sandbox", async () => {
+      const ws = await allocate("real-gvisor-net")
+      const runner = new RunscCommandRunner({ network: "sandbox" })
+
+      await runner.run(
+        ws,
+        "node",
+        ["-e", fetchToFileScript("/workspace/fetch.json")],
+        {
+          timeoutMs: 20_000,
+          env: { PATH: process.env.PATH ?? "" },
+        },
+      )
+
+      const body = await readFile(path.join(ws.rootDir, "fetch.json"), "utf8")
+      expect(JSON.parse(body)).toMatchObject({ name: "yallist" })
+    }, 30_000)
+
+    it("blocks the cloud metadata address even with network: sandbox", async () => {
+      const ws = await allocate("real-gvisor-metadata")
+      const runner = new RunscCommandRunner({ network: "sandbox" })
+
+      await expect(
+        runner.run(ws, "node", ["-e", metadataProbeScript], {
+          timeoutMs: 10_000,
+          env: { PATH: process.env.PATH ?? "" },
+        }),
+      ).rejects.toThrow()
+    }, 20_000)
+
+    it("gives concurrent jobs independent, non-conflicting networks", async () => {
+      const wsA = await allocate("real-gvisor-net-a")
+      const runnerA = new RunscCommandRunner({ network: "sandbox" })
+      const provisionerB = new GVisorSandboxProvisioner({
+        baseRootfsImage,
+        bundlesRootDir: await mkdtemp(
+          path.join(os.tmpdir(), "peephole-real-gvisor-"),
+        ),
+      })
+      const wsB = await provisionerB.allocate("real-gvisor-net-b")
+      const runnerB = new RunscCommandRunner({ network: "sandbox" })
+
+      try {
+        await Promise.all([
+          runnerA.run(
+            wsA,
+            "node",
+            ["-e", fetchToFileScript("/workspace/out.json")],
+            {
+              timeoutMs: 20_000,
+              env: { PATH: process.env.PATH ?? "" },
+            },
+          ),
+          runnerB.run(
+            wsB,
+            "node",
+            ["-e", fetchToFileScript("/workspace/out.json")],
+            {
+              timeoutMs: 20_000,
+              env: { PATH: process.env.PATH ?? "" },
+            },
+          ),
+        ])
+
+        const bodyA = JSON.parse(
+          await readFile(path.join(wsA.rootDir, "out.json"), "utf8"),
+        )
+        const bodyB = JSON.parse(
+          await readFile(path.join(wsB.rootDir, "out.json"), "utf8"),
+        )
+        expect(bodyA).toMatchObject({ name: "yallist" })
+        expect(bodyB).toMatchObject({ name: "yallist" })
+      } finally {
+        await wsB.destroy()
+      }
+    }, 30_000)
   },
 )
+
+// The base rootfs image (scripts/gvisor/build-base-rootfs.sh) has no
+// wget/curl, only node -- these are `node -e` scripts, not shell.
+function fetchToFileScript(outFile: string): string {
+  return `fetch('https://registry.npmjs.org/yallist',{signal:AbortSignal.timeout(15000)}).then(r=>r.text()).then(t=>require('fs').writeFileSync(${JSON.stringify(outFile)},t)).catch(e=>{console.error(String(e));process.exit(1)})`
+}
+
+const metadataProbeScript =
+  "fetch('http://169.254.169.254/',{signal:AbortSignal.timeout(5000)}).then(()=>{console.log('REACHED');process.exit(0)}).catch(e=>{console.error('BLOCKED',String(e));process.exit(1)})"

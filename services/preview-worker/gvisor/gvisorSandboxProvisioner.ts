@@ -5,6 +5,8 @@ import path from "node:path"
 import { DEFAULT_RUNNER_TIMEOUTS } from "../../../core/runner/runnerLimits"
 import type { SandboxProvisioner } from "../ports"
 import type { GVisorPreviewWorkspace } from "./gvisorWorkspace"
+import type { NetworkNamespaceHandle } from "./networkNamespace"
+import { VethNatNetworkProvisioner } from "./networkNamespace"
 import { NodeProcessRunner } from "./nodeProcessRunner"
 import type { ProcessRunner } from "./processRunner"
 import { runscDeleteArgs, runscKillArgs } from "./runscCli"
@@ -22,6 +24,7 @@ export interface GVisorSandboxProvisionerOptions {
   baseRootfsImage: string
   jobTimeoutMs?: number
   processRunner?: ProcessRunner
+  networkProvisioner?: VethNatNetworkProvisioner
   now?: () => Date
 }
 
@@ -35,13 +38,17 @@ export interface GVisorSandboxProvisionerOptions {
  * Verified against a real gVisor host (runsc, WSL2 Ubuntu): non-root
  * execution, writes persisting to disk across containers, and PID-limit
  * enforcement all confirmed real (see tests/realGvisorSandbox.test.ts).
- * Network egress for the install phase (--network=sandbox) is not: manual
- * testing found that a bare `runsc run --network=sandbox`, unlike
- * `runsc do`, never brings the sandbox's network interface up (ENETUNREACH
- * even for a raw TCP connect) -- `runsc do` performs its own veth/IP/NAT
- * setup that normally comes from a CNI plugin under a full container
- * platform, and this class does not do that yet. See
- * IMPLEMENTATION_CHECKLIST.md, "Isolated Static Runner".
+ *
+ * Network egress: a bare `runsc run --network=sandbox` never brings the
+ * sandbox's interface up on its own (ENETUNREACH even for a raw TCP
+ * connect) -- unlike `runsc do`, which performs its own veth/IP/NAT setup
+ * that would normally come from a CNI plugin under a full container
+ * platform. `ensureNetworkNamespace()` (lazy, memoized per workspace)
+ * replicates that setup via `VethNatNetworkProvisioner`, giving each job
+ * its own non-conflicting subnet; `RunscCommandRunner` calls it and joins
+ * the resulting namespace when constructed with `network: "sandbox"`.
+ * See that provisioner's doc comment for what it does and does not
+ * restrict.
  */
 export class GVisorSandboxProvisioner implements SandboxProvisioner {
   private readonly runscBinaryPath: string
@@ -49,6 +56,7 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
   private readonly bundlesRootDir: string
   private readonly jobTimeoutMs: number
   private readonly processRunner: ProcessRunner
+  private readonly networkProvisioner: VethNatNetworkProvisioner
   private readonly now: () => Date
 
   constructor(private readonly options: GVisorSandboxProvisionerOptions) {
@@ -58,6 +66,9 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
     this.jobTimeoutMs =
       options.jobTimeoutMs ?? DEFAULT_RUNNER_TIMEOUTS.totalJobTimeoutMs
     this.processRunner = options.processRunner ?? new NodeProcessRunner()
+    this.networkProvisioner =
+      options.networkProvisioner ??
+      new VethNatNetworkProvisioner({ processRunner: this.processRunner })
     this.now = options.now ?? (() => new Date())
   }
 
@@ -116,9 +127,11 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
     const deadline = this.now().getTime() + this.jobTimeoutMs
     const containers = new Set<string>()
     let destroyed = false
+    let networkNamespace: Promise<NetworkNamespaceHandle> | null = null
     const runscRootDir = this.runscRootDir
     const runscBinaryPath = this.runscBinaryPath
     const processRunner = this.processRunner
+    const networkProvisioner = this.networkProvisioner
     const now = this.now
 
     return {
@@ -128,6 +141,10 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
       remainingMs: () => deadline - now().getTime(),
       registerContainer: (containerId) => containers.add(containerId),
       listContainers: () => Array.from(containers),
+      ensureNetworkNamespace: async () => {
+        networkNamespace ??= networkProvisioner.create(jobId)
+        return (await networkNamespace).path
+      },
       destroy: async () => {
         if (destroyed) {
           return
@@ -149,6 +166,12 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
               runscDeleteArgs({ runscRootDir }, containerId),
               { timeoutMs: 10_000 },
             )
+            .catch(() => undefined)
+        }
+
+        if (networkNamespace) {
+          await networkNamespace
+            .then((handle) => handle.teardown())
             .catch(() => undefined)
         }
 

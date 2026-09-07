@@ -8,6 +8,15 @@ export interface OciConfigOptions {
   gid: number
   hostname: string
   resourceLimits: SandboxResourceLimits
+  /**
+   * Join this pre-existing network namespace (e.g.
+   * `/var/run/netns/peephole-123`, from VethNatNetworkProvisioner)
+   * instead of runsc creating a fresh, unconfigured one. A bare
+   * `{ type: "network" }` namespace has no interface, address, or route
+   * -- gVisor's --network=sandbox netstack then has nothing to attach to,
+   * so every connection fails with ENETUNREACH.
+   */
+  networkNamespacePath?: string
 }
 
 export interface OciRuntimeSpec {
@@ -36,7 +45,7 @@ export interface OciRuntimeSpec {
     options?: string[]
   }>
   linux: {
-    namespaces: Array<{ type: string }>
+    namespaces: Array<{ type: string; path?: string }>
     resources: {
       cpu: { quota: number; period: number }
       memory: { limit: number }
@@ -110,7 +119,9 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
     linux: {
       namespaces: [
         { type: "pid" },
-        { type: "network" },
+        options.networkNamespacePath
+          ? { type: "network", path: options.networkNamespacePath }
+          : { type: "network" },
         { type: "ipc" },
         { type: "uts" },
         { type: "mount" },

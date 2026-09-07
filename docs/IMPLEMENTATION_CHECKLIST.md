@@ -149,20 +149,33 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       verified: `id -u` inside the sandbox reports 65534, and files it
       writes are owned by uid/gid 65534 on the host
       (`tests/realGvisorSandbox.test.ts`)
-- [ ] Use frozen dependency installation with registry-only egress. Real
-      testing found this does not work at all yet, not just
-      unrestricted: a bare `runsc run --network=sandbox` never brings the
-      sandbox's virtual network interface up (`ENETUNREACH` on a raw TCP
-      connect to a bare IP, independent of uid/capabilities/mounts).
-      `runsc do` (gVisor's own "testing only" convenience command) works
-      fine on the same host, so the sandbox netstack itself is not
-      broken -- `do` just performs veth/IP/NAT setup that plain
-      `create`/`run` expects a CNI plugin (or equivalent hand-rolled
-      setup) to have already done, which nothing in this repo does yet.
-      See the class doc on `GVisorSandboxProvisioner` and
-      `RunscCommandRunner`.
-- [ ] Block loopback, private, link-local, and metadata networks
-      (blocked on the item above: there is no egress to restrict yet)
+- [x] Give the sandbox real network egress: `VethNatNetworkProvisioner`
+      (`services/preview-worker/gvisor/networkNamespace.ts`) replicates
+      what `runsc do` does internally -- a veth pair, one end moved into a
+      fresh namespace the OCI spec joins via its `path`, addressed as a
+      /30, NAT'd through the host's discovered default interface --
+      because a bare `runsc run --network=sandbox` never brings its own
+      interface up on its own (a CNI plugin normally does this under a
+      full container platform). `SubnetAllocator` gives every job a
+      non-conflicting /30 out of a dedicated `10.200.0.0/16` pool via a
+      file-lease-based IPAM, so concurrent jobs don't collide -- verified
+      concurrently and end to end (real `npm ci` reaching the real npm
+      registry) in `tests/realGvisorSandbox.test.ts` and
+      `tests/realGvisorGoldenPath.test.ts`. **Not done**: restricting
+      egress to *only* the npm registry -- its IPs (Fastly-fronted)
+      aren't stable enough to allowlist directly, so install-phase egress
+      is full outbound internet minus the block below, not
+      registry-only.
+- [x] Block cloud metadata and the rest of link-local (169.254.0.0/16,
+      which covers 169.254.169.254 on every major cloud) via an `iptables
+      -I FORWARD` DROP rule evaluated before the NAT ACCEPT rules --
+      verified in `tests/realGvisorSandbox.test.ts` ("blocks the cloud
+      metadata address"). **Not done**: blocking the rest of RFC1918
+      (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) -- which private ranges
+      are safe to block depends on the deployment's own network topology
+      (this host's own default route is itself a private address under
+      WSL2), so this needs a deployment-specific decision, not a
+      one-size-fits-all rule.
 - [x] Enforce PID limits **on a real gVisor host** -- verified: a
       sandboxed fork bomb against a 16-PID limit fails
       (`tests/realGvisorSandbox.test.ts`)
@@ -222,11 +235,17 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       gated behind `PEEPHOLE_REAL_NETWORK_TESTS=1`; unsandboxed development
       proof, not run through gVisor)
 - [x] gVisor OCI/`runsc` CLI wiring tests (fake process runner,
-      `tests/gvisorAdapter.test.ts`) plus real-`runsc` sandbox tests
+      `tests/gvisorAdapter.test.ts`), veth/NAT command-sequence and IPAM
+      tests (fake process runner, `tests/networkNamespace.test.ts`,
+      `tests/subnetAllocator.test.ts`), plus real-`runsc` sandbox tests
       (`tests/realGvisorSandbox.test.ts`, gated on
       `PEEPHOLE_REAL_GVISOR_TESTS`): non-root uid/gid, cross-container
-      disk persistence, and PID-limit enforcement, all against an actual
-      gVisor host
+      disk persistence, PID-limit enforcement, real network egress,
+      metadata blocking, and concurrent-job network isolation, all
+      against an actual gVisor host -- plus a full sandboxed golden-path
+      test (`tests/realGvisorGoldenPath.test.ts`, same gate): real `npm
+      ci` + `npm run build` through the actual `PreviewJobWorker`
+      pipeline, gVisor end to end
 - [x] job wall-clock budget and workspace disk-quota enforcement tests
 - [x] orphan-sandbox reaper tests (real directories for the dev reaper,
       fake `runsc list` output for the gVisor reaper)

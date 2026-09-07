@@ -11,6 +11,13 @@ export interface GVisorPreviewWorkspace extends LocalPreviewWorkspace {
   readonly bundleDir: string
   registerContainer(containerId: string): void
   listContainers(): string[]
+  /**
+   * Lazily creates (on first call) a real, routable network namespace for
+   * this job and returns its path, reusing it for every later call so a
+   * job's install phase only ever pays veth/NAT setup once even if it
+   * runs multiple commands. Torn down by `destroy()`.
+   */
+  ensureNetworkNamespace(): Promise<string>
 }
 
 export function asGVisorWorkspace(
