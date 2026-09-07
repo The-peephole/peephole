@@ -36,6 +36,7 @@ export class NpmDependencyInstaller implements DependencyInstaller {
     workspace: PreviewWorkspace,
     _archive: FetchedArchive,
     plan: BuildPlan,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (plan.packageManager !== "npm") {
       throw new Error(
@@ -44,9 +45,12 @@ export class NpmDependencyInstaller implements DependencyInstaller {
     }
 
     if (plan.installCommand !== "npm ci") {
-      throw new Error(`Unexpected install command: ${String(plan.installCommand)}`)
+      throw new Error(
+        `Unexpected install command: ${String(plan.installCommand)}`,
+      )
     }
 
+    signal?.throwIfAborted()
     const local = asLocalWorkspace(workspace)
     assertTimeRemaining(local)
 
@@ -54,6 +58,7 @@ export class NpmDependencyInstaller implements DependencyInstaller {
       local,
       plan.repository.commitSha,
       this.byteStore,
+      signal,
     )
 
     const lockfilePath = path.join(local.rootDir, "package-lock.json")
@@ -73,6 +78,7 @@ export class NpmDependencyInstaller implements DependencyInstaller {
       resolveNpmExecutable(),
       ["ci", "--no-audit", "--no-fund"],
       {
+        signal,
         timeoutMs: effectiveTimeoutMs(
           local,
           this.options.timeoutMs ?? DEFAULT_RUNNER_TIMEOUTS.buildTimeoutMs,
@@ -84,12 +90,11 @@ export class NpmDependencyInstaller implements DependencyInstaller {
     if (
       await directorySizeExceeds(
         local.rootDir,
-        this.options.maxWorkspaceBytes ?? DEFAULT_ARCHIVE_LIMITS.maxExpandedBytes,
+        this.options.maxWorkspaceBytes ??
+          DEFAULT_ARCHIVE_LIMITS.maxExpandedBytes,
       )
     ) {
-      throw new Error(
-        "Installed dependencies exceed the workspace size limit.",
-      )
+      throw new Error("Installed dependencies exceed the workspace size limit.")
     }
   }
 }

@@ -89,13 +89,17 @@ export class PostgresPreviewQueue
       : null
   }
 
-  async acknowledge(jobId: string, workerId: string): Promise<boolean> {
+  async acknowledge(
+    jobId: string,
+    workerId: string,
+    attempt: number,
+  ): Promise<boolean> {
     const result = await this.database.query(
       `
         DELETE FROM peephole_preview_queue
-        WHERE job_id = $1 AND status = 'leased' AND lease_owner = $2
+        WHERE job_id = $1 AND status = 'leased' AND lease_owner = $2 AND attempts = $3
       `,
-      [jobId, workerId],
+      [jobId, workerId, attempt],
     )
     return result.rowCount === 1
   }
@@ -104,6 +108,7 @@ export class PostgresPreviewQueue
     jobId: string,
     workerId: string,
     availableAt: Date,
+    attempt: number,
   ): Promise<boolean> {
     const result = await this.database.query(
       `
@@ -113,9 +118,28 @@ export class PostgresPreviewQueue
             lease_owner = NULL,
             lease_expires_at = NULL,
             updated_at = now()
-        WHERE job_id = $1 AND status = 'leased' AND lease_owner = $2
+        WHERE job_id = $1 AND status = 'leased' AND lease_owner = $2 AND attempts = $4
       `,
-      [jobId, workerId, availableAt],
+      [jobId, workerId, availableAt, attempt],
+    )
+    return result.rowCount === 1
+  }
+
+  async renew(
+    jobId: string,
+    workerId: string,
+    attempt: number,
+    leaseMs: number,
+  ): Promise<boolean> {
+    validateWorkerLease(workerId, leaseMs)
+    const result = await this.database.query(
+      `
+      UPDATE peephole_preview_queue
+      SET lease_expires_at = clock_timestamp() + ($4::double precision * interval '1 millisecond'), updated_at = clock_timestamp()
+      WHERE job_id = $1 AND status = 'leased' AND lease_owner = $2 AND attempts = $3
+        AND lease_expires_at > clock_timestamp()
+    `,
+      [jobId, workerId, attempt, leaseMs],
     )
     return result.rowCount === 1
   }

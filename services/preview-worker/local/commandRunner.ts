@@ -2,6 +2,7 @@ import type { LocalPreviewWorkspace } from "./localWorkspace"
 
 export interface CommandRunOptions {
   timeoutMs: number
+  signal?: AbortSignal
   env?: Readonly<Record<string, string | undefined>>
 }
 

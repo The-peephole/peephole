@@ -1,6 +1,6 @@
 import type { RepositoryIdentity, RepositoryMetadata } from "./repository"
 
-export const ANALYZER_VERSION = "0.1.0"
+export const ANALYZER_VERSION = "0.1.1"
 export const PREVIEW_CONTRACT_VERSION = "static-v1"
 
 export type Framework =
@@ -22,6 +22,7 @@ export type PreviewMode =
 export interface PreviewBlocker {
   code:
     | "UNSUPPORTED_FRAMEWORK"
+    | "RUNNER_TARGET_UNAVAILABLE"
     | "UNKNOWN_PACKAGE_MANAGER"
     | "CONFLICTING_LOCKFILES"
     | "MALFORMED_PACKAGE_JSON"

@@ -2,7 +2,7 @@
 
 import { act } from "react"
 import { createRoot } from "react-dom/client"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { PreviewJobPanel } from "../components/PreviewJobPanel"
 import type { PreviewApi } from "../core/preview/apiClient"
@@ -48,9 +48,13 @@ const queuedJob: PreviewJob = {
 
 describe("PreviewJobPanel", () => {
   const roots: Array<ReturnType<typeof createRoot>> = []
+  beforeEach(() => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(queuedJob.createdAt))
+  })
 
   afterEach(() => {
     vi.useRealTimers()
+    vi.restoreAllMocks()
     for (const root of roots) act(() => root.unmount())
     roots.length = 0
     document.body.innerHTML = ""
@@ -93,7 +97,9 @@ describe("PreviewJobPanel", () => {
   it("resends the create request when Retry is clicked after a failure", async () => {
     const create = vi
       .fn()
-      .mockRejectedValueOnce(new Error("The Peephole preview service could not be reached."))
+      .mockRejectedValueOnce(
+        new Error("The Peephole preview service could not be reached."),
+      )
       .mockResolvedValueOnce(queuedJob)
     const api = createApi({ create })
     const container = await renderPanel(api, roots)
@@ -180,6 +186,58 @@ describe("PreviewJobPanel", () => {
     const root = roots.pop()
     await act(async () => root?.unmount())
     expect(signal?.aborted).toBe(true)
+  })
+
+  it("expires a ready preview, removes the iframe, and offers a new build", async () => {
+    vi.useFakeTimers()
+    const ready: PreviewJob = {
+      ...queuedJob,
+      status: "ready",
+      expiresAt: new Date(Date.now() + 1000).toISOString(),
+      artifact: {
+        url: "http://127.0.0.1:54321/",
+        expiresAt: new Date(Date.now() + 1000).toISOString(),
+      },
+    }
+    const api = createApi({ create: vi.fn().mockResolvedValue(ready) })
+    const container = await renderPanel(api, roots)
+    await act(async () => getButton("Build preview").click())
+    expect(container.querySelector("iframe")).not.toBeNull()
+    await act(async () => vi.advanceTimersByTimeAsync(1000))
+    expect(container.querySelector("iframe")).toBeNull()
+    expect(container.textContent).toContain("Preview expired")
+    expect(getButton("Build again")).toBeDefined()
+  })
+
+  it("rechecks the existing job after a polling failure without creating another build", async () => {
+    vi.useFakeTimers()
+    const get = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Temporary network failure"))
+      .mockResolvedValue({ ...queuedJob, status: "building" })
+    const api = createApi({ create: vi.fn().mockResolvedValue(queuedJob), get })
+    const container = await renderPanel(api, roots, 10)
+    await act(async () => getButton("Build preview").click())
+    await act(async () => vi.advanceTimersByTimeAsync(10))
+    expect(container.textContent).toContain("Temporary network failure")
+    await act(async () => getButton("Check status").click())
+    await act(async () => vi.advanceTimersByTimeAsync(10))
+    expect(container.textContent).toContain("Building preview")
+    expect(api.create).toHaveBeenCalledTimes(1)
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+
+  it("reuses the idempotency key when a create response is lost", async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Response lost"))
+      .mockResolvedValue(queuedJob)
+    await renderPanel(createApi({ create }), roots)
+    await act(async () => getButton("Build preview").click())
+    await act(async () => getButton("Retry").click())
+    expect(create.mock.calls[0]?.[1].idempotencyKey).toBe(
+      create.mock.calls[1]?.[1].idempotencyKey,
+    )
   })
 
   it("does not offer a job for an unsupported analysis", async () => {

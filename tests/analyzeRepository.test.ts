@@ -74,7 +74,8 @@ describe("analyzeRepository", () => {
 
     expect(analysis.technologies.framework).toBe(expectedFramework)
     expect(analysis.packageManager).toBe("pnpm")
-    expect(analysis.preview.mode).toBe("native-static-build")
+    expect(analysis.preview.mode).toBe("unsupported")
+    expect(blockerCodes(analysis)).toContain("RUNNER_TARGET_UNAVAILABLE")
   })
 
   it("supports a package-free static root", () => {
@@ -275,7 +276,9 @@ describe("analyzeRepository", () => {
 
       expect(analysis.packageManager).toBe(expectedManager)
       expect(analysis.runtime.installCommand).toBe(expectedInstall)
-      expect(analysis.preview.mode).toBe("native-static-build")
+      expect(analysis.preview.mode).toBe(
+        expectedManager === "npm" ? "native-static-build" : "unsupported",
+      )
     },
   )
 })

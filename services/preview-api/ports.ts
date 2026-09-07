@@ -29,7 +29,7 @@ export interface PreviewJobStore {
     idempotencyKey: string
     requestFingerprint: string
     job: StoredPreviewJob
-  }): Promise<{ created: boolean; job: StoredPreviewJob }>
+  }): Promise<{ created: boolean; job: StoredPreviewJob; enqueued?: boolean }>
   update(
     jobId: string,
     update: (current: StoredPreviewJob) => StoredPreviewJob,
@@ -52,8 +52,23 @@ export interface PreviewQueueConsumer {
     now: Date,
     leaseMs: number,
   ): Promise<PreviewQueueLease | null>
-  acknowledge(jobId: string, workerId: string): Promise<boolean>
-  release(jobId: string, workerId: string, availableAt: Date): Promise<boolean>
+  acknowledge(
+    jobId: string,
+    workerId: string,
+    attempt: number,
+  ): Promise<boolean>
+  release(
+    jobId: string,
+    workerId: string,
+    availableAt: Date,
+    attempt: number,
+  ): Promise<boolean>
+  renew(
+    jobId: string,
+    workerId: string,
+    attempt: number,
+    leaseMs: number,
+  ): Promise<boolean>
 }
 
 export interface PreviewArtifactCache {

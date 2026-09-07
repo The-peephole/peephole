@@ -7,6 +7,7 @@ import type {
   PreviewRepositoryRef,
   RunnablePackageManager,
 } from "../../types/preview"
+import { isImplementedRunnerTarget } from "./runnerSupport"
 
 const COMMIT_SHA_PATTERN = /^[a-f\d]{40}$/i
 const OWNER_PATTERN = /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i
@@ -45,14 +46,14 @@ export function createBuildPlanFromAnalysis(
   analysis: RepositoryAnalysis,
 ): BuildPlan | null {
   const framework = analysis.technologies.framework
-  const isSupportedFramework =
-    framework === "static" ||
-    framework === "react-vite" ||
-    framework === "vue-vite" ||
-    framework === "svelte-vite"
+  const isSupportedFramework = isImplementedRunnerTarget(
+    framework,
+    analysis.preview.packageManager,
+  )
 
   if (
     !isSupportedFramework ||
+    analysis.preview.mode !== "native-static-build" ||
     analysis.preview.blockers.length > 0 ||
     analysis.preview.contractVersion !== PREVIEW_CONTRACT_VERSION ||
     analysis.preview.packageManager === "unknown" ||

@@ -186,7 +186,11 @@ export class PreviewControlPlane {
       job,
     })
 
-    if (persisted.created && persisted.job.status === "queued") {
+    if (
+      persisted.created &&
+      persisted.job.status === "queued" &&
+      !persisted.enqueued
+    ) {
       try {
         await this.queue.enqueue({
           jobId: persisted.job.id,
@@ -252,6 +256,50 @@ export class PreviewControlPlane {
     })
 
     return toPublicJob(updated)
+  }
+
+  /** Worker-only admission. Recovered partial builds fail safely; the user can rebuild. */
+  async startWorkerJob(
+    jobId: string,
+    recovered = false,
+    abandon = false,
+  ): Promise<boolean> {
+    let started = false
+    await this.store.update(jobId, (job) => {
+      if (!ACTIVE_STATUSES.has(job.status)) return job
+      if (abandon || (recovered && job.status !== "queued")) {
+        return {
+          ...transition(job, "failed", this.now()),
+          errorCode: "RUNNER_UNAVAILABLE",
+          errorMessage: SAFE_ERROR_MESSAGES.RUNNER_UNAVAILABLE,
+        }
+      }
+      if (job.status !== "queued") return job
+      started = true
+      return transition(job, "fetching", this.now())
+    })
+    return started
+  }
+
+  /** Poll persistent state so cancellation also works across API/worker processes. */
+  async isWorkerJobActive(jobId: string): Promise<boolean> {
+    const job = await this.store.get(jobId)
+    return (
+      job !== null &&
+      ACTIVE_STATUSES.has((await this.refreshExpiry(job)).status)
+    )
+  }
+
+  async failWorkerJob(jobId: string, code: PreviewJobErrorCode): Promise<void> {
+    await this.store.update(jobId, (job) =>
+      ACTIVE_STATUSES.has(job.status)
+        ? {
+            ...transition(job, "failed", this.now()),
+            errorCode: code,
+            errorMessage: SAFE_ERROR_MESSAGES[code],
+          }
+        : job,
+    )
   }
 
   async fail(

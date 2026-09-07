@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { copyFile, mkdir } from "node:fs/promises"
+import { copyFile, mkdir, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
@@ -32,22 +32,33 @@ export class LocalArtifactPublisher implements ArtifactPublisher {
   async publish(
     jobId: string,
     output: ResolvedOutput,
+    signal?: AbortSignal,
   ): Promise<PublishedArtifact> {
     const sourceDir = this.locations.take(jobId)
     const artifactId = `artifact-${randomUUID()}`
     const destinationDir = path.join(this.storageDir, artifactId)
 
-    for (const entry of output.entries) {
-      if (!isSafeEntryPath(entry.path, 4096)) {
-        throw new Error(`Refusing to publish unsafe entry path: ${entry.path}`)
+    try {
+      for (const entry of output.entries) {
+        signal?.throwIfAborted()
+        if (!isSafeEntryPath(entry.path, 4096)) {
+          throw new Error(
+            `Refusing to publish unsafe entry path: ${entry.path}`,
+          )
+        }
+
+        const source = path.join(sourceDir, entry.path)
+        const destination = path.join(destinationDir, entry.path)
+        await mkdir(path.dirname(destination), { recursive: true })
+        await copyFile(source, destination)
       }
 
-      const source = path.join(sourceDir, entry.path)
-      const destination = path.join(destinationDir, entry.path)
-      await mkdir(path.dirname(destination), { recursive: true })
-      await copyFile(source, destination)
+      signal?.throwIfAborted()
+      return { artifactId }
+    } catch (error) {
+      // destinationDir is a direct child using our generated UUID only.
+      await rm(destinationDir, { recursive: true, force: true })
+      throw error
     }
-
-    return { artifactId }
   }
 }

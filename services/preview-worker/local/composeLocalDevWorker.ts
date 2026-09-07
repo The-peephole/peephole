@@ -45,5 +45,12 @@ export function composeLocalDevWorker(
     new LocalArtifactPublisher(locations, {
       storageDir: options.artifactStorageDir,
     }),
+    {
+      cleanup: (job) => {
+        byteStore.delete(job.repository.commitSha)
+        extraction.delete(job.jobId)
+        locations.delete(job.jobId)
+      },
+    },
   )
 }

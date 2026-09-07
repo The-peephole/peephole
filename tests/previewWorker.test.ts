@@ -89,7 +89,6 @@ describe("PreviewJobWorker", () => {
     await worker.run(queued)
 
     expect(markPhase.mock.calls.map(([, status]) => status)).toEqual([
-      "fetching",
       "installing",
       "building",
       "publishing",
@@ -137,7 +136,6 @@ describe("PreviewJobWorker", () => {
     await worker.run(queued)
 
     expect(markPhase.mock.calls.map(([, status]) => status)).toEqual([
-      "fetching",
       "publishing",
     ])
     expect(installer.calls).toHaveLength(0)

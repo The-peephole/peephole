@@ -10,6 +10,7 @@
     "zip": "wxt zip",
     "typecheck": "wxt prepare && tsc --noEmit",
     "test": "vitest run",
+    "test:postgres": "tsx scripts/testPostgres.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

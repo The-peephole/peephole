@@ -70,6 +70,6 @@ export function isTrustedPreviewArtifactUrl(value: string): boolean {
     !url.username &&
     !url.password &&
     url.protocol === "http:" &&
-    LOCAL_HTTP_HOSTS.has(url.hostname)
+    url.hostname === "127.0.0.1"
   )
 }

@@ -1,6 +1,6 @@
 import { createServer, type Server, type ServerResponse } from "node:http"
 import type { AddressInfo } from "node:net"
-import { lstat, readFile, realpath } from "node:fs/promises"
+import { lstat, readFile, realpath, readdir, rm } from "node:fs/promises"
 import path from "node:path"
 
 import { isSafeEntryPath } from "../../core/runner/archivePolicy"
@@ -33,6 +33,7 @@ export class LocalArtifactHost implements PreviewArtifactSigner {
   private readonly host: "127.0.0.1" | "::1"
   private readonly now: () => Date
   private readonly hosted = new Map<string, HostedArtifact>()
+  private readonly pending = new Map<string, Promise<HostedArtifact>>()
 
   constructor(options: LocalArtifactHostOptions) {
     this.storageDir = path.resolve(options.storageDir)
@@ -69,10 +70,24 @@ export class LocalArtifactHost implements PreviewArtifactSigner {
       return { url: existing.url, expiresAt: expiresAt.toISOString() }
     }
 
-    const artifactRoot = await resolveArtifactRoot(this.storageDir, artifactId)
-    const hosted = await this.startArtifactServer(artifactId, artifactRoot)
+    let pending = this.pending.get(artifactId)
+    if (!pending) {
+      pending = resolveArtifactRoot(this.storageDir, artifactId).then((root) =>
+        this.startArtifactServer(artifactId, root),
+      )
+      this.pending.set(artifactId, pending)
+    }
+    let hosted: HostedArtifact
+    try {
+      hosted = await pending
+    } finally {
+      this.pending.delete(artifactId)
+    }
+    clearTimeout(hosted.closeTimer)
     this.hosted.set(artifactId, hosted)
-    hosted.expiration.value = expiresAt.getTime()
+    hosted.expiration.value = Number.isFinite(hosted.expiration.value)
+      ? Math.max(hosted.expiration.value, expiresAt.getTime())
+      : expiresAt.getTime()
     hosted.closeTimer = this.scheduleClose(artifactId, hosted)
 
     return { url: hosted.url, expiresAt: expiresAt.toISOString() }
@@ -88,6 +103,35 @@ export class LocalArtifactHost implements PreviewArtifactSigner {
         await closeServer(artifact.server)
       }),
     )
+  }
+
+  /** Reaps abandoned/unhosted artifacts after the maximum local TTL plus grace. */
+  async reap(maxAgeMs = 2 * 60 * 60_000): Promise<string[]> {
+    const entries = await readdir(this.storageDir, {
+      withFileTypes: true,
+    }).catch(() => [])
+    const removed: string[] = []
+    for (const entry of entries) {
+      if (
+        !ARTIFACT_ID_PATTERN.test(entry.name) ||
+        !entry.isDirectory() ||
+        this.hosted.has(entry.name) ||
+        this.pending.has(entry.name)
+      )
+        continue
+      const candidate = path.resolve(this.storageDir, entry.name)
+      if (path.dirname(candidate) !== this.storageDir) continue
+      const stats = await lstat(candidate).catch(() => null)
+      if (
+        !stats ||
+        stats.isSymbolicLink() ||
+        this.now().getTime() - stats.mtimeMs <= maxAgeMs
+      )
+        continue
+      await rm(candidate, { recursive: true, force: true })
+      removed.push(entry.name)
+    }
+    return removed
   }
 
   private async startArtifactServer(
@@ -132,11 +176,23 @@ export class LocalArtifactHost implements PreviewArtifactSigner {
     artifactId: string,
     artifact: HostedArtifact,
   ): NodeJS.Timeout {
-    const delay = Math.max(1, artifact.expiration.value - this.now().getTime())
+    // Keep a short 410 tombstone before closing the origin and deleting its files.
+    const delay = Math.max(
+      1,
+      artifact.expiration.value - this.now().getTime() + 60_000,
+    )
     const timer = setTimeout(() => {
       if (this.hosted.get(artifactId) !== artifact) return
       this.hosted.delete(artifactId)
       void closeServer(artifact.server)
+        .then(async () => {
+          const candidate = path.resolve(this.storageDir, artifactId)
+          if (path.dirname(candidate) === this.storageDir)
+            await rm(candidate, { recursive: true, force: true })
+        })
+        .catch(() => {
+          /* The periodic reaper retries failed deletions. */
+        })
     }, delay)
     timer.unref()
     return timer
@@ -223,6 +279,11 @@ async function resolveRequestedFile(
   }
 
   try {
+    let current = artifactRoot
+    for (const segment of relativePath.split("/")) {
+      current = path.join(current, segment)
+      if ((await lstat(current)).isSymbolicLink()) return null
+    }
     const stats = await lstat(candidate)
 
     if (stats.isSymbolicLink()) return null
@@ -248,6 +309,8 @@ function staticHeaders(filePath: string, length: number) {
     "referrer-policy": "no-referrer",
     "permissions-policy": "camera=(), microphone=(), geolocation=()",
     "x-content-type-options": "nosniff",
+    "content-security-policy":
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; worker-src 'none'; frame-ancestors chrome-extension:",
   }
 }
 

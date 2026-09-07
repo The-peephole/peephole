@@ -12,6 +12,10 @@ import type { LocalPreviewWorkspace } from "./localWorkspace"
 export class ExtractionState {
   private readonly extracted = new Set<string>()
 
+  delete(jobId: string): void {
+    this.extracted.delete(jobId)
+  }
+
   constructor(
     private readonly extract: typeof extractArchiveToDirectory = extractArchiveToDirectory,
   ) {}
@@ -20,13 +24,16 @@ export class ExtractionState {
     workspace: LocalPreviewWorkspace,
     commitSha: string,
     byteStore: ArchiveByteStore,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (this.extracted.has(workspace.id)) {
       return
     }
 
+    signal?.throwIfAborted()
     const data = byteStore.take(commitSha)
-    await this.extract(data, { destinationDir: workspace.rootDir })
+    await this.extract(data, { destinationDir: workspace.rootDir, signal })
+    signal?.throwIfAborted()
     this.extracted.add(workspace.id)
   }
 }

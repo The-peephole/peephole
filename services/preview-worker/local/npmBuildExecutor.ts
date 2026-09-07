@@ -20,7 +20,12 @@ export class NpmBuildExecutor implements BuildExecutor {
     private readonly options: NpmBuildExecutorOptions = {},
   ) {}
 
-  async build(workspace: PreviewWorkspace, plan: BuildPlan): Promise<void> {
+  async build(
+    workspace: PreviewWorkspace,
+    plan: BuildPlan,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted()
     if (plan.buildCommand !== "npm run build") {
       throw new Error(`Unexpected build command: ${String(plan.buildCommand)}`)
     }
@@ -28,18 +33,25 @@ export class NpmBuildExecutor implements BuildExecutor {
     const local = asLocalWorkspace(workspace)
     assertTimeRemaining(local)
 
-    await this.commandRunner.run(local, resolveNpmExecutable(), ["run", "build"], {
-      timeoutMs: effectiveTimeoutMs(
-        local,
-        this.options.timeoutMs ?? DEFAULT_RUNNER_TIMEOUTS.buildTimeoutMs,
-      ),
-      env: minimalNpmEnv(),
-    })
+    await this.commandRunner.run(
+      local,
+      resolveNpmExecutable(),
+      ["run", "build"],
+      {
+        signal,
+        timeoutMs: effectiveTimeoutMs(
+          local,
+          this.options.timeoutMs ?? DEFAULT_RUNNER_TIMEOUTS.buildTimeoutMs,
+        ),
+        env: minimalNpmEnv(),
+      },
+    )
 
     if (
       await directorySizeExceeds(
         local.rootDir,
-        this.options.maxWorkspaceBytes ?? DEFAULT_ARCHIVE_LIMITS.maxExpandedBytes,
+        this.options.maxWorkspaceBytes ??
+          DEFAULT_ARCHIVE_LIMITS.maxExpandedBytes,
       )
     ) {
       throw new Error("Build output exceeds the workspace size limit.")

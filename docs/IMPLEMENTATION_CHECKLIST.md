@@ -122,6 +122,16 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       against a real runsc binary** -- see below)
 - [x] Connect the durable queue to the worker contract with lease,
       acknowledgement, delayed retry, and abortable polling
+- [x] Renew (heartbeat) the queue lease while a job is running, fence
+      stale/recovered attempts via an `attempts` counter on
+      acknowledge/release/renew, and abandon a job past `maxAttempts`
+      instead of retrying it forever
+      (`services/preview-worker/workerLoop.ts`,
+      `services/preview-api/postgres/queue.ts`)
+- [x] Make job creation and initial queue admission atomic (a single
+      PostgreSQL transaction), so an API crash between the two cannot
+      strand a `queued` job that the queue never sees
+      (`services/preview-api/postgres/jobStore.ts`)
 - [ ] Create a fresh non-root sandbox per job on a **real** gVisor host
 - [ ] Use frozen dependency installation with registry-only egress (network
       policy selection exists in the `runsc` CLI wiring; host-side
@@ -149,14 +159,19 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       always sends `credentials: "omit"`; the artifact origin's port differs
       from the control-plane API's, so no cookie would be shared even if one
       existed)
-- [ ] Set restrictive CSP, permissions, MIME, and framing headers
-      (`permissions-policy`, `x-content-type-options: nosniff`, and MIME
-      types are set on every artifact response; the artifact response itself
-      still sends no `Content-Security-Policy` or framing header -- only the
-      extension's own manifest CSP restricts who may frame it)
+- [x] Set restrictive CSP, permissions, MIME, and framing headers
+      (`permissions-policy`, `x-content-type-options: nosniff`, MIME types,
+      and now a per-response `Content-Security-Policy` -- including
+      `frame-ancestors chrome-extension:` -- are set on every artifact
+      response in `services/local-preview/artifactHost.ts`)
 - [x] Expire artifacts and return a clear expired state (`LocalArtifactHost`
       returns HTTP 410 once `expiresAt` passes; verified in
       `tests/localArtifactHost.test.ts`)
+- [x] Delete expired artifact files from disk, not just the in-memory
+      origin: `LocalArtifactHost` removes an artifact's directory shortly
+      after its tombstone window closes, and a periodic `reap()` (wired
+      into `services/local-preview/devServer.ts`'s 60s maintenance loop)
+      sweeps any artifact directory left behind by a crash
 - [ ] Prevent preview content from reaching privileged extension messaging
 
 ## Tests

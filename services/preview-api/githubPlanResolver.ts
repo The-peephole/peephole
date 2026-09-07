@@ -1,5 +1,6 @@
 import { analyzeRepository } from "../../core/analyzer/analyzeRepository"
 import { createBuildPlanFromAnalysis } from "../../core/preview/buildPlan"
+import { isImplementedRunnerTarget } from "../../core/preview/runnerSupport"
 import type { GitHubClient } from "../../core/github/client"
 import type { KnownRepositoryFilesLoader } from "../../core/github/knownFiles"
 import { PREVIEW_CONTRACT_VERSION } from "../../types/analysis"
@@ -36,14 +37,4 @@ export class GitHubPreviewPlanResolver implements PreviewPlanResolver {
 
     return createBuildPlanFromAnalysis(analysis)
   }
-}
-
-function isImplementedRunnerTarget(
-  framework: string,
-  packageManager: string,
-): boolean {
-  return (
-    (framework === "static" && packageManager === "none") ||
-    (framework === "react-vite" && packageManager === "npm")
-  )
 }

@@ -11,7 +11,10 @@ export interface SandboxProvisioner {
 }
 
 export interface SourceArchiveFetcher {
-  fetch(repository: PreviewRepositoryRef): Promise<FetchedArchive>
+  fetch(
+    repository: PreviewRepositoryRef,
+    signal?: AbortSignal,
+  ): Promise<FetchedArchive>
 }
 
 export interface DependencyInstaller {
@@ -19,15 +22,24 @@ export interface DependencyInstaller {
     workspace: PreviewWorkspace,
     archive: FetchedArchive,
     plan: BuildPlan,
+    signal?: AbortSignal,
   ): Promise<void>
 }
 
 export interface BuildExecutor {
-  build(workspace: PreviewWorkspace, plan: BuildPlan): Promise<void>
+  build(
+    workspace: PreviewWorkspace,
+    plan: BuildPlan,
+    signal?: AbortSignal,
+  ): Promise<void>
 }
 
 export interface OutputResolver {
-  resolve(workspace: PreviewWorkspace, plan: BuildPlan): Promise<ResolvedOutput>
+  resolve(
+    workspace: PreviewWorkspace,
+    plan: BuildPlan,
+    signal?: AbortSignal,
+  ): Promise<ResolvedOutput>
 }
 
 export interface PublishedArtifact {
@@ -35,5 +47,9 @@ export interface PublishedArtifact {
 }
 
 export interface ArtifactPublisher {
-  publish(jobId: string, output: ResolvedOutput): Promise<PublishedArtifact>
+  publish(
+    jobId: string,
+    output: ResolvedOutput,
+    signal?: AbortSignal,
+  ): Promise<PublishedArtifact>
 }

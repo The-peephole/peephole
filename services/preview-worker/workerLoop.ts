@@ -3,9 +3,10 @@ import type {
   PreviewQueueLease,
 } from "../preview-api/ports"
 import type { QueuedPreviewJob } from "../../types/preview"
+import type { PreviewJobRunOptions } from "./worker"
 
 export interface PreviewJobExecutor {
-  run(job: QueuedPreviewJob): Promise<void>
+  run(job: QueuedPreviewJob, options?: PreviewJobRunOptions): Promise<void>
 }
 
 export interface PreviewWorkerLoopOptions {
@@ -13,6 +14,7 @@ export interface PreviewWorkerLoopOptions {
   leaseMs?: number
   pollIntervalMs?: number
   retryDelayMs?: number
+  maxAttempts?: number
   now?: () => Date
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>
   onError?: (error: unknown) => void
@@ -32,6 +34,7 @@ export class PreviewWorkerLoop {
   private readonly leaseMs: number
   private readonly pollIntervalMs: number
   private readonly retryDelayMs: number
+  private readonly maxAttempts: number
   private readonly now: () => Date
   private readonly wait: (
     milliseconds: number,
@@ -45,6 +48,12 @@ export class PreviewWorkerLoop {
     options: PreviewWorkerLoopOptions,
   ) {
     this.workerId = validateWorkerId(options.workerId)
+    this.maxAttempts = validateDuration(
+      "maxAttempts",
+      options.maxAttempts ?? 3,
+      1,
+      100,
+    )
     this.leaseMs = validateDuration(
       "leaseMs",
       options.leaseMs ?? DEFAULT_LEASE_MS,
@@ -69,7 +78,8 @@ export class PreviewWorkerLoop {
   }
 
   /** Returns true when a queue item was leased, including a released retry. */
-  async runOnce(): Promise<boolean> {
+  async runOnce(signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted()
     const lease = await this.queue.lease(
       this.workerId,
       this.now(),
@@ -80,14 +90,14 @@ export class PreviewWorkerLoop {
       return false
     }
 
-    await this.executeLease(lease)
+    await this.executeLease(lease, signal)
     return true
   }
 
   async runUntilStopped(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
       try {
-        const processed = await this.runOnce()
+        const processed = await this.runOnce(signal)
 
         if (processed) {
           continue
@@ -102,18 +112,67 @@ export class PreviewWorkerLoop {
     }
   }
 
-  private async executeLease(lease: PreviewQueueLease): Promise<void> {
+  private async executeLease(
+    lease: PreviewQueueLease,
+    shutdown?: AbortSignal,
+  ): Promise<void> {
+    const controller = new AbortController()
+    const signal = shutdown
+      ? AbortSignal.any([shutdown, controller.signal])
+      : controller.signal
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let renewal: Promise<void> | undefined
+    const renew = async () => {
+      try {
+        if (
+          !(await this.queue.renew(
+            lease.job.jobId,
+            this.workerId,
+            lease.attempts,
+            this.leaseMs,
+          ))
+        )
+          controller.abort()
+      } catch (error) {
+        this.onError(error)
+        controller.abort()
+      }
+      if (!stopped && !signal.aborted) schedule()
+    }
+    const schedule = () => {
+      timer = setTimeout(
+        () => {
+          renewal = renew()
+        },
+        Math.floor(this.leaseMs / 3),
+      )
+      timer.unref()
+    }
+    schedule()
     try {
-      await this.worker.run(lease.job)
-      await this.queue.acknowledge(lease.job.jobId, this.workerId)
+      await this.worker.run(lease.job, {
+        signal,
+        recovered: lease.attempts > 1,
+        abandon: lease.attempts > this.maxAttempts,
+      })
+      await this.queue.acknowledge(
+        lease.job.jobId,
+        this.workerId,
+        lease.attempts,
+      )
     } catch (error) {
       const availableAt = new Date(this.now().getTime() + this.retryDelayMs)
       await this.queue
-        .release(lease.job.jobId, this.workerId, availableAt)
+        .release(lease.job.jobId, this.workerId, availableAt, lease.attempts)
         .catch((releaseError) => {
           this.onError(releaseError)
         })
       throw error
+    } finally {
+      stopped = true
+      clearTimeout(timer)
+      await renewal
     }
   }
 }

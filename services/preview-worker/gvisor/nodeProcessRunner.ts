@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process"
+﻿import { spawn } from "node:child_process"
+import path from "node:path"
 
 import { MAX_CAPTURED_LOG_BYTES } from "../../../core/runner/runnerLimits"
 import type {
@@ -7,56 +8,105 @@ import type {
   ProcessRunResult,
 } from "./processRunner"
 
-/**
- * Real `runsc` invocation for a Linux host with gVisor installed. Untested
- * in this repository's environment (Windows, no Linux kernel, no runsc
- * binary) -- see `RunscCommandRunner`'s tests, which verify the CLI/OCI
- * wiring via a fake `ProcessRunner` instead.
- */
+/** Host binary execution with bounded logs and process-tree termination. */
 export class NodeProcessRunner implements ProcessRunner {
   async run(
     command: string,
     args: string[],
     options: ProcessRunOptions,
   ): Promise<ProcessRunResult> {
+    options.signal?.throwIfAborted()
     return new Promise((resolve, reject) => {
-      const child = spawn(command, args, { cwd: options.cwd, env: options.env })
-
-      let stdout = ""
-      let stderr = ""
+      const child = spawn(command, args, {
+        cwd: options.cwd,
+        env: options.env,
+        shell: options.shell ?? false,
+        windowsHide: true,
+        detached: process.platform !== "win32",
+      })
+      let stdout: Buffer = Buffer.alloc(0)
+      let stderr: Buffer = Buffer.alloc(0)
       let timedOut = false
-
+      let termination: Promise<void> | undefined
+      const stop = () => {
+        if (child.pid && !termination) termination = killProcessTree(child.pid)
+      }
       const timer = setTimeout(() => {
         timedOut = true
-        child.kill("SIGTERM")
-        setTimeout(() => child.kill("SIGKILL"), 5_000).unref()
+        stop()
       }, options.timeoutMs)
       timer.unref()
+      const abort = () => stop()
+      options.signal?.addEventListener("abort", abort, { once: true })
+      if (options.signal?.aborted) stop()
 
+      const cleanup = () => {
+        clearTimeout(timer)
+        options.signal?.removeEventListener("abort", abort)
+      }
       child.stdout?.on("data", (chunk: Buffer) => {
         stdout = appendBounded(stdout, chunk)
       })
       child.stderr?.on("data", (chunk: Buffer) => {
         stderr = appendBounded(stderr, chunk)
       })
-
-      child.on("error", (error) => {
-        clearTimeout(timer)
+      child.once("error", (error) => {
+        cleanup()
         reject(error)
       })
-
-      child.on("close", (code) => {
-        clearTimeout(timer)
-        resolve({ exitCode: code, timedOut, stdout, stderr })
+      child.once("close", (exitCode) => {
+        cleanup()
+        void (termination ?? Promise.resolve()).then(() => {
+          if (options.signal?.aborted) {
+            reject(options.signal.reason)
+          } else {
+            resolve({
+              exitCode,
+              timedOut,
+              stdout: stdout.toString("utf8"),
+              stderr: stderr.toString("utf8"),
+            })
+          }
+        }, reject)
       })
     })
   }
 }
 
-function appendBounded(current: string, chunk: Buffer): string {
-  if (current.length >= MAX_CAPTURED_LOG_BYTES) {
-    return current
+async function killProcessTree(pid: number): Promise<void> {
+  if (process.platform === "win32") {
+    await new Promise<void>((resolve) => {
+      const killer = spawn(
+        path.join(
+          process.env.SYSTEMROOT ?? "C:\\Windows",
+          "System32",
+          "taskkill.exe",
+        ),
+        ["/PID", String(pid), "/T", "/F"],
+        { windowsHide: true, stdio: "ignore" },
+      )
+      killer.once("error", () => {
+        try {
+          process.kill(pid, "SIGKILL")
+        } catch {
+          /* Already gone. */
+        }
+        resolve()
+      })
+      killer.once("close", () => resolve())
+    })
+  } else {
+    try {
+      process.kill(-pid, "SIGKILL")
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error
+    }
   }
+}
 
-  return (current + chunk.toString("utf8")).slice(0, MAX_CAPTURED_LOG_BYTES)
+function appendBounded(current: Buffer, chunk: Buffer): Buffer {
+  const remaining = MAX_CAPTURED_LOG_BYTES - current.byteLength
+  return remaining > 0
+    ? Buffer.concat([current, chunk.subarray(0, remaining)])
+    : current
 }

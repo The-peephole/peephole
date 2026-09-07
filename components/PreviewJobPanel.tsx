@@ -20,7 +20,7 @@ type PreviewUiState =
   | { status: "creating" }
   | { status: "job"; job: PreviewJob }
   | { status: "cancelling"; job: PreviewJob }
-  | { status: "error"; message: string }
+  | { status: "error"; message: string; job?: PreviewJob }
 
 interface PreviewJobPanelProps {
   analysis: RepositoryAnalysis
@@ -37,12 +37,14 @@ export function PreviewJobPanel({
 }: PreviewJobPanelProps) {
   const [state, setState] = useState<PreviewUiState>({ status: "idle" })
   const activeRequest = useRef<AbortController | null>(null)
+  const createKey = useRef<string | null>(null)
   const request = createRequest(analysis)
   const repositoryKey = `${analysis.repository.repositoryId}:${analysis.repository.commitSha}`
 
   useEffect(() => {
     activeRequest.current?.abort()
     activeRequest.current = null
+    createKey.current = null
     setState({ status: "idle" })
 
     return () => activeRequest.current?.abort()
@@ -62,10 +64,17 @@ export function PreviewJobPanel({
       void previewApi
         .get(state.job.id, { signal: abortController.signal })
         .then(
-          (job) => setState({ status: "job", job }),
+          (job) => {
+            if (!abortController.signal.aborted)
+              setState({ status: "job", job })
+          },
           (error: unknown) => {
             if (!abortController.signal.aborted) {
-              setState({ status: "error", message: safeErrorMessage(error) })
+              setState({
+                status: "error",
+                message: safeErrorMessage(error),
+                job: state.job,
+              })
             }
           },
         )
@@ -75,7 +84,30 @@ export function PreviewJobPanel({
       window.clearTimeout(timeout)
       abortController.abort()
     }
-  }, [pollIntervalMs, previewApi, state])
+  }, [pollIntervalMs, previewApi, repositoryKey, state])
+
+  useEffect(() => {
+    if (state.status !== "job" || state.job.status !== "ready") return
+    const job = state.job
+    const expiresAt = Math.min(
+      Date.parse(job.expiresAt),
+      Date.parse(job.artifact?.expiresAt ?? job.expiresAt),
+    )
+    let timer: number
+    const checkExpiry = () => {
+      const remaining = expiresAt - Date.now()
+      if (remaining <= 0) {
+        setState({
+          status: "job",
+          job: { ...job, status: "expired", artifact: null },
+        })
+      } else {
+        timer = window.setTimeout(checkExpiry, Math.min(remaining, 60_000))
+      }
+    }
+    checkExpiry()
+    return () => window.clearTimeout(timer)
+  }, [repositoryKey, state])
 
   if (!request) {
     return null
@@ -101,14 +133,20 @@ export function PreviewJobPanel({
         <button
           className="peephole__primary"
           onClick={() =>
-            startPreview(previewApi, request, activeRequest, setState)
+            startPreview(
+              previewApi,
+              request,
+              activeRequest,
+              setState,
+              createKey,
+            )
           }
           type="button"
         >
           Build preview
         </button>
         <p className="peephole__action-note">
-          Builds the pinned commit in the configured isolated preview service.
+          Builds a preview of this exact commit.
         </p>
       </section>
     )
@@ -126,11 +164,19 @@ export function PreviewJobPanel({
         <button
           className="peephole__secondary"
           onClick={() =>
-            startPreview(previewApi, request, activeRequest, setState)
+            state.job
+              ? setState({ status: "job", job: state.job })
+              : startPreview(
+                  previewApi,
+                  request,
+                  activeRequest,
+                  setState,
+                  createKey,
+                )
           }
           type="button"
         >
-          Retry
+          {state.job ? "Check status" : "Retry"}
         </button>
       </section>
     )
@@ -155,7 +201,10 @@ export function PreviewJobPanel({
         </p>
         <button
           className="peephole__secondary"
-          onClick={() => setState({ status: "idle" })}
+          onClick={() => {
+            createKey.current = null
+            setState({ status: "idle" })
+          }}
           type="button"
         >
           Build again
@@ -170,7 +219,10 @@ export function PreviewJobPanel({
         <strong>Preview {job.status}</strong>
         <button
           className="peephole__secondary"
-          onClick={() => setState({ status: "idle" })}
+          onClick={() => {
+            createKey.current = null
+            setState({ status: "idle" })
+          }}
           type="button"
         >
           Build again
@@ -199,7 +251,8 @@ export function PreviewJobPanel({
 
 function ReadyPreview({ job }: { job: PreviewJob }) {
   const artifactUrl = job.artifact?.url ?? null
-  const trusted = artifactUrl !== null && isTrustedPreviewArtifactUrl(artifactUrl)
+  const trusted =
+    artifactUrl !== null && isTrustedPreviewArtifactUrl(artifactUrl)
 
   return (
     <section className="peephole__job peephole__job--ready" role="status">
@@ -263,22 +316,29 @@ function startPreview(
   request: CreatePreviewJobRequest,
   activeRequest: MutableRefObject<AbortController | null>,
   setState: Dispatch<SetStateAction<PreviewUiState>>,
+  createKey: MutableRefObject<string | null>,
 ): void {
   activeRequest.current?.abort()
   const abortController = new AbortController()
   activeRequest.current = abortController
   setState({ status: "creating" })
 
-  void previewApi.create(request, { signal: abortController.signal }).then(
-    (job) => {
-      if (!abortController.signal.aborted) setState({ status: "job", job })
-    },
-    (error: unknown) => {
-      if (!abortController.signal.aborted) {
-        setState({ status: "error", message: safeErrorMessage(error) })
-      }
-    },
-  )
+  createKey.current ??= `preview-${crypto.randomUUID()}`
+  void previewApi
+    .create(request, {
+      signal: abortController.signal,
+      idempotencyKey: createKey.current,
+    })
+    .then(
+      (job) => {
+        if (!abortController.signal.aborted) setState({ status: "job", job })
+      },
+      (error: unknown) => {
+        if (!abortController.signal.aborted) {
+          setState({ status: "error", message: safeErrorMessage(error) })
+        }
+      },
+    )
 }
 
 function cancelPreview(
@@ -300,7 +360,7 @@ function cancelPreview(
     },
     (error: unknown) => {
       if (!abortController.signal.aborted) {
-        setState({ status: "error", message: safeErrorMessage(error) })
+        setState({ status: "error", message: safeErrorMessage(error), job })
       }
     },
   )

@@ -8,6 +8,7 @@ import { isSafeEntryPath } from "../../../core/runner/archivePolicy"
 export interface ExtractArchiveOptions {
   destinationDir: string
   maxEntryPathLength?: number
+  signal?: AbortSignal
 }
 
 const UNSAFE_TAR_TYPES = new Set([
@@ -22,9 +23,8 @@ export async function extractArchiveToDirectory(
   data: Uint8Array,
   options: ExtractArchiveOptions,
 ): Promise<void> {
-  const stagingDir = await mkdtemp(
-    path.join(os.tmpdir(), "peephole-archive-"),
-  )
+  options.signal?.throwIfAborted()
+  const stagingDir = await mkdtemp(path.join(os.tmpdir(), "peephole-archive-"))
   const archiveFile = path.join(stagingDir, "source.tar.gz")
 
   try {
@@ -37,18 +37,17 @@ export async function extractArchiveToDirectory(
       preservePaths: false,
       maxDecompressionRatio: 1_000,
       filter: (entryPath, entry) => {
+        if (options.signal?.aborted) return false
         const type = "type" in entry ? entry.type : undefined
 
         if (type && UNSAFE_TAR_TYPES.has(type)) {
           return false
         }
 
-        return isSafeEntryPath(
-          entryPath,
-          options.maxEntryPathLength ?? 4096,
-        )
+        return isSafeEntryPath(entryPath, options.maxEntryPathLength ?? 4096)
       },
     })
+    options.signal?.throwIfAborted()
   } finally {
     await rm(stagingDir, { recursive: true, force: true })
   }

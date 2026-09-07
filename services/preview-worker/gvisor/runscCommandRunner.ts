@@ -16,7 +16,11 @@ import { asGVisorWorkspace } from "./gvisorWorkspace"
 import { buildOciRuntimeSpec } from "./ociConfig"
 import { NodeProcessRunner } from "./nodeProcessRunner"
 import type { ProcessRunner } from "./processRunner"
-import { runscDeleteArgs, runscRunArgs, type RunscNetworkMode } from "./runscCli"
+import {
+  runscDeleteArgs,
+  runscRunArgs,
+  type RunscNetworkMode,
+} from "./runscCli"
 
 const SANDBOX_UID = 65534
 const SANDBOX_GID = 65534
@@ -66,6 +70,7 @@ export class RunscCommandRunner implements CommandRunner {
     args: string[],
     options: CommandRunOptions,
   ): Promise<void> {
+    options.signal?.throwIfAborted()
     const sandbox = asGVisorWorkspace(workspace)
     const containerId = `${workspace.id}-${randomBytes(4).toString("hex")}`
     sandbox.registerContainer(containerId)
@@ -98,7 +103,7 @@ export class RunscCommandRunner implements CommandRunner {
             network: this.network,
           },
         ),
-        { timeoutMs: options.timeoutMs },
+        { timeoutMs: options.timeoutMs, signal: options.signal },
       )
 
       if (result.timedOut) {

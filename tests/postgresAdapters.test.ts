@@ -65,6 +65,10 @@ describe("PostgreSQL preview adapters", () => {
     expect(database.queries[0]?.text).toContain("ON CONFLICT")
     expect(database.queries[0]?.text).toContain("$5::jsonb")
     expect(database.queries[0]?.values?.[1]).toBe("user-1")
+    expect(database.queries[1]?.text).toContain(
+      "INSERT INTO peephole_preview_queue",
+    )
+    expect(database.queries[1]?.values?.[0]).toBe(job.id)
   })
 
   it("locks a job row while applying state transitions", async () => {
@@ -100,9 +104,9 @@ describe("PostgreSQL preview adapters", () => {
     await expect(
       queue.lease("worker-1", new Date(job.createdAt), 300_000),
     ).resolves.toEqual({ job: queued, attempts: 1 })
-    await expect(queue.acknowledge(job.id, "worker-1")).resolves.toBe(true)
+    await expect(queue.acknowledge(job.id, "worker-1", 1)).resolves.toBe(true)
     await expect(
-      queue.release(job.id, "worker-1", new Date(job.updatedAt)),
+      queue.release(job.id, "worker-1", new Date(job.updatedAt), 1),
     ).resolves.toBe(true)
 
     expect(database.queries[0]?.text).toContain(

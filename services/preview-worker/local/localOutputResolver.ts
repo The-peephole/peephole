@@ -20,6 +20,7 @@ export class LocalOutputResolver implements OutputResolver {
   async resolve(
     workspace: PreviewWorkspace,
     plan: BuildPlan,
+    signal?: AbortSignal,
   ): Promise<ResolvedOutput> {
     const local = asLocalWorkspace(workspace)
 
@@ -30,10 +31,17 @@ export class LocalOutputResolver implements OutputResolver {
       local,
       plan.repository.commitSha,
       this.byteStore,
+      signal,
     )
 
     const outputDir = path.join(local.rootDir, plan.outputDirectory)
-    const entries = await walkDirectory(outputDir, outputDir)
+    let current = local.rootDir
+    for (const segment of plan.outputDirectory.split("/")) {
+      current = path.join(current, segment)
+      if ((await lstat(current)).isSymbolicLink())
+        throw new Error("Build output root contains a symlink.")
+    }
+    const entries = await walkDirectory(outputDir, outputDir, signal)
 
     this.locations.set(local.id, outputDir)
 
@@ -44,11 +52,13 @@ export class LocalOutputResolver implements OutputResolver {
 async function walkDirectory(
   root: string,
   currentDir: string,
+  signal?: AbortSignal,
 ): Promise<ArchiveEntry[]> {
   const dirents = await readdir(currentDir, { withFileTypes: true })
   const entries: ArchiveEntry[] = []
 
   for (const dirent of dirents) {
+    signal?.throwIfAborted()
     const absolutePath = path.join(currentDir, dirent.name)
     const relativePath = path
       .relative(root, absolutePath)
@@ -66,7 +76,7 @@ async function walkDirectory(
     }
 
     if (stats.isDirectory()) {
-      entries.push(...(await walkDirectory(root, absolutePath)))
+      entries.push(...(await walkDirectory(root, absolutePath, signal)))
       continue
     }
 

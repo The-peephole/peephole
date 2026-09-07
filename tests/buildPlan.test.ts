@@ -25,6 +25,17 @@ const plan: BuildPlan = {
 }
 
 describe("build plan", () => {
+  it.each(["vue-vite", "svelte-vite"] as const)(
+    "rejects stale positive analysis for %s",
+    (framework) => {
+      expect(
+        createBuildPlanFromAnalysis({
+          ...supportedAnalysis,
+          technologies: { ...supportedAnalysis.technologies, framework },
+        }),
+      ).toBeNull()
+    },
+  )
   it("creates a normalized plan only from compatible analysis", () => {
     expect(createBuildPlanFromAnalysis(supportedAnalysis)).toEqual({
       contractVersion: "static-v1",

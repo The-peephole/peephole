@@ -16,6 +16,7 @@ import { readPreviewApiServerConfig } from "../preview-api/serverConfig"
 import { startNodePreviewApi } from "../preview-api/startNodeServer"
 import { composeLocalDevWorker } from "../preview-worker/local/composeLocalDevWorker"
 import { PreviewWorkerLoop } from "../preview-worker/workerLoop"
+import { LocalDevSandboxReaper } from "../preview-worker/local/localDevSandboxReaper"
 import { LocalArtifactHost } from "./artifactHost"
 
 /**
@@ -73,6 +74,23 @@ async function main(): Promise<void> {
   })
   const workerController = new AbortController()
   const workerLoopDone = workerLoop.runUntilStopped(workerController.signal)
+  const sandboxReaper = new LocalDevSandboxReaper()
+  let maintenanceRunning: Promise<void> | undefined
+  const maintain = () => {
+    if (maintenanceRunning) return
+    maintenanceRunning = Promise.all([
+      sandboxReaper.reap(),
+      artifactHost.reap(),
+    ])
+      .then(() => undefined)
+      .catch(() => console.error("[peephole] cleanup failed; will retry"))
+      .finally(() => {
+        maintenanceRunning = undefined
+      })
+  }
+  maintain()
+  const maintenanceTimer = setInterval(maintain, 60_000)
+  maintenanceTimer.unref()
 
   console.log(
     `[peephole] preview API listening on http://${api.address.address}:${api.address.port}`,
@@ -85,9 +103,11 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return
     shuttingDown = true
+    clearInterval(maintenanceTimer)
     console.log(`[peephole] received ${signal}, shutting down...`)
     workerController.abort()
     await workerLoopDone.catch(() => undefined)
+    await maintenanceRunning
     await api.stop()
     await artifactHost.close()
     await database.close()

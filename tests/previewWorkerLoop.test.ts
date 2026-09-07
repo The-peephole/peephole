@@ -32,6 +32,7 @@ const queuedJob: QueuedPreviewJob = {
 }
 
 class FakeQueue implements PreviewQueueConsumer {
+  renew = vi.fn(async () => true)
   leases: Array<PreviewQueueLease | null> = []
   leaseCalls: Array<{ workerId: string; now: Date; leaseMs: number }> = []
   acknowledgements: Array<{ jobId: string; workerId: string }> = []
@@ -77,7 +78,13 @@ describe("PreviewWorkerLoop", () => {
     expect(queue.leaseCalls).toEqual([
       { workerId: "worker-1", now, leaseMs: 210_000 },
     ])
-    expect(run).toHaveBeenCalledWith(queuedJob)
+    expect(run).toHaveBeenCalledWith(
+      queuedJob,
+      expect.objectContaining({
+        recovered: false,
+        signal: expect.any(AbortSignal),
+      }),
+    )
     expect(queue.acknowledgements).toEqual([
       { jobId: "job-1", workerId: "worker-1" },
     ])

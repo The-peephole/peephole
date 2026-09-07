@@ -7,6 +7,12 @@ import { PgPoolDatabase } from "../services/preview-api/postgres/database"
 import { PostgresPreviewJobStore } from "../services/preview-api/postgres/jobStore"
 import { applyPostgresMigrations } from "../services/preview-api/postgres/migrate"
 import { PostgresPreviewQueue } from "../services/preview-api/postgres/queue"
+import { PreviewControlPlane } from "../services/preview-api/controlPlane"
+import {
+  FixedWindowPreviewQuota,
+  HmacPreviewArtifactSigner,
+  InMemoryPreviewArtifactCache,
+} from "../services/preview-api/inMemoryAdapters"
 import type { StoredPreviewJob } from "../services/preview-api/ports"
 
 const connectionString = process.env.PEEPHOLE_POSTGRES_TEST_URL
@@ -49,7 +55,7 @@ describeWithPostgres("PostgreSQL integration", () => {
       requestFingerprint: `fingerprint-${first.id}`,
       job: first,
     })
-    await queue.enqueue(toQueuedJob(first))
+    // No separate enqueue: persistence must atomically admit the job to the queue.
 
     const now = new Date()
     const leases = await Promise.all([
@@ -64,6 +70,7 @@ describeWithPostgres("PostgreSQL integration", () => {
       queue.acknowledge(
         first.id,
         leases[0] ? "integration-worker-a" : "integration-worker-b",
+        winner!.attempts,
       ),
     ).resolves.toBe(true)
 
@@ -105,6 +112,127 @@ describeWithPostgres("PostgreSQL integration", () => {
       job: { jobId: second.id },
       attempts: 2,
     })
+    await expect(
+      queue.acknowledge(second.id, "integration-worker-a", 1),
+    ).resolves.toBe(false)
+    await expect(
+      queue.release(second.id, "integration-worker-a", new Date(), 1),
+    ).resolves.toBe(false)
+    await expect(
+      queue.renew(second.id, "integration-worker-a", 1, 1000),
+    ).resolves.toBe(false)
+    await expect(
+      queue.renew(second.id, "integration-worker-b", 2, 1000),
+    ).resolves.toBe(true)
+    await expect(
+      queue.acknowledge(second.id, "integration-worker-b", 2),
+    ).resolves.toBe(true)
+  })
+
+  it("commits one job and one delivery for concurrent identical requests", async () => {
+    const job = createJob()
+    jobIds.push(job.id)
+    const store = new PostgresPreviewJobStore(database)
+    const input = {
+      requesterId: job.requesterId,
+      idempotencyKey: `request-${job.id}`,
+      requestFingerprint: "same-request",
+      job,
+    }
+    const results = await Promise.all([
+      store.createOrGet(input),
+      store.createOrGet(input),
+    ])
+    expect(results.filter((result) => result.created)).toHaveLength(1)
+    const rows = await database.query(
+      "SELECT job_id FROM peephole_preview_queue WHERE job_id = $1",
+      [job.id],
+    )
+    expect(rows.rowCount).toBe(1)
+    await database.query(
+      "DELETE FROM peephole_preview_queue WHERE job_id = $1",
+      [job.id],
+    )
+  })
+
+  it("rolls back job persistence when queue insertion cannot commit", async () => {
+    const job = createJob()
+    jobIds.push(job.id)
+    const store = new PostgresPreviewJobStore({
+      query: database.query.bind(database),
+      ping: database.ping.bind(database),
+      close: async () => undefined,
+      transaction: (operation) =>
+        database.transaction((client) =>
+          operation({
+            query: async (sql, values) => {
+              const result = await client.query(sql, values)
+              if (sql.includes("INSERT INTO peephole_preview_queue"))
+                throw new Error("simulated transaction failure")
+              return result as never
+            },
+          }),
+        ),
+    })
+    await expect(
+      store.createOrGet({
+        requesterId: job.requesterId,
+        idempotencyKey: `request-${job.id}`,
+        requestFingerprint: "rollback",
+        job,
+      }),
+    ).rejects.toThrow("simulated transaction failure")
+    expect(await store.get(job.id)).toBeNull()
+    expect(
+      (
+        await database.query(
+          "SELECT job_id FROM peephole_preview_queue WHERE job_id = $1",
+          [job.id],
+        )
+      ).rowCount,
+    ).toBe(0)
+  })
+
+  it("observes cancellation from another control-plane connection", async () => {
+    const job = createJob()
+    jobIds.push(job.id)
+    const otherDatabase = new PgPoolDatabase(
+      readPostgresConfig({ PEEPHOLE_DATABASE_URL: connectionString }).pool,
+    )
+    const makeControl = (db: PgPoolDatabase) =>
+      new PreviewControlPlane(
+        { resolve: async () => job.plan },
+        new PostgresPreviewJobStore(db),
+        new PostgresPreviewQueue(db),
+        new InMemoryPreviewArtifactCache(),
+        new HmacPreviewArtifactSigner(
+          "peephole.run",
+          "test-secret-at-least-thirty-two-bytes",
+        ),
+        new FixedWindowPreviewQuota(),
+        { runnerVersion: "test" },
+      )
+    try {
+      await new PostgresPreviewJobStore(database).createOrGet({
+        requesterId: job.requesterId,
+        idempotencyKey: `request-${job.id}`,
+        requestFingerprint: "cancel-test",
+        job,
+      })
+      const workerControl = makeControl(database)
+      await workerControl.startWorkerJob(job.id)
+      expect(await workerControl.isWorkerJobActive(job.id)).toBe(true)
+      await makeControl(otherDatabase).cancel(job.id, {
+        subject: job.requesterId,
+        ip: "127.0.0.1",
+      })
+      expect(await workerControl.isWorkerJobActive(job.id)).toBe(false)
+      expect(
+        (await new PostgresPreviewJobStore(otherDatabase).get(job.id))?.status,
+      ).toBe("cancelled")
+    } finally {
+      await otherDatabase.close()
+    }
   })
 })
 

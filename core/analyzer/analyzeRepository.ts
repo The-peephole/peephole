@@ -13,6 +13,7 @@ import { detectPackageManager } from "./packageManagerDetector"
 import { getAllDependencies, parsePackageJson } from "./packageJson"
 import { detectRuntime } from "./runtimeDetector"
 import { detectWorkspace } from "./workspaceDetector"
+import { runnerSupportBlocker } from "../preview/runnerSupport"
 
 const SERVER_DEPENDENCIES = new Set([
   "@nestjs/core",
@@ -62,6 +63,12 @@ export function analyzeRepository(
   const deployment = detectDeployment(repository, files.presentPaths)
   const workspace = detectWorkspace(packageJson, files.presentPaths)
   const blockers: PreviewBlocker[] = [...packageManager.blockers]
+  const runnerBlocker = runnerSupportBlocker(
+    framework.framework,
+    packageManager.packageManager,
+    files.presentPaths,
+  )
+  if (runnerBlocker) blockers.push(runnerBlocker)
   const warnings = [...files.warnings, ...runtime.warnings]
 
   if (packageJsonResult.error) {

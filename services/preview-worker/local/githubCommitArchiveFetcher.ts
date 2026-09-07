@@ -3,7 +3,10 @@ import os from "node:os"
 import path from "node:path"
 import * as tar from "tar"
 
-import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from "../../../core/runner/archivePolicy"
+import {
+  DEFAULT_ARCHIVE_LIMITS,
+  type ArchiveLimits,
+} from "../../../core/runner/archivePolicy"
 import type { PreviewRepositoryRef } from "../../../types/preview"
 import type { ArchiveEntry, FetchedArchive } from "../../../types/runner"
 import type { SourceArchiveFetcher } from "../ports"
@@ -37,7 +40,11 @@ export class GitHubCommitArchiveFetcher implements SourceArchiveFetcher {
     this.baseUrl = options.codeloadBaseUrl ?? "https://codeload.github.com"
   }
 
-  async fetch(repository: PreviewRepositoryRef): Promise<FetchedArchive> {
+  async fetch(
+    repository: PreviewRepositoryRef,
+    signal?: AbortSignal,
+  ): Promise<FetchedArchive> {
+    signal?.throwIfAborted()
     if (!COMMIT_SHA_PATTERN.test(repository.commitSha)) {
       throw new Error("Refusing to fetch a non-immutable commit reference.")
     }
@@ -47,8 +54,10 @@ export class GitHubCommitArchiveFetcher implements SourceArchiveFetcher {
       url,
       this.limits.maxCompressedBytes,
       this.timeoutMs,
+      signal,
     )
     const entries = await listTarEntries(data)
+    signal?.throwIfAborted()
 
     this.byteStore.put(repository.commitSha, data)
 
@@ -60,8 +69,12 @@ async function downloadWithLimit(
   url: string,
   maxCompressedBytes: number,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<Uint8Array> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+  const timeout = AbortSignal.timeout(timeoutMs)
+  const response = await fetch(url, {
+    signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
+  })
 
   if (!response.ok) {
     throw new Error(`Archive fetch failed with HTTP ${response.status}.`)
@@ -146,4 +159,3 @@ async function listTarEntries(data: Uint8Array): Promise<ArchiveEntry[]> {
     await rm(stagingDir, { recursive: true, force: true })
   }
 }
-

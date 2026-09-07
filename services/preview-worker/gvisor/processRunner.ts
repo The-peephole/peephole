@@ -1,6 +1,8 @@
 export interface ProcessRunOptions {
   cwd?: string
   timeoutMs: number
+  signal?: AbortSignal
+  shell?: boolean
   env?: Readonly<Record<string, string | undefined>>
 }
 

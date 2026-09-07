@@ -63,7 +63,7 @@ export class PostgresPreviewJobStore implements PreviewJobStore {
     idempotencyKey: string
     requestFingerprint: string
     job: StoredPreviewJob
-  }): Promise<{ created: boolean; job: StoredPreviewJob }> {
+  }): Promise<{ created: boolean; job: StoredPreviewJob; enqueued?: boolean }> {
     return this.database.transaction(async (client) => {
       const inserted = await client.query<PreviewJobRow>(
         `
@@ -83,7 +83,28 @@ export class PostgresPreviewJobStore implements PreviewJobStore {
       const insertedRow = inserted.rows[0]
 
       if (insertedRow) {
-        return { created: true, job: toStoredJob(insertedRow) }
+        const job = toStoredJob(insertedRow)
+        const enqueued = job.status === "queued"
+        if (enqueued) {
+          // Admission and delivery commit together, including after an API crash.
+          await client.query(
+            `
+            INSERT INTO peephole_preview_queue (
+              job_id, payload, status, available_at, attempts, created_at, updated_at
+            ) VALUES ($1, $2::jsonb, 'queued', now(), 0, now(), now())
+          `,
+            [
+              job.id,
+              JSON.stringify({
+                jobId: job.id,
+                repository: job.repository,
+                plan: job.plan,
+                cacheKey: job.cacheKey,
+              }),
+            ],
+          )
+        }
+        return { created: true, job, enqueued }
       }
 
       const existing = await client.query<PreviewJobRow>(
