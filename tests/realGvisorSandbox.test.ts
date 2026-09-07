@@ -1,8 +1,16 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import {
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
+import { GVisorOrphanReaper } from "../services/preview-worker/gvisor/gvisorOrphanReaper"
 import { GVisorSandboxProvisioner } from "../services/preview-worker/gvisor/gvisorSandboxProvisioner"
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
 import { RunscCommandRunner } from "../services/preview-worker/gvisor/runscCommandRunner"
@@ -99,6 +107,51 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
         "utf8",
       )
       expect(finalContent).toBe("from-host\n")
+    }, 30_000)
+
+    it("reaps a container abandoned mid-run by a crashed worker", async () => {
+      // No allocate()/afterEach here: this simulates a worker process
+      // that crashed while a container was still running, so nothing
+      // tracks or cleans up this workspace except the reaper itself.
+      const dir = await mkdtemp(
+        path.join(os.tmpdir(), "peephole-real-gvisor-reaper-"),
+      )
+      const provisioner = new GVisorSandboxProvisioner({
+        baseRootfsImage,
+        bundlesRootDir: dir,
+      })
+      const ws = await provisioner.allocate("real-gvisor-orphan")
+      const runner = new RunscCommandRunner({ network: "none" })
+
+      // Fire and forget: a long-lived container left running, exactly
+      // like an in-progress `npm ci` would be when the worker process
+      // dies. Its eventual rejection (once the reaper kills it below) is
+      // expected, not a test failure.
+      const abandoned = runner
+        .run(ws, "sleep", ["30"], {
+          timeoutMs: 45_000,
+          env: { PATH: process.env.PATH ?? "" },
+        })
+        .catch(() => undefined)
+
+      await new Promise((resolve) => setTimeout(resolve, 1_500))
+
+      // Age the bundle directory itself so the reaper's mtime-based
+      // staleness check finds it (it was created moments ago).
+      const old = new Date(Date.now() - 60 * 60_000)
+      await utimes(ws.bundleDir, old, old)
+
+      const reaper = new GVisorOrphanReaper({
+        bundlesRootDir: dir,
+        maxAgeMs: 30 * 60_000,
+      })
+      const reaped = await reaper.reap()
+
+      expect(reaped).toEqual([path.basename(ws.bundleDir)])
+      await expect(stat(ws.bundleDir)).rejects.toThrow()
+
+      await abandoned
+      await rm(dir, { recursive: true, force: true })
     }, 30_000)
 
     it("enforces the configured PID limit", async () => {

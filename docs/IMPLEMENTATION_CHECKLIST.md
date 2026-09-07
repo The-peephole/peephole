@@ -130,9 +130,14 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       of the source archive/output size checks (catches a build that
       writes far more to disk than either bound would show)
 - [x] Reap orphan jobs: `LocalDevSandboxReaper` (real, tested against real
-      temp directories) and `GVisorOrphanReaper` (written against `runsc
-      list --format json`, cross-referencing bundle age; **unverified
-      against a real runsc binary** -- see below)
+      temp directories) and `GVisorOrphanReaper` (cross-references stale
+      bundle directories against `runsc list --format json`) -- both now
+      verified against a real gVisor host: `runsc list`'s actual JSON
+      output does follow the assumed `{id, bundle, ...}` shape, and
+      `reap()` correctly finds, kills, and deletes a container abandoned
+      mid-run (simulating a worker crash) and removes its bundle
+      directory (`tests/realGvisorSandbox.test.ts`, "reaps a container
+      abandoned mid-run")
 - [x] Connect the durable queue to the worker contract with lease,
       acknowledgement, delayed retry, and abortable polling
 - [x] Renew (heartbeat) the queue lease while a job is running, fence
@@ -261,8 +266,10 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       ci` + `npm run build` through the actual `PreviewJobWorker`
       pipeline, gVisor end to end
 - [x] job wall-clock budget and workspace disk-quota enforcement tests
-- [x] orphan-sandbox reaper tests (real directories for the dev reaper,
-      fake `runsc list` output for the gVisor reaper)
+- [x] orphan-sandbox reaper tests (real directories for the dev reaper;
+      fake `runsc list` output for the gVisor reaper's unit tests, plus a
+      real abandoned-container scenario against an actual gVisor host in
+      `tests/realGvisorSandbox.test.ts`)
 - [x] PostgreSQL adapter SQL/transaction and durable worker-loop unit tests
 - [x] PostgreSQL integration test against local PostgreSQL 18.4, including
       concurrent claiming and expired-lease recovery

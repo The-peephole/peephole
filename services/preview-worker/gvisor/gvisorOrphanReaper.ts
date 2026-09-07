@@ -28,11 +28,12 @@ interface RunscListEntry {
  * of truth is `runsc list` itself; this cross-references its bundle paths
  * against stale directories rather than assuming any in-memory state.
  *
- * UNTESTED AGAINST A REAL `runsc` BINARY. `runsc list --format json` is
- * assumed to follow runc's conventional `{id, bundle, ...}` shape (gVisor
- * targets OCI/runc CLI compatibility), but this has not been verified on a
- * real gVisor host -- confirm the actual output shape before relying on
- * this in production.
+ * Verified against a real gVisor host (runsc, WSL2 Ubuntu):
+ * `runsc list --format json` does follow the assumed `{id, bundle, ...}`
+ * shape, and reap() correctly finds, kills, and deletes a container
+ * abandoned mid-run (simulating a worker crash) and removes its bundle
+ * directory (see tests/realGvisorSandbox.test.ts, "reaps a container
+ * abandoned mid-run").
  */
 export class GVisorOrphanReaper {
   private readonly runscBinaryPath: string
