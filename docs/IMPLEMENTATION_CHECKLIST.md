@@ -179,9 +179,23 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Enforce PID limits **on a real gVisor host** -- verified: a
       sandboxed fork bomb against a 16-PID limit fails
       (`tests/realGvisorSandbox.test.ts`)
-- [ ] Enforce CPU and memory limits **on a real gVisor host** (wired into
-      the OCI config and structurally unit-tested; not yet stress-tested
-      against a real limit-exceeding workload)
+- [x] Enforce CPU limits **on a real gVisor host** -- verified: a fixed
+      CPU-bound workload (repeated SHA-256) takes more than twice as long
+      in wall-clock time under a 0.1-core quota as under a 4-core quota
+      (`tests/realGvisorSandbox.test.ts`, "throttles CPU usage")
+- [x] Enforce memory limits **on a real gVisor host** -- verified, but
+      only after finding and fixing a real gap: the OCI spec set
+      `memory.limit` but not `memory.swap`, so a process that hit the
+      memory ceiling was pushed into swap by the kernel's reclaim path
+      instead of OOM-killed (confirmed by polling the cgroup live:
+      `memory.current` held right at the configured limit while
+      `memory.events`' `max` counter climbed into the thousands, and the
+      sandboxed process kept allocating well past the intended cap
+      because swap was available). Setting `swap` equal to `limit`
+      (`services/preview-worker/gvisor/ociConfig.ts`) closes that
+      headroom; a 200MB allocation against a 64MB limit now gets killed
+      (`tests/realGvisorSandbox.test.ts`, "enforces the configured memory
+      limit").
 - [x] Publish static artifacts with restrictive headers via
       `LocalArtifactHost` (`services/local-preview/artifactHost.ts`): a
       dedicated loopback HTTP origin per artifact, `cache-control: no-store`,
@@ -240,9 +254,9 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       `tests/subnetAllocator.test.ts`), plus real-`runsc` sandbox tests
       (`tests/realGvisorSandbox.test.ts`, gated on
       `PEEPHOLE_REAL_GVISOR_TESTS`): non-root uid/gid, cross-container
-      disk persistence, PID-limit enforcement, real network egress,
-      metadata blocking, and concurrent-job network isolation, all
-      against an actual gVisor host -- plus a full sandboxed golden-path
+      disk persistence, PID/CPU/memory-limit enforcement, real network
+      egress, metadata blocking, and concurrent-job network isolation,
+      all against an actual gVisor host -- plus a full sandboxed golden-path
       test (`tests/realGvisorGoldenPath.test.ts`, same gate): real `npm
       ci` + `npm run build` through the actual `PreviewJobWorker`
       pipeline, gVisor end to end

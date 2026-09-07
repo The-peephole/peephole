@@ -48,7 +48,7 @@ export interface OciRuntimeSpec {
     namespaces: Array<{ type: string; path?: string }>
     resources: {
       cpu: { quota: number; period: number }
-      memory: { limit: number }
+      memory: { limit: number; swap: number }
       pids: { limit: number }
     }
     maskedPaths: string[]
@@ -131,7 +131,19 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
           quota: options.resourceLimits.cpuCount * CPU_PERIOD_MICROSECONDS,
           period: CPU_PERIOD_MICROSECONDS,
         },
-        memory: { limit: options.resourceLimits.memoryBytes },
+        // "swap" is the combined memory+swap ceiling (cgroup v2
+        // memory.swap.max derives from limit and this); without it a
+        // sandboxed process that hits the memory limit just gets pushed
+        // into swap instead of OOM-killed -- confirmed on a real gVisor
+        // host: memory.current held right at the configured limit while
+        // memory.events' "max" counter climbed into the thousands, but
+        // the process kept right on allocating well past it because swap
+        // was available. Setting swap equal to limit removes that
+        // headroom entirely.
+        memory: {
+          limit: options.resourceLimits.memoryBytes,
+          swap: options.resourceLimits.memoryBytes,
+        },
         pids: { limit: options.resourceLimits.maxPids },
       },
       maskedPaths: ["/proc/kcore", "/proc/keys", "/sys/firmware"],

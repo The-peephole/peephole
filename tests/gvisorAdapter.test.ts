@@ -35,7 +35,10 @@ describe("buildOciRuntimeSpec", () => {
       quota: 100_000,
       period: 100_000,
     })
-    expect(spec.linux.resources.memory).toEqual({ limit: 1_073_741_824 })
+    expect(spec.linux.resources.memory).toEqual({
+      limit: 1_073_741_824,
+      swap: 1_073_741_824,
+    })
     expect(spec.linux.resources.pids).toEqual({ limit: 128 })
     expect(spec.linux.namespaces.map((ns) => ns.type)).toEqual(
       expect.arrayContaining(["pid", "network", "ipc", "uts", "mount"]),

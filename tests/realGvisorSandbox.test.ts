@@ -125,6 +125,78 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       ).rejects.toThrow()
     }, 30_000)
 
+    it("enforces the configured memory limit", async () => {
+      const ws = await allocate("real-gvisor-memory")
+      const runner = new RunscCommandRunner({
+        network: "none",
+        resourceLimits: {
+          cpuCount: 1,
+          memoryBytes: 64 * 1024 * 1024,
+          maxPids: 128,
+        },
+      })
+
+      // Allocates and touches (forces physical commit of) 200MB against a
+      // 64MB cgroup limit -- Buffer.alloc is off the V8 heap, so this
+      // exercises the OS/cgroup memory limit, not V8's own heap ceiling.
+      // Expect the OOM killer to end the process (not a graceful failure).
+      const memoryHog =
+        "const b=Buffer.alloc(200*1024*1024);for(let i=0;i<b.length;i+=4096)b[i]=1;console.log('survived')"
+
+      await expect(
+        runner.run(ws, "node", ["-e", memoryHog], {
+          timeoutMs: 15_000,
+          env: { PATH: process.env.PATH ?? "" },
+        }),
+      ).rejects.toThrow()
+    }, 30_000)
+
+    it("throttles CPU usage to roughly the configured quota", async () => {
+      // Measured from outside the sandbox (wall-clock around the run()
+      // call), not via getrusage()/process.cpuUsage() inside it -- gVisor
+      // virtualizes those, and a fixed amount of real CPU-bound work
+      // (repeated SHA-256) simply takes proportionally longer in wall
+      // time when the cgroup CFS quota restricts it to a fifth of a core,
+      // regardless of how faithfully the sandbox reports its own usage.
+      const hashWorkload = (iterations: number) =>
+        `const crypto=require('crypto');let x=Buffer.from('start');for(let i=0;i<${iterations};i++){x=crypto.createHash('sha256').update(x).digest()}`
+
+      // Each call gets its own provisioner/bundlesRootDir (not the shared
+      // allocate() helper, which only tracks one workspace at a time for
+      // afterEach) so the two timed runs can't interfere with each other.
+      const time = async (cpuCount: number, iterations: number) => {
+        const dir = await mkdtemp(
+          path.join(os.tmpdir(), "peephole-real-gvisor-cpu-"),
+        )
+        const provisioner = new GVisorSandboxProvisioner({
+          baseRootfsImage,
+          bundlesRootDir: dir,
+        })
+        const ws = await provisioner.allocate(`real-gvisor-cpu-${cpuCount}`)
+        const runner = new RunscCommandRunner({
+          network: "none",
+          resourceLimits: { cpuCount, memoryBytes: 1_073_741_824, maxPids: 32 },
+        })
+        try {
+          const start = Date.now()
+          await runner.run(ws, "node", ["-e", hashWorkload(iterations)], {
+            timeoutMs: 60_000,
+            env: { PATH: process.env.PATH ?? "" },
+          })
+          return Date.now() - start
+        } finally {
+          await ws.destroy()
+          await rm(dir, { recursive: true, force: true })
+        }
+      }
+
+      const iterations = 400_000
+      const generousMs = await time(4, iterations)
+      const throttledMs = await time(0.1, iterations)
+
+      expect(throttledMs).toBeGreaterThan(generousMs * 2)
+    }, 90_000)
+
     it("reaches the real internet through network: sandbox", async () => {
       const ws = await allocate("real-gvisor-net")
       const runner = new RunscCommandRunner({ network: "sandbox" })
