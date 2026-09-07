@@ -313,7 +313,21 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       CPU/memory/disk (each job's own cgroup limits are enforced
       independently and verified, but nothing here tests host-wide
       capacity planning under concurrent load).
-- [ ] artifact path and origin isolation tests
+- [x] artifact path and origin isolation tests
+      (`tests/localArtifactHost.test.ts`): two artifacts get distinct
+      loopback origins (ports), and one artifact's server never resolves
+      another artifact's id as a path (direct or via traversal). Found
+      and fixed a real gap while writing these: every artifact response
+      sent `Access-Control-Allow-Origin: *` and
+      `Cross-Origin-Resource-Policy: cross-origin` -- neither is needed
+      (the extension only ever navigates an iframe to the artifact's
+      URL, which was never gated by CORS/CORP) and both defeat the
+      isolated-origin-per-artifact design this host exists for: any
+      ordinary website open in another tab could have port-scanned
+      127.0.0.1, found a live preview, and read its contents via
+      `fetch()` -- a known attack class against permissive local dev
+      servers. Removed the CORS header entirely and tightened CORP to
+      `same-origin` (`services/local-preview/artifactHost.ts`).
 - [x] end-to-end Chrome side-panel test (manual only, no automated
       end-to-end test exists yet): an unpacked build of the extension, a
       real GitHub repository, `Build preview` clicked in the real side

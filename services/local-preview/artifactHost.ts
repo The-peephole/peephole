@@ -304,8 +304,17 @@ function staticHeaders(filePath: string, length: number) {
     "content-type": contentType(filePath),
     "content-length": length,
     "cache-control": "no-store",
-    "access-control-allow-origin": "*",
-    "cross-origin-resource-policy": "cross-origin",
+    // No Access-Control-Allow-Origin: the browser already blocks a
+    // cross-origin fetch() from *reading* this response without one, and
+    // there is no legitimate cross-origin JS consumer of these bytes --
+    // the iframe embedding this artifact just navigates to its URL,
+    // which was never gated by CORS. Without this fix, any ordinary
+    // website open in another tab could port-scan 127.0.0.1, find a
+    // live preview, and read its contents via fetch (a well-known class
+    // of attack against permissive local dev servers) -- CORS is an
+    // opt-in grant, and the isolated-origin-per-artifact design this
+    // host exists for should never opt every artifact into it globally.
+    "cross-origin-resource-policy": "same-origin",
     "referrer-policy": "no-referrer",
     "permissions-policy": "camera=(), microphone=(), geolocation=()",
     "x-content-type-options": "nosniff",

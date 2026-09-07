@@ -8,6 +8,8 @@ import { LocalArtifactHost } from "../services/local-preview/artifactHost"
 
 const artifactId = "artifact-01234567-89ab-cdef-0123-456789abcdef"
 const jobId = "01234567-89ab-cdef-0123-456789abcdef"
+const otherArtifactId = "artifact-11111111-2222-3333-4444-555555555555"
+const otherJobId = "11111111-2222-3333-4444-555555555555"
 
 describe("LocalArtifactHost", () => {
   let storageDir: string
@@ -98,7 +100,76 @@ describe("LocalArtifactHost", () => {
       host.sign(missingId, jobId, new Date(Date.now() + 60_000)),
     ).rejects.toThrow("index.html")
   })
+
+  it("gives two artifacts distinct origins, and rejects CORS/cross-origin embedding of either", async () => {
+    await writeArtifact(
+      storageDir,
+      otherArtifactId,
+      "<!doctype html><p>other</p>",
+    )
+
+    const first = await host.sign(
+      artifactId,
+      jobId,
+      new Date(Date.now() + 60_000),
+    )
+    const second = await host.sign(
+      otherArtifactId,
+      otherJobId,
+      new Date(Date.now() + 60_000),
+    )
+
+    expect(new URL(first.url).port).not.toBe(new URL(second.url).port)
+
+    const response = await fetch(first.url)
+    // No Access-Control-Allow-Origin: a cross-origin fetch() (e.g. from
+    // an unrelated website in another tab, or from the *other* artifact)
+    // cannot read this response -- only same-origin requests and plain
+    // navigation (how the extension actually loads it, via an iframe's
+    // src) can.
+    expect(response.headers.get("access-control-allow-origin")).toBeNull()
+    expect(response.headers.get("cross-origin-resource-policy")).toBe(
+      "same-origin",
+    )
+  })
+
+  it("never serves one artifact's files through another artifact's origin", async () => {
+    await writeArtifact(
+      storageDir,
+      otherArtifactId,
+      "<!doctype html><p>other-secret</p>",
+    )
+
+    const first = await host.sign(
+      artifactId,
+      jobId,
+      new Date(Date.now() + 60_000),
+    )
+    await host.sign(otherArtifactId, otherJobId, new Date(Date.now() + 60_000))
+
+    // first's server is bound to its own artifactRoot only; asking it for
+    // the other artifact's id (as a path segment, or via traversal) must
+    // never resolve to the other artifact's on-disk directory.
+    const direct = await rawRequest(first.url, `/${otherArtifactId}/index.html`)
+    const traversal = await rawRequest(
+      first.url,
+      `/../${otherArtifactId}/index.html`,
+    )
+
+    expect(direct.status).toBe(404)
+    expect(traversal.status).toBe(404)
+  })
 })
+
+async function writeArtifact(
+  storageDir: string,
+  id: string,
+  html: string,
+): Promise<void> {
+  const dir = path.join(storageDir, id)
+  await mkdir(dir, { recursive: true })
+  await writeFile(path.join(dir, "index.html"), html)
+}
 
 async function rawRequest(
   baseUrl: string,
