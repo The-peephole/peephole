@@ -130,28 +130,36 @@ describeWithPostgres("PostgreSQL integration", () => {
   })
 
   it("commits one job and one delivery for concurrent identical requests", async () => {
-    const job = createJob()
-    jobIds.push(job.id)
+    // Two concurrent attempts at the same logical request never share a
+    // candidate row id -- PreviewControlPlane.create mints a fresh
+    // crypto.randomUUID() per call before persistence is attempted, exactly
+    // like the two candidates here. Only requesterId/idempotencyKey (the
+    // createOrGet arbiter) are expected to collide.
+    const first = createJob()
+    const second = { ...createJob(), requesterId: first.requesterId }
+    jobIds.push(first.id, second.id)
     const store = new PostgresPreviewJobStore(database)
+    const idempotencyKey = `request-${first.id}`
     const input = {
-      requesterId: job.requesterId,
-      idempotencyKey: `request-${job.id}`,
+      requesterId: first.requesterId,
+      idempotencyKey,
       requestFingerprint: "same-request",
-      job,
     }
     const results = await Promise.all([
-      store.createOrGet(input),
-      store.createOrGet(input),
+      store.createOrGet({ ...input, job: first }),
+      store.createOrGet({ ...input, job: second }),
     ])
-    expect(results.filter((result) => result.created)).toHaveLength(1)
+    const created = results.filter((result) => result.created)
+    expect(created).toHaveLength(1)
+    const wonJobId = created[0]!.job.id
     const rows = await database.query(
       "SELECT job_id FROM peephole_preview_queue WHERE job_id = $1",
-      [job.id],
+      [wonJobId],
     )
     expect(rows.rowCount).toBe(1)
     await database.query(
       "DELETE FROM peephole_preview_queue WHERE job_id = $1",
-      [job.id],
+      [wonJobId],
     )
   })
 
