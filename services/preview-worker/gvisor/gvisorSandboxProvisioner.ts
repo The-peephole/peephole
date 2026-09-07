@@ -99,11 +99,19 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
     // whichever uid this orchestrator runs as, not the base image's
     // SANDBOX_UID:SANDBOX_GID, so the sandboxed process's own home
     // directory (npm's cache/config/log location) needs the same repair.
+    // chown to an arbitrary uid needs root/CAP_CHOWN, which the real
+    // gVisor worker always has (runsc itself needs it too); anywhere this
+    // fails with EPERM can't run real runsc either, so skipping it there
+    // doesn't hide a reachable production failure -- it just keeps
+    // fake-runsc unit tests (tests/gvisorAdapter.test.ts) working without
+    // requiring root.
     await chown(
       path.join(containerRoot, SANDBOX_HOME),
       SANDBOX_UID,
       SANDBOX_GID,
-    )
+    ).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EPERM") throw error
+    })
 
     const deadline = this.now().getTime() + this.jobTimeoutMs
     const containers = new Set<string>()
