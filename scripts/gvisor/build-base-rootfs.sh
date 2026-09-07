@@ -47,5 +47,14 @@ mkdir -p "$OUT_DIR/home/sandbox"
 chown 65534:65534 "$OUT_DIR/home/sandbox"
 chmod 700 "$OUT_DIR/home/sandbox"
 
+# debootstrap's base-files postinst reads the ambient hostname of the
+# machine running this script (it doesn't get its own UTS namespace) and
+# bakes it into /etc/hostname -- found via a sandboxed script reading
+# /proc/1/root/etc/hostname and getting this build host's real name back.
+# Not a live escape (the OCI spec's own "hostname" field, set per run,
+# is what actually governs the sandbox's UTS namespace at runtime), but
+# there's no reason to ship the build host's name in every job's image.
+echo "peephole-preview" > "$OUT_DIR/etc/hostname"
+
 echo "Base rootfs ready at $OUT_DIR"
 du -sh "$OUT_DIR"

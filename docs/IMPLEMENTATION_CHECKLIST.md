@@ -129,6 +129,22 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       checks the workspace tree after install and after build, independent
       of the source archive/output size checks (catches a build that
       writes far more to disk than either bound would show)
+- [x] gVisor sandbox: kill a runaway write early instead of only catching
+      it after the command finishes. Found via a real adversarial test
+      that there was previously no live bound at all -- an ordinary
+      `npm ci`-style script wrote 500MB inside `RunscCommandRunner`
+      without any resistance (`root.path` is a real host directory, not
+      a size-bounded mount). `RunscCommandRunner` now polls the
+      workspace's on-disk size (default every 1s) while a command runs
+      and kills the container the moment it's exceeded
+      (`tests/gvisorAdapter.test.ts`, "kills a container early"). **This
+      is best-effort, not a hard quota**: it's a userspace poll on a
+      timer, so a fast enough writer overshoots by whatever it can write
+      in one poll window -- confirmed on a real gVisor host, a 20MB limit
+      let ~330MB through before the kill landed. A real hard bound needs
+      a loop-mounted, quota-enforcing filesystem for `/workspace`
+      (kernel-level ENOSPC, no polling delay) instead of a plain host
+      directory -- not attempted here; tracked as a follow-up, not done.
 - [x] Reap orphan jobs: `LocalDevSandboxReaper` (real, tested against real
       temp directories) and `GVisorOrphanReaper` (cross-references stale
       bundle directories against `runsc list --format json`) -- both now
@@ -278,8 +294,25 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] side-panel trusted-origin embedding tests: sandboxed iframe for a
       loopback artifact, refusal for a non-loopback origin
       (`tests/PreviewJobPanel.test.tsx`, `tests/previewConfig.test.ts`)
-- [ ] malicious install/build fixture tests
-- [ ] resource and network isolation tests
+- [x] malicious install/build fixture tests, against a real gVisor host
+      (`tests/realGvisorMaliciousScript.test.ts`): can't escape
+      `/workspace` through a symlink to `/etc`, can't read `/etc/shadow`,
+      can't escalate to root via `su`/`sudo`, gets no default route (and
+      can't reach the NAT gateway or another job's network) under
+      `network: "none"`. Also directly led to a real fix: an adversarial
+      disk-fill script found there was no live disk-usage bound at all
+      (see "Enforce a real workspace disk-usage quota" above) --
+      confirming this kind of testing is worth doing, not just a
+      checkbox.
+- [x] resource and network isolation tests -- PID/CPU/memory limits and
+      metadata/link-local blocking verified against a real gVisor host
+      (`tests/realGvisorSandbox.test.ts`); concurrent jobs confirmed to
+      get independent, non-interfering networks (same file, "gives
+      concurrent jobs independent, non-conflicting networks"). **Not
+      done**: two concurrent jobs *competing* for the same host's overall
+      CPU/memory/disk (each job's own cgroup limits are enforced
+      independently and verified, but nothing here tests host-wide
+      capacity planning under concurrent load).
 - [ ] artifact path and origin isolation tests
 - [x] end-to-end Chrome side-panel test (manual only, no automated
       end-to-end test exists yet): an unpacked build of the extension, a

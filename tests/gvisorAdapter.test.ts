@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -205,4 +205,61 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
     await workspace.destroy() // idempotent: no crash, no duplicate work
     expect(processRunner.calls).toHaveLength(4)
   })
+
+  it("kills a container early once the workspace grows past the size limit, instead of waiting for it to exit on its own", async () => {
+    class WatchableProcessRunner implements ProcessRunner {
+      readonly calls: Array<{ command: string; args: string[] }> = []
+      private resolveRun?: (result: ProcessRunResult) => void
+
+      async run(command: string, args: string[]): Promise<ProcessRunResult> {
+        this.calls.push({ command, args })
+        if (args.includes("kill")) {
+          this.resolveRun?.({
+            exitCode: 137,
+            timedOut: false,
+            stdout: "",
+            stderr: "",
+          })
+          return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }
+        }
+        if (args.includes("run")) {
+          // Never resolves on its own within this test's timeout -- only
+          // the disk-quota watcher's kill (above) unblocks it, proving
+          // the kill happens *during* the run rather than after some
+          // other completion path.
+          return new Promise((resolve) => {
+            this.resolveRun = resolve
+          })
+        }
+        return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }
+      }
+    }
+
+    const processRunner = new WatchableProcessRunner()
+    const provisioner = new GVisorSandboxProvisioner({
+      baseRootfsImage,
+      bundlesRootDir,
+      processRunner,
+    })
+    const workspace = await provisioner.allocate("job-quota")
+    const runner = new RunscCommandRunner({
+      processRunner,
+      maxWorkspaceBytes: 10,
+      diskQuotaPollMs: 20,
+    })
+
+    // Already over the 10-byte limit before run() is even called, so the
+    // watcher's very first poll tick should trip it.
+    await writeFile(path.join(workspace.rootDir, "big.bin"), Buffer.alloc(1000))
+
+    await expect(
+      runner.run(workspace, "npm", ["ci"], { timeoutMs: 5_000 }),
+    ).rejects.toThrow(/workspace size limit/)
+
+    expect(processRunner.calls.some((call) => call.args.includes("kill"))).toBe(
+      true,
+    )
+
+    await workspace.destroy()
+  }, 10_000)
 })

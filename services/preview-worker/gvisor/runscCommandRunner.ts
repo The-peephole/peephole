@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto"
 import { writeFile } from "node:fs/promises"
 import path from "node:path"
 
+import { DEFAULT_ARCHIVE_LIMITS } from "../../../core/runner/archivePolicy"
 import {
   DEFAULT_SANDBOX_RESOURCE_LIMITS,
   type SandboxResourceLimits,
@@ -11,6 +12,7 @@ import {
   type CommandRunner,
   type CommandRunOptions,
 } from "../local/commandRunner"
+import { directorySizeExceeds } from "../local/directorySize"
 import type { LocalPreviewWorkspace } from "../local/localWorkspace"
 import { asGVisorWorkspace } from "./gvisorWorkspace"
 import { buildOciRuntimeSpec } from "./ociConfig"
@@ -18,6 +20,7 @@ import { NodeProcessRunner } from "./nodeProcessRunner"
 import type { ProcessRunner } from "./processRunner"
 import {
   runscDeleteArgs,
+  runscKillArgs,
   runscRunArgs,
   type RunscNetworkMode,
 } from "./runscCli"
@@ -29,6 +32,10 @@ export interface RunscCommandRunnerOptions {
   resourceLimits?: SandboxResourceLimits
   network?: RunscNetworkMode
   processRunner?: ProcessRunner
+  /** Live workspace-size cap enforced while the command runs (not just
+   * after it exits) -- see run()'s disk-quota watcher. */
+  maxWorkspaceBytes?: number
+  diskQuotaPollMs?: number
 }
 
 /**
@@ -48,6 +55,28 @@ export interface RunscCommandRunnerOptions {
  * containers, resource limits) is verified against a real gVisor host --
  * see tests/realGvisorSandbox.test.ts. CLI/OCI argument construction also
  * has fake-`ProcessRunner` unit coverage in tests/gvisorAdapter.test.ts.
+ *
+ * There is no filesystem-level disk quota (root.path is a real host
+ * directory, not a size-bounded mount -- a tmpfs would lose exactly the
+ * cross-container persistence RunscCommandRunner depends on, and a
+ * loop-mounted, quota-enforcing image is a real project of its own, not
+ * attempted here yet), so without the poll below a script that just keeps
+ * writing runs unthrottled until it finishes, times out, or exhausts the
+ * real disk. Confirmed on a real gVisor host: writing 500MB in an
+ * ordinary `npm ci`-style script hit no resistance at all.
+ *
+ * The poll is a real, verified improvement, but it is best-effort, not a
+ * hard bound: it is a userspace directory walk on a timer, so a script
+ * that writes fast enough overshoots the configured limit by however much
+ * it can write in one `diskQuotaPollMs` window plus kill latency --
+ * confirmed on a real gVisor host at the default settings: a 20MB limit
+ * against a script writing as fast as `fs.appendFileSync` allows let
+ * ~330MB through before the kill landed. It meaningfully shortens the
+ * window versus no live check at all (which let the same script write
+ * unbounded until it chose to stop), and NpmDependencyInstaller/
+ * NpmBuildExecutor's own post-command size checks still catch anything
+ * that slips through -- but a determined, fast-writing script will still
+ * get well past the configured number before this stops it.
  */
 export class RunscCommandRunner implements CommandRunner {
   private readonly runscBinaryPath: string
@@ -55,6 +84,8 @@ export class RunscCommandRunner implements CommandRunner {
   private readonly resourceLimits: SandboxResourceLimits
   private readonly network: RunscNetworkMode
   private readonly processRunner: ProcessRunner
+  private readonly maxWorkspaceBytes: number
+  private readonly diskQuotaPollMs: number
 
   constructor(options: RunscCommandRunnerOptions = {}) {
     this.runscBinaryPath = options.runscBinaryPath ?? "runsc"
@@ -63,6 +94,9 @@ export class RunscCommandRunner implements CommandRunner {
       options.resourceLimits ?? DEFAULT_SANDBOX_RESOURCE_LIMITS
     this.network = options.network ?? "none"
     this.processRunner = options.processRunner ?? new NodeProcessRunner()
+    this.maxWorkspaceBytes =
+      options.maxWorkspaceBytes ?? DEFAULT_ARCHIVE_LIMITS.maxExpandedBytes
+    this.diskQuotaPollMs = options.diskQuotaPollMs ?? 1_000
   }
 
   async run(
@@ -105,6 +139,15 @@ export class RunscCommandRunner implements CommandRunner {
       JSON.stringify(spec, null, 2),
     )
 
+    let quotaExceeded = false
+    const diskQuotaTimer = this.watchDiskQuota(
+      sandbox.rootDir,
+      containerId,
+      () => {
+        quotaExceeded = true
+      },
+    )
+
     try {
       const result = await this.processRunner.run(
         this.runscBinaryPath,
@@ -118,6 +161,14 @@ export class RunscCommandRunner implements CommandRunner {
         ),
         { timeoutMs: options.timeoutMs, signal: options.signal },
       )
+
+      if (quotaExceeded) {
+        throw new CommandExecutionError(
+          `${command} ${args.join(" ")} exceeded the ${String(this.maxWorkspaceBytes)}-byte workspace size limit and was stopped.`,
+          result.stdout,
+          result.stderr,
+        )
+      }
 
       if (result.timedOut) {
         throw new CommandExecutionError(
@@ -135,6 +186,7 @@ export class RunscCommandRunner implements CommandRunner {
         )
       }
     } finally {
+      clearInterval(diskQuotaTimer)
       await this.processRunner
         .run(
           this.runscBinaryPath,
@@ -143,5 +195,40 @@ export class RunscCommandRunner implements CommandRunner {
         )
         .catch(() => undefined)
     }
+  }
+
+  /** Polls the workspace's on-disk size while the container runs and kills
+   * it the moment the size cap is crossed, instead of only finding out
+   * after the command finishes on its own. */
+  private watchDiskQuota(
+    rootDir: string,
+    containerId: string,
+    onExceeded: () => void,
+  ): ReturnType<typeof setInterval> {
+    let checking = false
+    let tripped = false
+    const timer = setInterval(() => {
+      if (checking || tripped) return
+      checking = true
+      void directorySizeExceeds(rootDir, this.maxWorkspaceBytes)
+        .then((exceeded) => {
+          if (!exceeded || tripped) return
+          tripped = true
+          onExceeded()
+          return this.processRunner
+            .run(
+              this.runscBinaryPath,
+              runscKillArgs({ runscRootDir: this.runscRootDir }, containerId),
+              { timeoutMs: 5_000 },
+            )
+            .catch(() => undefined)
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          checking = false
+        })
+    }, this.diskQuotaPollMs)
+    timer.unref()
+    return timer
   }
 }
