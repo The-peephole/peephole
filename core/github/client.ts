@@ -70,7 +70,8 @@ export interface GitHubClientOptions {
    * logged; see "Never log credentials or secret-like values" in
    * docs/IMPLEMENTATION_CHECKLIST.md.
    */
-  getToken?: () => string | null | undefined | Promise<string | null | undefined>
+  getToken?: () =>
+    string | null | undefined | Promise<string | null | undefined>
 }
 
 export class GitHubClient {

@@ -6,7 +6,11 @@ import {
   validateFetchedArchive,
   validateResolvedOutput,
 } from "../core/runner/archivePolicy"
-import type { ArchiveEntry, FetchedArchive, ResolvedOutput } from "../types/runner"
+import type {
+  ArchiveEntry,
+  FetchedArchive,
+  ResolvedOutput,
+} from "../types/runner"
 
 function entry(path: string, bytes = 10, isSymlink = false): ArchiveEntry {
   return { path, bytes, isSymlink }
@@ -59,7 +63,10 @@ describe("validateFetchedArchive", () => {
   it("rejects traversal, absolute, and backslash paths", () => {
     for (const path of ["../escape", "/etc/passwd", "src\\evil.ts", ""]) {
       expect(() =>
-        validateFetchedArchive({ ...okArchive, entries: [entry(path)] }, limits),
+        validateFetchedArchive(
+          { ...okArchive, entries: [entry(path)] },
+          limits,
+        ),
       ).toThrow(ArchiveRejectedError)
     }
   })

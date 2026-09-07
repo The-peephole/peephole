@@ -6,7 +6,11 @@ export type RunscNetworkMode = "none" | "sandbox"
 
 export function runscRunArgs(
   global: RunscGlobalOptions,
-  options: { bundleDir: string; containerId: string; network: RunscNetworkMode },
+  options: {
+    bundleDir: string
+    containerId: string
+    network: RunscNetworkMode
+  },
 ): string[] {
   return [
     "--root",

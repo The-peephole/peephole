@@ -11,7 +11,11 @@ import type {
   ProcessRunner,
   ProcessRunResult,
 } from "../services/preview-worker/gvisor/processRunner"
-import { runscDeleteArgs, runscKillArgs, runscRunArgs } from "../services/preview-worker/gvisor/runscCli"
+import {
+  runscDeleteArgs,
+  runscKillArgs,
+  runscRunArgs,
+} from "../services/preview-worker/gvisor/runscCli"
 
 describe("buildOciRuntimeSpec", () => {
   it("produces a non-root, capability-stripped, quota'd spec", () => {
@@ -28,7 +32,10 @@ describe("buildOciRuntimeSpec", () => {
     expect(spec.process.user).toEqual({ uid: 65534, gid: 65534 })
     expect(spec.process.noNewPrivileges).toBe(true)
     expect(spec.process.capabilities.bounding).toEqual([])
-    expect(spec.linux.resources.cpu).toEqual({ quota: 100_000, period: 100_000 })
+    expect(spec.linux.resources.cpu).toEqual({
+      quota: 100_000,
+      period: 100_000,
+    })
     expect(spec.linux.resources.memory).toEqual({ limit: 1_073_741_824 })
     expect(spec.linux.resources.pids).toEqual({ limit: 128 })
     expect(spec.linux.namespaces.map((ns) => ns.type)).toEqual(
@@ -98,7 +105,9 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
   let bundlesRootDir: string
 
   beforeEach(async () => {
-    baseRootfsImage = await mkdtemp(path.join(os.tmpdir(), "peephole-base-rootfs-"))
+    baseRootfsImage = await mkdtemp(
+      path.join(os.tmpdir(), "peephole-base-rootfs-"),
+    )
     bundlesRootDir = await mkdtemp(path.join(os.tmpdir(), "peephole-bundles-"))
   })
 

@@ -1,4 +1,8 @@
-import type { ArchiveEntry, FetchedArchive, ResolvedOutput } from "../../types/runner"
+import type {
+  ArchiveEntry,
+  FetchedArchive,
+  ResolvedOutput,
+} from "../../types/runner"
 
 export interface ArchiveLimits {
   maxCompressedBytes: number
@@ -79,7 +83,9 @@ export function validateResolvedOutput(
   }
 
   if (output.entries.length > limits.maxFileCount) {
-    throw new OutputRejectedError("The build output exceeds the file-count limit.")
+    throw new OutputRejectedError(
+      "The build output exceeds the file-count limit.",
+    )
   }
 
   let totalBytes = 0
@@ -90,7 +96,9 @@ export function validateResolvedOutput(
   }
 
   if (totalBytes > limits.maxTotalBytes) {
-    throw new OutputRejectedError("The build output exceeds the total size limit.")
+    throw new OutputRejectedError(
+      "The build output exceeds the total size limit.",
+    )
   }
 }
 

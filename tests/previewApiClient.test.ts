@@ -50,9 +50,7 @@ describe("PreviewApiClient", () => {
     // stays green either way. This test asserts the receiver explicitly
     // instead of relying on a real native fetch implementation.
     const originalFetch = globalThis.fetch
-    const brandedFetch = function (
-      this: unknown,
-    ): ReturnType<typeof fetch> {
+    const brandedFetch = function (this: unknown): ReturnType<typeof fetch> {
       if (this !== globalThis) {
         throw new TypeError("Failed to execute 'fetch': Illegal invocation")
       }

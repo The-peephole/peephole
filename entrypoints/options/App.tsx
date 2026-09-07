@@ -47,16 +47,15 @@ export function OptionsApp() {
         <h2>GitHub personal access token</h2>
         <p>
           Optional. Peephole calls the public GitHub REST API to analyze
-          repositories. Without a token, GitHub limits unauthenticated
-          requests to 60 per hour per IP address -- easy to exhaust after a
-          few repositories. A token with no scopes (or just{" "}
-          <code>public_repo</code>) raises that to 5,000 per hour.
+          repositories. Without a token, GitHub limits unauthenticated requests
+          to 60 per hour per IP address -- easy to exhaust after a few
+          repositories. A token with no scopes (or just <code>public_repo</code>
+          ) raises that to 5,000 per hour.
         </p>
         <p>
           This token is stored only in this browser profile&apos;s local
-          extension storage. It is never synced, never built into the
-          extension package, and only ever sent to{" "}
-          <code>https://api.github.com</code>.
+          extension storage. It is never synced, never built into the extension
+          package, and only ever sent to <code>https://api.github.com</code>.
         </p>
 
         <p className="peephole-options__status">

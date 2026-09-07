@@ -44,7 +44,9 @@ class RecordingCommandRunner implements CommandRunner {
   readonly seenTimeoutMs: number[] = []
 
   constructor(
-    private readonly onRun?: (workspace: LocalPreviewWorkspace) => Promise<void>,
+    private readonly onRun?: (
+      workspace: LocalPreviewWorkspace,
+    ) => Promise<void>,
   ) {}
 
   async run(

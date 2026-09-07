@@ -149,5 +149,8 @@ export class GVisorOrphanReaper {
 
 function isWithin(dir: string, candidate: string): boolean {
   const relative = path.relative(dir, candidate)
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  )
 }
