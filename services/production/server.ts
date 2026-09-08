@@ -14,6 +14,7 @@ import { composeProductionWorker } from "../preview-worker/gvisor/composeProduct
 import { GVisorOrphanReaper } from "../preview-worker/gvisor/gvisorOrphanReaper"
 import { PreviewWorkerLoop } from "../preview-worker/workerLoop"
 import { PostgresProductionArtifactStore } from "../preview-api/postgres/productionArtifactStore"
+import { ProductionArtifactTlsAskServer } from "./artifactTlsAskServer"
 import { ProductionArtifactHost } from "./artifactHost"
 import { readProductionConfig } from "./config"
 import { ensureProductionPreflight } from "./preflight"
@@ -55,13 +56,22 @@ async function main(): Promise<void> {
   const database = new PgPoolDatabase(readPostgresConfig(process.env).pool)
   await applyPostgresMigrations(database)
 
+  const artifactStore = new PostgresProductionArtifactStore(database)
   const artifactHost = new ProductionArtifactHost({
     storageDir: productionConfig.artifactStorageDir,
-    store: new PostgresProductionArtifactStore(database),
+    store: artifactStore,
     port: productionConfig.artifactPort,
     baseDomain: productionConfig.artifactBaseDomain,
   })
   const artifactAddress = await artifactHost.listen()
+  const tlsAskServer = new ProductionArtifactTlsAskServer({
+    store: artifactStore,
+    port: productionConfig.artifactTlsAskPort,
+    baseDomain: productionConfig.artifactBaseDomain,
+  })
+  // Rejection propagates to main's fatal startup handler; API and workers
+  // cannot start without the ask listener.
+  const tlsAskAddress = await tlsAskServer.listen()
 
   const github = new GitHubClient({
     getToken: () => process.env.PEEPHOLE_GITHUB_TOKEN,
@@ -148,6 +158,10 @@ async function main(): Promise<void> {
     `[peephole] production worker running with real gVisor sandboxing, concurrency=${String(productionConfig.workerConcurrency)}`,
   )
 
+  console.log(
+    `[peephole] TLS ask listening on http://${tlsAskAddress.host}:${String(tlsAskAddress.port)}/check (loopback only)`,
+  )
+
   let shuttingDown = false
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return
@@ -158,6 +172,7 @@ async function main(): Promise<void> {
     await workerLoopsDone.catch(() => undefined)
     await maintenanceRunning
     await api.stop()
+    await tlsAskServer.close()
     await artifactHost.close()
     await database.close()
     process.exit(0)

@@ -17,6 +17,8 @@ export interface ProductionConfig {
    * (see services/production/artifactHost.ts), so this is the only thing
    * about that listener a deployment can configure. */
   artifactPort: number
+  /** Internal TLS ask listener; bind address is always 127.0.0.1. */
+  artifactTlsAskPort: number
   /** The wildcard domain a reverse proxy will eventually route
    * `<artifact-id>.<this>` to this listener under -- must stay a
    * different registrable domain from the trusted control-plane/UI
@@ -34,6 +36,7 @@ const DEFAULTS = {
   orphanReaperMaxAgeMs: 30 * 60_000,
   maintenanceIntervalMs: 60_000,
   artifactPort: 8_788,
+  artifactTlsAskPort: 8_790,
   artifactBaseDomain: "peepholeusercontent.dev",
 } as const
 
@@ -42,7 +45,7 @@ const TRUSTED_REGISTRABLE_DOMAIN = "peephole.dev"
 export function readProductionConfig(
   environment: NodeJS.ProcessEnv,
 ): ProductionConfig {
-  return {
+  const config = {
     workerConcurrency: readInteger(
       "PEEPHOLE_WORKER_CONCURRENCY",
       environment.PEEPHOLE_WORKER_CONCURRENCY,
@@ -87,12 +90,25 @@ export function readProductionConfig(
       1,
       65_535,
     ),
+    artifactTlsAskPort: readInteger(
+      "PEEPHOLE_ARTIFACT_TLS_ASK_PORT",
+      environment.PEEPHOLE_ARTIFACT_TLS_ASK_PORT,
+      DEFAULTS.artifactTlsAskPort,
+      1,
+      65_535,
+    ),
     artifactBaseDomain: readDomain(
       "PEEPHOLE_ARTIFACT_BASE_DOMAIN",
       environment.PEEPHOLE_ARTIFACT_BASE_DOMAIN,
       DEFAULTS.artifactBaseDomain,
     ),
   }
+  if (config.artifactTlsAskPort === config.artifactPort) {
+    throw new Error(
+      "PEEPHOLE_ARTIFACT_TLS_ASK_PORT must differ from PEEPHOLE_ARTIFACT_PORT.",
+    )
+  }
+  return config
 }
 
 function readPath(value: string | undefined, fallback: string): string {

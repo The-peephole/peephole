@@ -12,6 +12,7 @@ describe("readProductionConfig", () => {
     expect(config.runscRootDir).toBe("/var/run/peephole/runsc")
     expect(config.artifactStorageDir).toBe("/var/lib/peephole/artifacts")
     expect(config.artifactPort).toBe(8_788)
+    expect(config.artifactTlsAskPort).toBe(8_790)
     expect(config.artifactBaseDomain).toBe("peepholeusercontent.dev")
   })
 
@@ -108,11 +109,7 @@ describe("readProductionConfig", () => {
     ).toThrow(/PEEPHOLE_ARTIFACT_BASE_DOMAIN/)
   })
 
-  it.each([
-    "peephole.dev",
-    "preview.peephole.dev",
-    "foo.bar.peephole.dev",
-  ])(
+  it.each(["peephole.dev", "preview.peephole.dev", "foo.bar.peephole.dev"])(
     "rejects artifact base domain %s because it shares the trusted registrable domain",
     (artifactBaseDomain) => {
       expect(() =>
@@ -143,5 +140,36 @@ describe("readProductionConfig", () => {
     const config = readProductionConfig({})
     expect("artifactHost" in config).toBe(false)
     expect("artifactBindAddress" in config).toBe(false)
+  })
+})
+
+describe("TLS ask config", () => {
+  it("reads the ask port and permits the deployment nip.io domain", () => {
+    const config = readProductionConfig({
+      PEEPHOLE_ARTIFACT_TLS_ASK_PORT: "9876",
+      PEEPHOLE_ARTIFACT_BASE_DOMAIN: "3.34.44.114.nip.io",
+      PEEPHOLE_ARTIFACT_TLS_ASK_HOST: "0.0.0.0",
+    })
+    expect(config.artifactTlsAskPort).toBe(9876)
+    expect(config.artifactBaseDomain).toBe("3.34.44.114.nip.io")
+    expect("artifactTlsAskHost" in config).toBe(false)
+    expect("artifactTlsAskBindAddress" in config).toBe(false)
+  })
+
+  it.each(["0", "65536", "-1", "1.5", "abc"])(
+    "rejects invalid ask port %s",
+    (port) => {
+      expect(() =>
+        readProductionConfig({ PEEPHOLE_ARTIFACT_TLS_ASK_PORT: port }),
+      ).toThrow(/PEEPHOLE_ARTIFACT_TLS_ASK_PORT/)
+    },
+  )
+
+  it.each([
+    { PEEPHOLE_ARTIFACT_TLS_ASK_PORT: "8788" },
+    { PEEPHOLE_ARTIFACT_PORT: "8790" },
+    { PEEPHOLE_ARTIFACT_PORT: "9999", PEEPHOLE_ARTIFACT_TLS_ASK_PORT: "9999" },
+  ])("rejects listener port collisions", (environment) => {
+    expect(() => readProductionConfig(environment)).toThrow(/must differ/)
   })
 })

@@ -18,6 +18,8 @@ import {
   resolveVerifiedArtifactRoot,
 } from "../artifactServing/staticFile"
 
+import { resolveProductionArtifactHostname } from "./artifactDomain"
+
 const JOB_ID_PATTERN = /^[a-z\d-]{8,64}$/i
 const ARTIFACT_ID_PATTERN = new RegExp(`^${ARTIFACT_ID_SOURCE}$`, "i")
 // A directory the publisher created but that never got a metadata row at
@@ -72,7 +74,6 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
   private readonly port: number
   private readonly baseDomain: string
   private readonly now: () => Date
-  private readonly hostPattern: RegExp
   private server: Server | undefined
   private listening: Promise<{ host: string; port: number }> | undefined
   // Per-artifact-id async mutex: sign() and reap() each span a
@@ -89,7 +90,6 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
     this.port = options.port ?? 8_788
     this.baseDomain = options.baseDomain ?? "peepholeusercontent.dev"
     this.now = options.now ?? (() => new Date())
-    this.hostPattern = buildHostPattern(this.baseDomain, this.port)
   }
 
   async listen(): Promise<{ host: string; port: number }> {
@@ -357,34 +357,17 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
   ): string | null {
     if (!hostHeader) return null
 
-    const match = this.hostPattern.exec(hostHeader.trim().toLowerCase())
-    return match?.[1] ?? null
+    const host = hostHeader.trim().toLowerCase()
+    const separator = host.lastIndexOf(":")
+    if (separator !== -1) {
+      const port = host.slice(separator + 1)
+      if (port !== "443" && port !== String(this.port)) return null
+    }
+    return resolveProductionArtifactHostname(
+      separator === -1 ? host : host.slice(0, separator),
+      this.baseDomain,
+    )
   }
-}
-
-function buildHostPattern(baseDomain: string, port: number): RegExp {
-  const escapedDomain = escapeRegExp(baseDomain.toLowerCase())
-  // A Host with no port is the normal case for a spec-compliant HTTPS
-  // client (443 is the scheme default, so it's omitted from Host) -- but
-  // a reverse proxy sitting in front of this listener may forward the
-  // original client Host verbatim without stripping an explicit ":443"
-  // some non-browser client included anyway, so that's accepted too, not
-  // just the bare form. A Host naming exactly *this* listener's own port
-  // is accepted as a third, distinct case, for direct loopback testing
-  // only. Any other port (":80", a random port, ...) cannot be a
-  // legitimate request to this specific listener and is rejected
-  // outright, not coerced -- this is deliberately a fixed allowlist of
-  // three forms, not "any port accepted."
-  const acceptedPorts = [...new Set([443, port])]
-    .map((accepted) => String(accepted))
-    .join("|")
-  return new RegExp(
-    `^(${ARTIFACT_ID_SOURCE})\\.${escapedDomain}(?::(?:${acceptedPorts}))?$`,
-  )
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 function artifactHeaders(
