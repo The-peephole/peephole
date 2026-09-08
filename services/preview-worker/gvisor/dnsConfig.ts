@@ -60,7 +60,12 @@ export function resolveDnsConfigSource(
   return PRIMARY_RESOLV_CONF
 }
 
-function hasUsableNameserver(resolvConfContent: string): boolean {
+/** Exported for services/production/preflight.ts, which re-checks the file
+ * resolveDnsConfigSource() actually picked -- if neither candidate file has
+ * a usable nameserver, resolveDnsConfigSource() still returns *something*
+ * (the primary path, as a last resort), so callers that need to know
+ * whether DNS will actually work must check this themselves. */
+export function hasUsableNameserver(resolvConfContent: string): boolean {
   return parseNameservers(resolvConfContent).some(
     (address) => !isLoopbackAddress(address),
   )

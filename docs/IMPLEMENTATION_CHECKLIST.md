@@ -313,6 +313,65 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       sweeps any artifact directory left behind by a crash
 - [ ] Prevent preview content from reaching privileged extension messaging
 
+## Production Deployment
+
+- [x] Real production launcher (`services/production/server.ts`), separate
+      from `services/local-preview/devServer.ts` -- devServer.ts's own
+      behavior is untouched; the two entrypoints share the Preview
+      API/PostgreSQL control-plane wiring (`composePostgresControlPlane`,
+      session auth) but nothing about how a job actually runs.
+      `services/preview-worker/gvisor/composeProductionWorker.ts` wires the
+      real, non-fake pipeline: `GVisorSandboxProvisioner` +
+      `RunscCommandRunner` (install with `network: "sandbox"`, build with
+      `network: "none"`, matching the split already verified end to end in
+      tests/realGvisorGoldenPath.test.ts) in place of
+      `composeLocalDevWorker`'s unsandboxed `LocalDevSandboxProvisioner`/
+      `HostCommandRunner`, plus `GVisorOrphanReaper` in place of
+      `LocalDevSandboxReaper` for crash recovery. Verified with a
+      composition test
+      (`tests/productionWorkerComposition.test.ts`) that runs a full
+      fetch -> extract -> install -> build -> publish job through the real
+      classes with a fake `runsc`/`ip`/`iptables` process runner (the real
+      end-to-end proof against actual `runsc` is the existing
+      tests/realGvisorSandbox.test.ts /
+      tests/realGvisorGoldenPath.test.ts suites, re-run unchanged after this
+      work to confirm nothing regressed).
+- [x] Startup preflight (`services/production/preflight.ts`,
+      `ensureProductionPreflight`) checks every host prerequisite gVisor
+      sandboxing/networking silently assumed until this project found each
+      one the hard way on a real host: `runsc`/`ip`/`iptables` present and
+      runnable, cgroup v2's unified hierarchy
+      (`/sys/fs/cgroup/cgroup.controllers`), `net.ipv4.ip_forward=1`, a
+      populated base rootfs image, and a DNS config source that actually
+      resolves to a usable (non-loopback) nameserver (reusing
+      `resolveDnsConfigSource()`/`hasUsableNameserver()` from
+      `dnsConfig.ts`). All failures are collected and thrown as one clear
+      error rather than failing one at a time inside a job hours later.
+      Verified with injected fakes (`tests/productionPreflight.test.ts`)
+      and against the real WSL2 host with no fakes at all, where it
+      correctly reported every check healthy except `net.ipv4.ip_forward`
+      (which the VM had reset to 0 since the DNS-fix session, exactly the
+      failure mode this check exists to catch).
+- [x] Worker concurrency is configurable
+      (`PEEPHOLE_WORKER_CONCURRENCY`, `services/production/config.ts`),
+      defaulting to 1 -- the current AWS EC2 deployment target is 2 vCPU /
+      2GB RAM, which one CPU/memory-quota'd sandbox can already consume
+      most of. `services/production/server.ts` runs that many
+      `PreviewWorkerLoop` instances against the same queue, sharing one
+      shutdown signal.
+- [x] `PEEPHOLE_SESSION_SIGNING_SECRET` is required (not auto-generated) in
+      the production launcher -- unlike devServer.ts's dev-only random
+      fallback, an unset or per-process-random secret in production would
+      either sign every user out on every restart or, worse, differ across
+      a multi-process deployment.
+- [ ] Publicly-reachable, origin-isolated artifact hosting. The production
+      launcher still uses `LocalArtifactHost`, which only ever binds
+      loopback -- a preview's build now runs for real under gVisor on a
+      real host, but its published output is not yet reachable off that
+      host. Domain separation (`peephole.dev` trusted /
+      `peepholeusercontent.dev` untrusted, wildcard DNS/TLS) is the next,
+      separately-scoped production-hosting step, not part of this wiring.
+
 ## Tests
 
 - [x] GitHub URL parser unit tests
