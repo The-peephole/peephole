@@ -202,14 +202,22 @@ points the extension build at it.
 
 This launcher is **not** a preview of the production architecture:
 
-- there is no authentication -- every request is attributed to a single
-  fixed local identity;
 - install/build commands run directly on the host process with no sandbox,
-  network restriction, or resource limit (this repository has no Linux
-  kernel to run gVisor against on Windows -- see D-018 in
+  network restriction, or resource limit -- `GVisorSandboxProvisioner`/
+  `RunscCommandRunner` exist and are verified against a real gVisor host
+  (see "Isolated Static Runner" in
+  [docs/IMPLEMENTATION_CHECKLIST.md](docs/IMPLEMENTATION_CHECKLIST.md)),
+  but this launcher still uses the unsandboxed local adapters, since
+  Windows has no Linux kernel to run gVisor against directly (see D-018 in
   [Technical decisions](docs/DECISIONS.md));
-- artifacts are served from `127.0.0.1`/`[::1]` only, from a store that is
-  never swept, so nothing but a developer's own machine can reach a build.
+- artifacts are served from `127.0.0.1`/`[::1]` only, so nothing but a
+  developer's own machine can reach a build.
+
+Requests *are* authenticated: each caller's own GitHub personal access
+token (set from the extension's options page) is verified against
+GitHub's own `/user` API and used to derive the requester's identity --
+see `services/preview-api/githubRequesterAuth.ts`. What is missing is
+sandboxing, not identity.
 
 Because of the second point, only build repositories whose source you already
 trust. The Chrome side panel now embeds a `ready` job's artifact in a
@@ -260,8 +268,9 @@ golden paths, and Milestone 6 is now in progress:
 
 The extension never installs dependencies or executes repository code. The
 Preview API connection is configurable but no public service is deployed yet.
-Hosted artifacts, a registrable preview domain, requester authentication,
-and real gVisor infrastructure verification remain unfinished. Local preview
+Requester authentication (each caller's own verified GitHub identity) and
+real gVisor infrastructure verification are both done; hosted artifacts and
+a registrable preview domain remain unfinished. Local preview
 embedding depends on the development-only, unsandboxed launcher above, so it
 must not be pointed at repositories you don't already trust.
 

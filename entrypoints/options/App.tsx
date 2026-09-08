@@ -46,16 +46,25 @@ export function OptionsApp() {
       <section>
         <h2>GitHub personal access token</h2>
         <p>
-          Optional. Peephole calls the public GitHub REST API to analyze
-          repositories. Without a token, GitHub limits unauthenticated requests
-          to 60 per hour per IP address -- easy to exhaust after a few
-          repositories. A token with no scopes (or just <code>public_repo</code>
-          ) raises that to 5,000 per hour.
+          Required to build a preview. The Preview API verifies this token
+          against your GitHub account (<code>GET /user</code>) to identify you
+          as the requester -- Peephole does not have its own separate sign-in. A
+          token with no scopes (or just <code>public_repo</code>) is enough; no
+          elevated permissions are needed.
+        </p>
+        <p>
+          Peephole also calls the public GitHub REST API to analyze
+          repositories. Without a token that call is limited to 60 requests per
+          hour per IP address, easy to exhaust after a few repositories -- the
+          same token above raises that to 5,000 per hour.
         </p>
         <p>
           This token is stored only in this browser profile&apos;s local
-          extension storage. It is never synced, never built into the extension
-          package, and only ever sent to <code>https://api.github.com</code>.
+          extension storage. It is never synced and never built into the
+          extension package. It is sent to <code>https://api.github.com</code>{" "}
+          for repository analysis and identity verification, and to your
+          configured Preview API as a bearer credential for build requests --
+          see <code>WXT_PREVIEW_API_BASE_URL</code> -- never anywhere else.
         </p>
 
         <p className="peephole-options__status">

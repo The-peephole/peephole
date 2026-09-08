@@ -2,6 +2,7 @@ import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 
 import { createRepositoryAnalysisMessageLoader } from "../../core/analyzer/messages"
+import { getStoredGitHubToken } from "../../core/github/tokenStorage"
 import { PreviewApiClient } from "../../core/preview/apiClient"
 import { parsePreviewApiBaseUrl } from "../../core/preview/config"
 import { parseSidePanelRepository } from "../../core/sidepanel/messages"
@@ -20,7 +21,9 @@ try {
     import.meta.env.WXT_PREVIEW_API_BASE_URL,
   )
   previewApi = previewApiBaseUrl
-    ? new PreviewApiClient(previewApiBaseUrl)
+    ? new PreviewApiClient(previewApiBaseUrl, {
+        getToken: () => getStoredGitHubToken(),
+      })
     : null
 } catch (error) {
   previewConfigurationError =

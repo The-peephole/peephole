@@ -1,13 +1,12 @@
 import { existsSync, readFileSync } from "node:fs"
-import type { IncomingMessage } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { GitHubClient } from "../../core/github/client"
 import { KnownRepositoryFilesLoader } from "../../core/github/knownFiles"
-import type { PreviewRequester } from "../../types/preview"
 import { GitHubPreviewPlanResolver } from "../preview-api/githubPlanResolver"
+import { GitHubRequesterAuth } from "../preview-api/githubRequesterAuth"
 import { PgPoolDatabase } from "../preview-api/postgres/database"
 import { readPostgresConfig } from "../preview-api/postgres/config"
 import { applyPostgresMigrations } from "../preview-api/postgres/migrate"
@@ -20,14 +19,18 @@ import { LocalDevSandboxReaper } from "../preview-worker/local/localDevSandboxRe
 import { LocalArtifactHost } from "./artifactHost"
 
 /**
- * Local, single-user development launcher for the full preview path:
+ * Local, single-machine development launcher for the full preview path:
  * Preview API (backed by real PostgreSQL) + a durable worker loop running
  * the NOT-PRODUCTION-SAFE local adapters (see composeLocalDevWorker) +
  * a loopback-only static artifact host.
  *
- * This intentionally has no authentication and no sandbox isolation. It
- * must only ever be pointed at repositories you already trust, on a
- * developer machine. It is not a deployment of Peephole's preview service.
+ * Requests are authenticated (GitHubRequesterAuth: each caller's own
+ * GitHub personal access token, verified against GitHub's own API --
+ * see that class's doc comment), so quotas and ownership are real, per
+ * GitHub account. What is NOT real here is sandbox isolation: it must
+ * only ever be pointed at repositories you already trust, on a developer
+ * machine. It is not a production deployment of Peephole's preview
+ * service.
  */
 
 const PROJECT_ROOT = fileURLToPath(new URL("../../", import.meta.url))
@@ -57,11 +60,12 @@ async function main(): Promise<void> {
     controlPlane: { runnerVersion: "local-dev-1" },
   })
 
+  const requesterAuth = new GitHubRequesterAuth()
   const apiConfig = readPreviewApiServerConfig(process.env)
   const api = await startNodePreviewApi({
     controlPlane: composition.controlPlane,
     config: apiConfig,
-    resolveRequester,
+    resolveRequester: (request) => requesterAuth.resolve(request),
     isReady: composition.isReady,
   })
 
@@ -116,13 +120,6 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown("SIGINT"))
   process.on("SIGTERM", () => void shutdown("SIGTERM"))
-}
-
-function resolveRequester(request: IncomingMessage): PreviewRequester {
-  return {
-    subject: "local-dev-user",
-    ip: request.socket.remoteAddress ?? "127.0.0.1",
-  }
 }
 
 function loadDotEnvFile(filePath: string): void {

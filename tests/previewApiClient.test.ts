@@ -95,6 +95,43 @@ describe("PreviewApiClient", () => {
     )
   })
 
+  it("attaches the caller's GitHub token as a bearer credential, read fresh on every request", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(async () => jsonResponse(200, job))
+    let token: string | null = "ghp_first"
+    const client = new PreviewApiClient("https://api.example.test/", {
+      fetch,
+      getToken: () => token,
+    })
+
+    await client.get(job.id)
+    token = "ghp_second"
+    await client.get(job.id)
+
+    const authHeaders = fetch.mock.calls.map(
+      ([, init]) => (init?.headers as Record<string, string>).authorization,
+    )
+    expect(authHeaders).toEqual(["Bearer ghp_first", "Bearer ghp_second"])
+  })
+
+  it("omits the Authorization header entirely when no token is configured", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(jsonResponse(200, job))
+    const client = new PreviewApiClient("https://api.example.test/", {
+      fetch,
+      getToken: () => null,
+    })
+
+    await client.get(job.id)
+
+    const [, init] = fetch.mock.calls[0]!
+    expect(
+      (init?.headers as Record<string, string>).authorization,
+    ).toBeUndefined()
+  })
+
   it("reads and cancels only validated job ids", async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

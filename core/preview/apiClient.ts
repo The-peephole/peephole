@@ -24,6 +24,7 @@ const PREVIEW_STATUSES = new Set<PreviewJobStatus>([
 ])
 const API_ERROR_CODES = new Set<PreviewApiErrorCode>([
   "INVALID_REQUEST",
+  "UNAUTHORIZED",
   "UNSUPPORTED_REPOSITORY",
   "NOT_FOUND",
   "FORBIDDEN",
@@ -68,11 +69,22 @@ export interface PreviewApi {
 export interface PreviewApiClientOptions {
   fetch?: typeof globalThis.fetch
   createIdempotencyKey?: () => string
+  /**
+   * Resolves the caller's GitHub personal access token to send as a
+   * bearer credential -- the Preview API authenticates every request
+   * against it (see services/preview-api/githubRequesterAuth.ts). Read
+   * lazily on every request, like GitHubClient's getToken, so a token
+   * saved from the options page while this client is already in use
+   * takes effect on the next call without recreating the client.
+   */
+  getToken?: () =>
+    string | null | undefined | Promise<string | null | undefined>
 }
 
 export class PreviewApiClient implements PreviewApi {
   private readonly fetch: typeof globalThis.fetch
   private readonly createIdempotencyKey: () => string
+  private readonly getToken: () => Promise<string | null | undefined>
 
   constructor(
     private readonly baseUrl: string,
@@ -81,6 +93,7 @@ export class PreviewApiClient implements PreviewApi {
     this.fetch = (options.fetch ?? globalThis.fetch).bind(globalThis)
     this.createIdempotencyKey =
       options.createIdempotencyKey ?? (() => `preview-${crypto.randomUUID()}`)
+    this.getToken = async () => options.getToken?.()
   }
 
   async create(
@@ -133,8 +146,13 @@ export class PreviewApiClient implements PreviewApi {
     let response: Response
 
     try {
+      const token = await this.getToken()
       response = await this.fetch(new URL(path, this.baseUrl), {
         ...init,
+        headers: {
+          ...(init.headers as Record<string, string> | undefined),
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
         credentials: "omit",
         cache: "no-store",
       })

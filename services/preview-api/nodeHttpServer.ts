@@ -7,7 +7,7 @@ import {
 } from "node:http"
 import type { AddressInfo } from "node:net"
 
-import type { PreviewRequester } from "../../types/preview"
+import type { PreviewApiErrorCode, PreviewRequester } from "../../types/preview"
 import type { PreviewHttpRequest, PreviewHttpResponse } from "./http"
 
 const DEFAULT_MAX_BODY_BYTES = 16 * 1024
@@ -141,7 +141,7 @@ export class NodePreviewApiServer {
       sendJson(response, result.status, result.body, result.headers)
     } catch (error) {
       if (error instanceof HttpIngressError) {
-        sendError(response, error.status, "INVALID_REQUEST", error.message)
+        sendError(response, error.status, error.code, error.message)
         return
       }
 
@@ -155,10 +155,14 @@ export class NodePreviewApiServer {
   }
 }
 
-class HttpIngressError extends Error {
+/** Thrown by resolveRequester or request parsing to short-circuit straight
+ * to an error response, bypassing handlePreviewRequest entirely (used for
+ * malformed requests and, now, authentication failures). */
+export class HttpIngressError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly code: PreviewApiErrorCode = "INVALID_REQUEST",
   ) {
     super(message)
     this.name = "HttpIngressError"
@@ -224,7 +228,7 @@ function normalizeHeaders(
 function sendError(
   response: ServerResponse,
   status: number,
-  code: "INVALID_REQUEST" | "INTERNAL_ERROR",
+  code: PreviewApiErrorCode,
   message: string,
   headers: Record<string, string> = {},
 ): void {

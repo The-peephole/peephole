@@ -66,6 +66,7 @@ export interface CreatePreviewJobRequest {
 
 export type PreviewApiErrorCode =
   | "INVALID_REQUEST"
+  | "UNAUTHORIZED"
   | "UNSUPPORTED_REPOSITORY"
   | "NOT_FOUND"
   | "FORBIDDEN"

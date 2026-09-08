@@ -83,11 +83,18 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Add a PostgreSQL schema and persistent job/artifact-cache/quota adapters
 - [x] Add a PostgreSQL leased queue with expired-lease recovery
 - [x] Revalidate repository identity, commit, and build plan server-side
-- [ ] Compose the API with production-persistent job, queue, cache, quota, and authentication adapters
-      (`services/local-preview/devServer.ts` composes the persistent
-      Postgres job/queue/cache/quota adapters for local development, but
-      `resolveRequester` is a single fixed dev identity -- no real
-      authentication)
+- [x] Compose the API with production-persistent job, queue, cache, quota,
+      and authentication adapters (`services/local-preview/devServer.ts`
+      composes the persistent Postgres job/queue/cache/quota adapters and
+      `GitHubRequesterAuth`, replacing the previous fixed dev identity --
+      `resolveRequester` now authenticates every request against the
+      caller's own GitHub personal access token, verified via GitHub's
+      `/user` API and cached briefly to avoid re-verifying on every poll;
+      see `services/preview-api/githubRequesterAuth.ts` and
+      `tests/githubRequesterAuth.test.ts`). What this reuses an existing
+      token for instead of a dedicated OAuth App/login flow was a
+      deliberate scope choice, not an oversight -- see that file's doc
+      comment.
 
 ## Isolated Static Runner
 
