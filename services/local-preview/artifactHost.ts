@@ -1,13 +1,18 @@
 import { createServer, type Server, type ServerResponse } from "node:http"
 import type { AddressInfo } from "node:net"
-import { lstat, readFile, realpath, readdir, rm } from "node:fs/promises"
+import { lstat, readFile, readdir, rm } from "node:fs/promises"
 import path from "node:path"
 
-import { isSafeEntryPath } from "../../core/runner/archivePolicy"
 import type { PreviewArtifactReference } from "../../types/preview"
 import type { PreviewArtifactSigner } from "../preview-api/ports"
+import {
+  ARTIFACT_ID_PATTERN,
+  acceptsHtml,
+  contentTypeFor,
+  resolveRequestedFile,
+  resolveVerifiedArtifactRoot,
+} from "../artifactServing/staticFile"
 
-const ARTIFACT_ID_PATTERN = /^artifact-[a-f\d]{8}-[a-f\d-]{27}$/i
 const JOB_ID_PATTERN = /^[a-z\d-]{8,64}$/i
 
 interface HostedArtifact {
@@ -72,8 +77,8 @@ export class LocalArtifactHost implements PreviewArtifactSigner {
 
     let pending = this.pending.get(artifactId)
     if (!pending) {
-      pending = resolveArtifactRoot(this.storageDir, artifactId).then((root) =>
-        this.startArtifactServer(artifactId, root),
+      pending = resolveVerifiedArtifactRoot(this.storageDir, artifactId).then(
+        (root) => this.startArtifactServer(artifactId, root),
       )
       this.pending.set(artifactId, pending)
     }
@@ -199,27 +204,6 @@ export class LocalArtifactHost implements PreviewArtifactSigner {
   }
 }
 
-async function resolveArtifactRoot(
-  storageDir: string,
-  artifactId: string,
-): Promise<string> {
-  const storageRoot = await realpath(storageDir)
-  const candidate = await realpath(path.join(storageRoot, artifactId))
-  const relative = path.relative(storageRoot, candidate)
-
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("Local artifact path escapes its storage root.")
-  }
-
-  const index = await lstat(path.join(candidate, "index.html"))
-
-  if (!index.isFile() || index.isSymbolicLink()) {
-    throw new Error("Local artifact has no regular index.html file.")
-  }
-
-  return candidate
-}
-
 async function serveArtifactRequest(
   method: string | undefined,
   requestUrl: string | undefined,
@@ -245,7 +229,7 @@ async function serveArtifactRequest(
     const relativePath = requestedPath || "index.html"
     let filePath = await resolveRequestedFile(artifactRoot, relativePath)
 
-    if (!filePath && wantsHtml(accept) && !path.posix.extname(relativePath)) {
+    if (!filePath && acceptsHtml(accept) && !path.posix.extname(relativePath)) {
       filePath = await resolveRequestedFile(artifactRoot, "index.html")
     }
 
@@ -263,45 +247,9 @@ async function serveArtifactRequest(
   }
 }
 
-async function resolveRequestedFile(
-  artifactRoot: string,
-  relativePath: string,
-): Promise<string | null> {
-  if (!isSafeEntryPath(relativePath, 4_096)) {
-    return null
-  }
-
-  const candidate = path.resolve(artifactRoot, ...relativePath.split("/"))
-  const relative = path.relative(artifactRoot, candidate)
-
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-    return null
-  }
-
-  try {
-    let current = artifactRoot
-    for (const segment of relativePath.split("/")) {
-      current = path.join(current, segment)
-      if ((await lstat(current)).isSymbolicLink()) return null
-    }
-    const stats = await lstat(candidate)
-
-    if (stats.isSymbolicLink()) return null
-    if (stats.isDirectory()) {
-      return resolveRequestedFile(
-        artifactRoot,
-        `${relativePath.replace(/\/+$/, "")}/index.html`,
-      )
-    }
-    return stats.isFile() ? candidate : null
-  } catch {
-    return null
-  }
-}
-
 function staticHeaders(filePath: string, length: number) {
   return {
-    "content-type": contentType(filePath),
+    "content-type": contentTypeFor(filePath),
     "content-length": length,
     "cache-control": "no-store",
     // No Access-Control-Allow-Origin: the browser already blocks a
@@ -321,33 +269,6 @@ function staticHeaders(filePath: string, length: number) {
     "content-security-policy":
       "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; worker-src 'none'; frame-ancestors chrome-extension:",
   }
-}
-
-function contentType(filePath: string): string {
-  const extension = path.extname(filePath).toLowerCase()
-  return (
-    {
-      ".html": "text/html; charset=utf-8",
-      ".css": "text/css; charset=utf-8",
-      ".js": "text/javascript; charset=utf-8",
-      ".mjs": "text/javascript; charset=utf-8",
-      ".json": "application/json; charset=utf-8",
-      ".svg": "image/svg+xml",
-      ".png": "image/png",
-      ".jpg": "image/jpeg",
-      ".jpeg": "image/jpeg",
-      ".gif": "image/gif",
-      ".webp": "image/webp",
-      ".ico": "image/x-icon",
-      ".woff": "font/woff",
-      ".woff2": "font/woff2",
-      ".txt": "text/plain; charset=utf-8",
-    }[extension] ?? "application/octet-stream"
-  )
-}
-
-function wantsHtml(accept: string | undefined): boolean {
-  return accept?.includes("text/html") ?? false
 }
 
 function sendText(

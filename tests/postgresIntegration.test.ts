@@ -6,6 +6,7 @@ import { readPostgresConfig } from "../services/preview-api/postgres/config"
 import { PgPoolDatabase } from "../services/preview-api/postgres/database"
 import { PostgresPreviewJobStore } from "../services/preview-api/postgres/jobStore"
 import { applyPostgresMigrations } from "../services/preview-api/postgres/migrate"
+import { PostgresProductionArtifactStore } from "../services/preview-api/postgres/productionArtifactStore"
 import { PostgresPreviewQueue } from "../services/preview-api/postgres/queue"
 import { PreviewControlPlane } from "../services/preview-api/controlPlane"
 import {
@@ -21,6 +22,7 @@ const describeWithPostgres = connectionString ? describe : describe.skip
 describeWithPostgres("PostgreSQL integration", () => {
   let database: PgPoolDatabase
   const jobIds: string[] = []
+  const productionArtifactIds: string[] = []
 
   beforeAll(async () => {
     database = new PgPoolDatabase(
@@ -38,6 +40,14 @@ describeWithPostgres("PostgreSQL integration", () => {
     for (const jobId of jobIds) {
       await database
         .query("DELETE FROM peephole_preview_jobs WHERE id = $1", [jobId])
+        .catch(() => undefined)
+    }
+    for (const artifactId of productionArtifactIds) {
+      await database
+        .query(
+          "DELETE FROM peephole_production_artifacts WHERE artifact_id = $1",
+          [artifactId],
+        )
         .catch(() => undefined)
     }
     await database.close()
@@ -241,6 +251,101 @@ describeWithPostgres("PostgreSQL integration", () => {
     } finally {
       await otherDatabase.close()
     }
+  })
+
+  it("PostgresProductionArtifactStore never shrinks an artifact's persisted expiry", async () => {
+    const artifactId = `artifact-${randomUUID()}`
+    productionArtifactIds.push(artifactId)
+    const store = new PostgresProductionArtifactStore(database)
+    const longExpiry = new Date(Date.now() + 60_000)
+    const shortExpiry = new Date(Date.now() + 5_000)
+
+    await store.upsertMaxExpiry(artifactId, longExpiry)
+    // A build-cache hit re-signing the same artifact for a new job with a
+    // shorter expiry than it already has must not cut the persisted
+    // expiry short -- this is exactly the real SQL (GREATEST(...) in an
+    // ON CONFLICT DO UPDATE), not just application-level logic, so it's
+    // worth proving against a real database.
+    await store.upsertMaxExpiry(artifactId, shortExpiry)
+
+    const metadata = await store.get(artifactId)
+    expect(metadata?.expiresAt.getTime()).toBe(longExpiry.getTime())
+
+    // ... but a *later*, longer expiry still extends it.
+    const longerExpiry = new Date(Date.now() + 120_000)
+    await store.upsertMaxExpiry(artifactId, longerExpiry)
+    expect((await store.get(artifactId))?.expiresAt.getTime()).toBe(
+      longerExpiry.getTime(),
+    )
+  })
+
+  it("PostgresProductionArtifactStore lists expired artifacts and conditionally deletes them", async () => {
+    const expiredId = `artifact-${randomUUID()}`
+    const activeId = `artifact-${randomUUID()}`
+    productionArtifactIds.push(expiredId, activeId)
+    const store = new PostgresProductionArtifactStore(database)
+    const now = new Date()
+
+    await store.upsertMaxExpiry(expiredId, new Date(now.getTime() - 1_000))
+    await store.upsertMaxExpiry(activeId, new Date(now.getTime() + 60_000))
+
+    const expired = await store.listExpired(now)
+    expect(expired).toContain(expiredId)
+    expect(expired).not.toContain(activeId)
+
+    await expect(store.deleteIfStillExpired(expiredId, now)).resolves.toBe(true)
+    expect(await store.get(expiredId)).toBeNull()
+    expect(await store.get(activeId)).not.toBeNull()
+  })
+
+  it("PostgresProductionArtifactStore.deleteIfStillExpired refuses to delete a row a concurrent sign() just extended -- the reaper/re-sign race", async () => {
+    // This is the real SQL a ProductionArtifactHost.reap() candidate check
+    // runs against: `listExpired()` gave a stale snapshot; by the time the
+    // conditional DELETE actually runs, a concurrent upsertMaxExpiry() (a
+    // build-cache hit re-signing the same artifact) may have already
+    // extended it into the future. The atomic `WHERE expires_at <= $2`
+    // must see that and refuse to delete, not the stale snapshot.
+    const artifactId = `artifact-${randomUUID()}`
+    productionArtifactIds.push(artifactId)
+    const store = new PostgresProductionArtifactStore(database)
+    const now = new Date()
+
+    await store.upsertMaxExpiry(artifactId, new Date(now.getTime() - 1_000))
+    const staleCandidates = await store.listExpired(now)
+    expect(staleCandidates).toContain(artifactId)
+
+    // The race: a concurrent sign() lands between the listing above and
+    // the delete attempt below.
+    await store.upsertMaxExpiry(artifactId, new Date(now.getTime() + 60_000))
+
+    await expect(store.deleteIfStillExpired(artifactId, now)).resolves.toBe(
+      false,
+    )
+    expect((await store.get(artifactId))?.expiresAt.getTime()).toBe(
+      now.getTime() + 60_000,
+    )
+  })
+
+  it("applyPostgresMigrations is safe to run again against an already-migrated database", async () => {
+    // beforeAll already ran every migration once to set this schema up;
+    // production runs applyPostgresMigrations() on every process start,
+    // against a database that already has 001 (and, after this change,
+    // 002) applied -- this proves that repeat is a genuine no-op, not
+    // just that a fresh, empty schema accepts the SQL once.
+    const artifactId = `artifact-${randomUUID()}`
+    productionArtifactIds.push(artifactId)
+    const store = new PostgresProductionArtifactStore(database)
+    const expiresAt = new Date(Date.now() + 60_000)
+    await store.upsertMaxExpiry(artifactId, expiresAt)
+
+    await expect(applyPostgresMigrations(database)).resolves.toBeUndefined()
+    await expect(applyPostgresMigrations(database)).resolves.toBeUndefined()
+
+    // Existing data untouched by re-running CREATE TABLE/INDEX IF NOT
+    // EXISTS migrations a second and third time.
+    expect((await store.get(artifactId))?.expiresAt.getTime()).toBe(
+      expiresAt.getTime(),
+    )
   })
 })
 

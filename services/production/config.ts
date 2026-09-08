@@ -12,6 +12,17 @@ export interface ProductionConfig {
   artifactStorageDir: string
   orphanReaperMaxAgeMs: number
   maintenanceIntervalMs: number
+  /** ProductionArtifactHost's fixed listener port. Always bound to
+   * 127.0.0.1 -- there is deliberately no host/bind-address setting here
+   * (see services/production/artifactHost.ts), so this is the only thing
+   * about that listener a deployment can configure. */
+  artifactPort: number
+  /** The wildcard domain a reverse proxy will eventually route
+   * `<artifact-id>.<this>` to this listener under -- must stay a
+   * different registrable domain from the trusted control-plane/UI
+   * domain, since that separation is the entire point of routing preview
+   * content through its own origin. */
+  artifactBaseDomain: string
 }
 
 const DEFAULTS = {
@@ -22,6 +33,8 @@ const DEFAULTS = {
   artifactStorageDir: "/var/lib/peephole/artifacts",
   orphanReaperMaxAgeMs: 30 * 60_000,
   maintenanceIntervalMs: 60_000,
+  artifactPort: 8_788,
+  artifactBaseDomain: "peepholeusercontent.dev",
 } as const
 
 export function readProductionConfig(
@@ -65,12 +78,47 @@ export function readProductionConfig(
       5_000,
       10 * 60_000,
     ),
+    artifactPort: readInteger(
+      "PEEPHOLE_ARTIFACT_PORT",
+      environment.PEEPHOLE_ARTIFACT_PORT,
+      DEFAULTS.artifactPort,
+      1,
+      65_535,
+    ),
+    artifactBaseDomain: readDomain(
+      "PEEPHOLE_ARTIFACT_BASE_DOMAIN",
+      environment.PEEPHOLE_ARTIFACT_BASE_DOMAIN,
+      DEFAULTS.artifactBaseDomain,
+    ),
   }
 }
 
 function readPath(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim()
   return trimmed || fallback
+}
+
+function readDomain(
+  name: string,
+  value: string | undefined,
+  fallback: string,
+): string {
+  const trimmed = value?.trim().toLowerCase()
+
+  if (!trimmed) {
+    return fallback
+  }
+
+  if (
+    trimmed.length > 253 ||
+    trimmed === "localhost" ||
+    !trimmed.includes(".") ||
+    !/^[a-z\d]([a-z\d-]*[a-z\d])?(\.[a-z\d]([a-z\d-]*[a-z\d])?)+$/.test(trimmed)
+  ) {
+    throw new Error(`${name} must be a valid registrable domain name.`)
+  }
+
+  return trimmed
 }
 
 function readInteger(

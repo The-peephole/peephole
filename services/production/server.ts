@@ -13,7 +13,8 @@ import { startNodePreviewApi } from "../preview-api/startNodeServer"
 import { composeProductionWorker } from "../preview-worker/gvisor/composeProductionWorker"
 import { GVisorOrphanReaper } from "../preview-worker/gvisor/gvisorOrphanReaper"
 import { PreviewWorkerLoop } from "../preview-worker/workerLoop"
-import { LocalArtifactHost } from "../local-preview/artifactHost"
+import { PostgresProductionArtifactStore } from "../preview-api/postgres/productionArtifactStore"
+import { ProductionArtifactHost } from "./artifactHost"
 import { readProductionConfig } from "./config"
 import { ensureProductionPreflight } from "./preflight"
 
@@ -32,12 +33,16 @@ import { ensureProductionPreflight } from "./preflight"
  * prerequisite gVisor sandboxing/networking silently assumes -- see
  * preflight.ts for the full list and why each one matters.
  *
- * NOT done here: publicly-reachable, origin-isolated artifact hosting
- * (`peepholeusercontent.dev`-style domain separation). `LocalArtifactHost`
- * only ever binds loopback, so on a real host a preview's build runs for
- * real but its published output is not yet reachable off this box -- that
- * is the next, separately-scoped production-hosting step, not part of this
- * wiring.
+ * Artifacts are served by `ProductionArtifactHost` (artifactHost.ts): one
+ * fixed loopback listener routing by Host header to
+ * `<artifact-id>.<PEEPHOLE_ARTIFACT_BASE_DOMAIN>`, with expiry persisted in
+ * PostgreSQL so it survives a restart -- not
+ * services/local-preview/artifactHost.ts's `LocalArtifactHost`, which is
+ * development-only (one HTTP server per artifact on a random port,
+ * in-memory expiry that a restart silently wipes). NOT done here: the
+ * reverse proxy, DNS, and TLS that would actually make that domain
+ * reachable from outside this host -- the listener stays loopback-only
+ * until that separately-scoped step.
  */
 
 async function main(): Promise<void> {
@@ -50,9 +55,14 @@ async function main(): Promise<void> {
   const database = new PgPoolDatabase(readPostgresConfig(process.env).pool)
   await applyPostgresMigrations(database)
 
-  const artifactHost = new LocalArtifactHost({
+  const artifactHost = new ProductionArtifactHost({
     storageDir: productionConfig.artifactStorageDir,
+    store: new PostgresProductionArtifactStore(database),
+    port: productionConfig.artifactPort,
+    baseDomain: productionConfig.artifactBaseDomain,
   })
+  const artifactAddress = await artifactHost.listen()
+
   const github = new GitHubClient({
     getToken: () => process.env.PEEPHOLE_GITHUB_TOKEN,
   })
@@ -129,7 +139,10 @@ async function main(): Promise<void> {
   maintenanceTimer.unref()
 
   console.log(
-    `[peephole] preview API listening on http://${api.address.address}:${api.address.port}`,
+    `[peephole] preview API listening on http://${api.address.address}:${api.address.port} (loopback only)`,
+  )
+  console.log(
+    `[peephole] artifact host listening on http://${artifactAddress.host}:${String(artifactAddress.port)} (loopback only; not yet reachable as https://<artifact-id>.${productionConfig.artifactBaseDomain}/ -- no reverse proxy/DNS/TLS in front of it yet)`,
   )
   console.log(
     `[peephole] production worker running with real gVisor sandboxing, concurrency=${String(productionConfig.workerConcurrency)}`,
