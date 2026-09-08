@@ -108,6 +108,34 @@ describe("readProductionConfig", () => {
     ).toThrow(/PEEPHOLE_ARTIFACT_BASE_DOMAIN/)
   })
 
+  it.each([
+    "peephole.dev",
+    "preview.peephole.dev",
+    "foo.bar.peephole.dev",
+  ])(
+    "rejects artifact base domain %s because it shares the trusted registrable domain",
+    (artifactBaseDomain) => {
+      expect(() =>
+        readProductionConfig({
+          PEEPHOLE_ARTIFACT_BASE_DOMAIN: artifactBaseDomain,
+        }),
+      ).toThrow(
+        "PEEPHOLE_ARTIFACT_BASE_DOMAIN must not share the trusted peephole.dev registrable domain.",
+      )
+    },
+  )
+
+  it.each(["peepholeusercontent.dev", "notpeephole.dev"])(
+    "allows separate artifact base domain %s",
+    (artifactBaseDomain) => {
+      expect(
+        readProductionConfig({
+          PEEPHOLE_ARTIFACT_BASE_DOMAIN: artifactBaseDomain,
+        }).artifactBaseDomain,
+      ).toBe(artifactBaseDomain)
+    },
+  )
+
   it("readProductionConfig never exposes an artifact host bind-address option", () => {
     // The artifact listener must only ever bind loopback -- there is no
     // config field for its host/bind-address at all, so no environment

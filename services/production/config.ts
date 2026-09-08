@@ -37,6 +37,8 @@ const DEFAULTS = {
   artifactBaseDomain: "peepholeusercontent.dev",
 } as const
 
+const TRUSTED_REGISTRABLE_DOMAIN = "peephole.dev"
+
 export function readProductionConfig(
   environment: NodeJS.ProcessEnv,
 ): ProductionConfig {
@@ -116,6 +118,15 @@ function readDomain(
     !/^[a-z\d]([a-z\d-]*[a-z\d])?(\.[a-z\d]([a-z\d-]*[a-z\d])?)+$/.test(trimmed)
   ) {
     throw new Error(`${name} must be a valid registrable domain name.`)
+  }
+
+  if (
+    trimmed === TRUSTED_REGISTRABLE_DOMAIN ||
+    trimmed.endsWith(`.${TRUSTED_REGISTRABLE_DOMAIN}`)
+  ) {
+    throw new Error(
+      `${name} must not share the trusted ${TRUSTED_REGISTRABLE_DOMAIN} registrable domain.`,
+    )
   }
 
   return trimmed
