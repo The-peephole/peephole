@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net"
 
 import type { PreviewApiErrorCode, PreviewRequester } from "../../types/preview"
 import type { PreviewHttpRequest, PreviewHttpResponse } from "./http"
+import type { IssuedPreviewSession } from "./previewSession"
 
 const DEFAULT_MAX_BODY_BYTES = 16 * 1024
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000
@@ -22,6 +23,15 @@ export interface NodePreviewApiServerOptions {
   resolveRequester: (
     request: IncomingMessage,
   ) => PreviewRequester | Promise<PreviewRequester>
+  /**
+   * Handles `POST /v1/auth/session`: verifies the caller's real credential
+   * (from the request itself, e.g. its Authorization header) and issues a
+   * Peephole session token. Runs before, and independently of,
+   * resolveRequester -- see PreviewSessionIssuer's doc comment for why
+   * these are two different verification steps. If omitted, the route
+   * 404s like any other unrecognized path.
+   */
+  issueSession?: (request: IncomingMessage) => Promise<IssuedPreviewSession>
   isReady?: () => boolean | Promise<boolean>
   maxBodyBytes?: number
   requestTimeoutMs?: number
@@ -115,6 +125,17 @@ export class NodePreviewApiServer {
       if (request.method === "GET" && path === "/readyz") {
         const ready = (await this.options.isReady?.()) ?? true
         sendJson(response, ready ? 200 : 503, { ready })
+        return
+      }
+
+      if (request.method === "POST" && path === "/v1/auth/session") {
+        if (!this.options.issueSession) {
+          sendError(response, 404, "NOT_FOUND", "Endpoint not found.")
+          return
+        }
+
+        const session = await this.options.issueSession(request)
+        sendJson(response, 200, session)
         return
       }
 

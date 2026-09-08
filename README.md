@@ -213,11 +213,13 @@ This launcher is **not** a preview of the production architecture:
 - artifacts are served from `127.0.0.1`/`[::1]` only, so nothing but a
   developer's own machine can reach a build.
 
-Requests *are* authenticated: each caller's own GitHub personal access
-token (set from the extension's options page) is verified against
-GitHub's own `/user` API and used to derive the requester's identity --
-see `services/preview-api/githubRequesterAuth.ts`. What is missing is
-sandboxing, not identity.
+Requests *are* authenticated, in two steps: the extension exchanges its
+GitHub personal access token (set from the options page) for a
+short-lived Peephole session once, by calling `POST /v1/auth/session`
+(verified against GitHub's own `/user` API), then uses that session --
+never the raw GitHub token again -- for every other request. See
+`services/preview-api/previewSession.ts` for why credentials are never
+resent on every poll. What is missing is sandboxing, not identity.
 
 Because of the second point, only build repositories whose source you already
 trust. The Chrome side panel now embeds a `ready` job's artifact in a

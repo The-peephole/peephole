@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http"
 
 import type { PreviewRequester } from "../../types/preview"
+import { extractBearerToken } from "./bearerToken"
 import { HttpIngressError } from "./nodeHttpServer"
 
 const DEFAULT_API_BASE_URL = "https://api.github.com"
@@ -20,21 +21,28 @@ interface CachedIdentity {
 }
 
 /**
- * Authenticates every preview API request against the caller's own GitHub
- * personal access token -- the same one the extension already asks users
- * for to raise its GitHub REST API rate limit (core/github/tokenStorage.ts,
- * entrypoints/options/App.tsx), reused here instead of standing up a
- * separate OAuth App/login flow. The token is never stored beyond an
- * in-memory, time-boxed cache keyed by the token itself (not persisted,
- * not logged); `resolve()` verifies it against GitHub's own `/user`
- * endpoint and derives `requester.subject` from the numeric GitHub user
- * id, which is stable even if the user later renames their account.
+ * Verifies the caller's own GitHub personal access token -- the same one
+ * the extension already asks users for to raise its GitHub REST API rate
+ * limit (core/github/tokenStorage.ts, entrypoints/options/App.tsx), reused
+ * here instead of standing up a separate OAuth App/login flow. `resolve()`
+ * verifies it against GitHub's own `/user` endpoint and derives
+ * `requester.subject` from the numeric GitHub user id, which is stable
+ * even if the user later renames their account.
  *
- * The cache exists because `get()` is polled by the extension every
- * `pollIntervalMs` (1.5s by default) while a job is active -- without it,
- * every poll would cost a real GitHub API call, adding latency to each
- * one and burning through the very rate limit this token is meant to
- * protect.
+ * Used only at login (`POST /v1/auth/session`, see
+ * services/local-preview/devServer.ts): the extension exchanges this
+ * credential for a short-lived Peephole session once, then uses that
+ * session (verified by PreviewSessionAuth, not this class) for every
+ * other preview API call. This is why the raw GitHub token itself is
+ * never sent more than once per session lifetime, and why a compromised
+ * Preview API only ever exposes Peephole-scoped session tokens, not the
+ * caller's actual GitHub credential -- see PreviewSessionIssuer's doc
+ * comment.
+ *
+ * The verified-identity cache still exists because a user might sign in
+ * more than once in quick succession (e.g. two tabs opening side panels
+ * around the same time); it is not there to cover per-request polling
+ * anymore, since polling now uses the cheaper, local session check.
  */
 export class GitHubRequesterAuth {
   private readonly apiBaseUrl: string
@@ -140,17 +148,6 @@ export class GitHubRequesterAuth {
     // subject minted some other way (e.g. local-dev-user).
     return `github:${String(body.id)}`
   }
-}
-
-function extractBearerToken(header: string | undefined): string | null {
-  if (!header) {
-    return null
-  }
-
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim())
-  const token = match?.[1]?.trim()
-
-  return token ? token : null
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

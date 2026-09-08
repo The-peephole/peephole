@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -8,6 +9,8 @@ import { KnownRepositoryFilesLoader } from "../../core/github/knownFiles"
 import { GitHubPreviewPlanResolver } from "../preview-api/githubPlanResolver"
 import { GitHubRequesterAuth } from "../preview-api/githubRequesterAuth"
 import { PgPoolDatabase } from "../preview-api/postgres/database"
+import { PreviewSessionAuth } from "../preview-api/previewSessionAuth"
+import { PreviewSessionIssuer } from "../preview-api/previewSession"
 import { readPostgresConfig } from "../preview-api/postgres/config"
 import { applyPostgresMigrations } from "../preview-api/postgres/migrate"
 import { composePostgresControlPlane } from "../preview-api/postgres/compose"
@@ -24,12 +27,15 @@ import { LocalArtifactHost } from "./artifactHost"
  * the NOT-PRODUCTION-SAFE local adapters (see composeLocalDevWorker) +
  * a loopback-only static artifact host.
  *
- * Requests are authenticated (GitHubRequesterAuth: each caller's own
- * GitHub personal access token, verified against GitHub's own API --
- * see that class's doc comment), so quotas and ownership are real, per
- * GitHub account. What is NOT real here is sandbox isolation: it must
- * only ever be pointed at repositories you already trust, on a developer
- * machine. It is not a production deployment of Peephole's preview
+ * Requests are authenticated with real, per-GitHub-account identity, in
+ * two steps: the extension exchanges its GitHub personal access token for
+ * a short-lived Peephole session once (`POST /v1/auth/session`,
+ * GitHubRequesterAuth verifies the token), then uses that session
+ * (PreviewSessionAuth) for every other request -- see
+ * services/preview-api/previewSession.ts for why. What is NOT real here
+ * is sandbox isolation: it must only ever be pointed at repositories you
+ * already trust, on a developer machine. It is not a production
+ * deployment of Peephole's preview
  * service.
  */
 
@@ -60,12 +66,19 @@ async function main(): Promise<void> {
     controlPlane: { runnerVersion: "local-dev-1" },
   })
 
-  const requesterAuth = new GitHubRequesterAuth()
+  const credentialAuth = new GitHubRequesterAuth()
+  const sessionSigningSecret = readOrGenerateSessionSigningSecret()
+  const sessionIssuer = new PreviewSessionIssuer(sessionSigningSecret)
+  const sessionAuth = new PreviewSessionAuth(sessionIssuer)
   const apiConfig = readPreviewApiServerConfig(process.env)
   const api = await startNodePreviewApi({
     controlPlane: composition.controlPlane,
     config: apiConfig,
-    resolveRequester: (request) => requesterAuth.resolve(request),
+    resolveRequester: (request) => sessionAuth.resolve(request),
+    issueSession: async (request) => {
+      const requester = await credentialAuth.resolve(request)
+      return sessionIssuer.issue(requester.subject)
+    },
     isReady: composition.isReady,
   })
 
@@ -120,6 +133,27 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown("SIGINT"))
   process.on("SIGTERM", () => void shutdown("SIGTERM"))
+}
+
+/**
+ * Falls back to a random, process-lifetime-only secret when
+ * PEEPHOLE_SESSION_SIGNING_SECRET isn't set, so local development needs no
+ * setup: sessions just stop verifying (forcing a silent, transparent
+ * re-login) across a restart, which is the same effect the secret's own
+ * absence-of-persistence is meant to have anyway. A real deployment should
+ * set this explicitly so a restart doesn't sign every active user out.
+ */
+function readOrGenerateSessionSigningSecret(): string {
+  const configured = process.env.PEEPHOLE_SESSION_SIGNING_SECRET
+
+  if (configured) {
+    return configured
+  }
+
+  console.log(
+    "[peephole] PEEPHOLE_SESSION_SIGNING_SECRET not set; generated a random one for this process only.",
+  )
+  return randomBytes(32).toString("base64")
 }
 
 function loadDotEnvFile(filePath: string): void {

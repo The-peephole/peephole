@@ -70,21 +70,33 @@ export interface PreviewApiClientOptions {
   fetch?: typeof globalThis.fetch
   createIdempotencyKey?: () => string
   /**
-   * Resolves the caller's GitHub personal access token to send as a
-   * bearer credential -- the Preview API authenticates every request
-   * against it (see services/preview-api/githubRequesterAuth.ts). Read
-   * lazily on every request, like GitHubClient's getToken, so a token
-   * saved from the options page while this client is already in use
-   * takes effect on the next call without recreating the client.
+   * Resolves the caller's GitHub personal access token, read lazily (like
+   * GitHubClient's getToken) so a token saved from the options page while
+   * this client is already in use takes effect on the next call. Sent
+   * only to `POST v1/auth/session` to obtain a short-lived Peephole
+   * session -- every other request uses that session instead, so the
+   * GitHub credential itself is never resent on every poll. See
+   * services/preview-api/previewSession.ts for why this exists.
    */
   getToken?: () =>
     string | null | undefined | Promise<string | null | undefined>
 }
 
+interface CachedSession {
+  token: string
+  expiresAtMs: number
+}
+
+// Refresh slightly before the server-declared expiry so a request never
+// starts with a session that expires mid-flight.
+const SESSION_EXPIRY_SKEW_MS = 5_000
+
 export class PreviewApiClient implements PreviewApi {
   private readonly fetch: typeof globalThis.fetch
   private readonly createIdempotencyKey: () => string
   private readonly getToken: () => Promise<string | null | undefined>
+  private session: CachedSession | null = null
+  private loginPromise: Promise<string> | null = null
 
   constructor(
     private readonly baseUrl: string,
@@ -142,19 +154,21 @@ export class PreviewApiClient implements PreviewApi {
     )
   }
 
-  private async request(path: string, init: RequestInit): Promise<unknown> {
+  private async request(
+    path: string,
+    init: RequestInit,
+    allowSessionRetry = true,
+  ): Promise<unknown> {
+    const sessionToken = await this.getSessionToken()
     let response: Response
 
     try {
-      const token = await this.getToken()
-      response = await this.fetch(new URL(path, this.baseUrl), {
+      response = await this.fetchJson(new URL(path, this.baseUrl), {
         ...init,
         headers: {
           ...(init.headers as Record<string, string> | undefined),
-          ...(token ? { authorization: `Bearer ${token}` } : {}),
+          authorization: `Bearer ${sessionToken}`,
         },
-        credentials: "omit",
-        cache: "no-store",
       })
     } catch (error) {
       if (isAbortError(error)) {
@@ -167,6 +181,15 @@ export class PreviewApiClient implements PreviewApi {
       )
     }
 
+    // The session was likely revoked or expired between requests (a
+    // clock-skewed server, or simply outliving its TTL) -- discard it and
+    // sign in again once, transparently, rather than surfacing an error
+    // for something the caller can't act on directly.
+    if (response.status === 401 && allowSessionRetry) {
+      this.session = null
+      return this.request(path, init, false)
+    }
+
     const body = await readJson(response)
 
     if (!response.ok) {
@@ -174,6 +197,72 @@ export class PreviewApiClient implements PreviewApi {
     }
 
     return body
+  }
+
+  private async getSessionToken(): Promise<string> {
+    if (
+      this.session &&
+      this.session.expiresAtMs > Date.now() + SESSION_EXPIRY_SKEW_MS
+    ) {
+      return this.session.token
+    }
+
+    this.loginPromise ??= this.login().finally(() => {
+      this.loginPromise = null
+    })
+
+    return this.loginPromise
+  }
+
+  private async login(): Promise<string> {
+    const githubToken = await this.getToken()
+
+    if (!githubToken) {
+      throw new PreviewApiError(
+        "UNAUTHORIZED",
+        "Set a GitHub personal access token in the extension's options page to build a preview.",
+      )
+    }
+
+    const response = await this.fetchJson(
+      new URL("v1/auth/session", this.baseUrl),
+      { method: "POST", headers: { authorization: `Bearer ${githubToken}` } },
+    ).catch((error: unknown) => {
+      if (isAbortError(error)) {
+        throw error
+      }
+
+      throw new PreviewApiError(
+        "NETWORK_ERROR",
+        "The Peephole preview service could not be reached.",
+      )
+    })
+
+    const body = await readJson(response)
+
+    if (!response.ok) {
+      throw parseErrorResponse(response, body)
+    }
+
+    if (
+      !isObject(body) ||
+      typeof body.token !== "string" ||
+      typeof body.expiresAt !== "string"
+    ) {
+      throw invalidResponse()
+    }
+
+    const expiresAtMs = Date.parse(body.expiresAt)
+    this.session = {
+      token: body.token,
+      expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : Date.now(),
+    }
+
+    return this.session.token
+  }
+
+  private fetchJson(url: string | URL, init: RequestInit): Promise<Response> {
+    return this.fetch(url, { ...init, credentials: "omit", cache: "no-store" })
   }
 }
 

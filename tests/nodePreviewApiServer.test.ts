@@ -9,7 +9,10 @@ import {
   InMemoryPreviewJobStore,
   InMemoryPreviewQueue,
 } from "../services/preview-api/inMemoryAdapters"
-import { NodePreviewApiServer } from "../services/preview-api/nodeHttpServer"
+import {
+  HttpIngressError,
+  NodePreviewApiServer,
+} from "../services/preview-api/nodeHttpServer"
 import type { BuildPlan, PreviewRequester } from "../types/preview"
 
 const repository = {
@@ -116,6 +119,58 @@ describe("NodePreviewApiServer", () => {
     expect(method.headers.get("allow")).toBe("GET, POST, DELETE")
   })
 
+  it("404s the login route when issueSession is not configured, and serves it when it is", async () => {
+    const withoutLogin = createTestServer()
+    servers.push(withoutLogin)
+    const withoutLoginUrl = await listen(withoutLogin)
+
+    const missing = await fetch(`${withoutLoginUrl}/v1/auth/session`, {
+      method: "POST",
+    })
+    expect(missing.status).toBe(404)
+
+    const withLogin = createTestServer({
+      issueSession: async () => ({
+        token: "session-token",
+        expiresAt: "2026-01-01T00:00:00.000Z",
+      }),
+    })
+    servers.push(withLogin)
+    const withLoginUrl = await listen(withLogin)
+
+    const issued = await fetch(`${withLoginUrl}/v1/auth/session`, {
+      method: "POST",
+      headers: { authorization: "Bearer ghp_whatever" },
+    })
+    expect(issued.status).toBe(200)
+    await expect(issued.json()).resolves.toEqual({
+      token: "session-token",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+    })
+  })
+
+  it("surfaces a login failure with its own status and code, not a generic 500", async () => {
+    const server = createTestServer({
+      issueSession: async () => {
+        throw new HttpIngressError(
+          401,
+          "This GitHub token is invalid.",
+          "UNAUTHORIZED",
+        )
+      },
+    })
+    servers.push(server)
+    const baseUrl = await listen(server)
+
+    const response = await fetch(`${baseUrl}/v1/auth/session`, {
+      method: "POST",
+    })
+    const body = (await response.json()) as { error: { code: string } }
+
+    expect(response.status).toBe(401)
+    expect(body.error.code).toBe("UNAUTHORIZED")
+  })
+
   it("does not expose requester resolver failures", async () => {
     const server = createTestServer({
       resolveRequester: () => {
@@ -139,6 +194,7 @@ function createTestServer(
     isReady?: () => boolean
     maxBodyBytes?: number
     resolveRequester?: () => PreviewRequester
+    issueSession?: () => Promise<{ token: string; expiresAt: string }>
   } = {},
 ): NodePreviewApiServer {
   const controlPlane = new PreviewControlPlane(
@@ -160,6 +216,7 @@ function createTestServer(
   return new NodePreviewApiServer({
     handlePreviewRequest: createPreviewHttpHandler(controlPlane),
     resolveRequester: options.resolveRequester ?? (() => requester),
+    issueSession: options.issueSession,
     isReady: options.isReady,
     maxBodyBytes: options.maxBodyBytes,
   })

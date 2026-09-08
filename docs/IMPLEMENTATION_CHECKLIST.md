@@ -85,16 +85,35 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Revalidate repository identity, commit, and build plan server-side
 - [x] Compose the API with production-persistent job, queue, cache, quota,
       and authentication adapters (`services/local-preview/devServer.ts`
-      composes the persistent Postgres job/queue/cache/quota adapters and
-      `GitHubRequesterAuth`, replacing the previous fixed dev identity --
-      `resolveRequester` now authenticates every request against the
-      caller's own GitHub personal access token, verified via GitHub's
-      `/user` API and cached briefly to avoid re-verifying on every poll;
-      see `services/preview-api/githubRequesterAuth.ts` and
-      `tests/githubRequesterAuth.test.ts`). What this reuses an existing
-      token for instead of a dedicated OAuth App/login flow was a
-      deliberate scope choice, not an oversight -- see that file's doc
-      comment.
+      composes the persistent Postgres job/queue/cache/quota adapters),
+      replacing the previous fixed dev identity with real, two-step
+      authentication:
+      1. `POST /v1/auth/session` verifies the caller's GitHub personal
+         access token against GitHub's own `/user` API
+         (`GitHubRequesterAuth`) and exchanges it for a short-lived,
+         HMAC-signed Peephole session token (`PreviewSessionIssuer`).
+      2. Every other route verifies that session token instead
+         (`PreviewSessionAuth`), never the raw GitHub credential again.
+
+      The credential is deliberately sent only once, at login: a
+      compromised Preview API then only ever sees Peephole-scoped
+      session tokens that expire on their own and are useless anywhere
+      else, never the caller's actual GitHub credential repeated on
+      every poll. Verified end to end against a real running server with
+      a real GitHub token: no/invalid token rejected at login with a
+      clear message, a valid token exchanged for a session, that session
+      accepted by a real job route, and -- critically -- the raw GitHub
+      token rejected when presented directly to a job route instead of a
+      session. See `services/preview-api/previewSession.ts`,
+      `services/preview-api/previewSessionAuth.ts`,
+      `services/preview-api/githubRequesterAuth.ts`, and their test
+      files. Reusing an existing GitHub token (rather than a dedicated
+      OAuth App + login UI) for the *credential-acquisition* step was a
+      deliberate scope choice, not an oversight -- see
+      `GitHubRequesterAuth`'s doc comment. Swapping that acquisition
+      method later (e.g. a GitHub App + PKCE flow) would not require
+      touching the session layer or the `github:<id>` identity model at
+      all.
 
 ## Isolated Static Runner
 
