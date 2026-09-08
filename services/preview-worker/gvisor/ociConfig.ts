@@ -17,6 +17,14 @@ export interface OciConfigOptions {
    * so every connection fails with ENETUNREACH.
    */
   networkNamespacePath?: string
+  /**
+   * Host path bind-mounted as the sandbox's own /etc/resolv.conf. Callers
+   * should compute this via resolveDnsConfigSource() rather than always
+   * passing "/etc/resolv.conf" directly -- see that function's doc
+   * comment for why a systemd-resolved host's own resolv.conf is often
+   * unusable as-is from inside a separate network namespace.
+   */
+  dnsConfigSource: string
 }
 
 export interface OciRuntimeSpec {
@@ -108,11 +116,12 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
       // way); with network "sandbox", without this the container's stub
       // resolver has no nameserver at all and every DNS lookup (e.g. the
       // npm registry) fails with EAI_AGAIN before a single connection is
-      // attempted.
+      // attempted. dnsConfigSource is not always literally
+      // "/etc/resolv.conf" -- see resolveDnsConfigSource().
       {
         destination: "/etc/resolv.conf",
         type: "bind",
-        source: "/etc/resolv.conf",
+        source: options.dnsConfigSource,
         options: ["bind", "ro"],
       },
     ],

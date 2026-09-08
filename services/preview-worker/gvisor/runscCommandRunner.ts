@@ -14,6 +14,7 @@ import {
 } from "../local/commandRunner"
 import { directorySizeExceeds } from "../local/directorySize"
 import type { LocalPreviewWorkspace } from "../local/localWorkspace"
+import { resolveDnsConfigSource } from "./dnsConfig"
 import { asGVisorWorkspace } from "./gvisorWorkspace"
 import { buildOciRuntimeSpec } from "./ociConfig"
 import { NodeProcessRunner } from "./nodeProcessRunner"
@@ -36,6 +37,9 @@ export interface RunscCommandRunnerOptions {
    * after it exits) -- see run()'s disk-quota watcher. */
   maxWorkspaceBytes?: number
   diskQuotaPollMs?: number
+  /** Overridable for tests; defaults to the real resolveDnsConfigSource()
+   * (reads the actual host's resolv.conf files). */
+  resolveDnsConfigSource?: typeof resolveDnsConfigSource
 }
 
 /**
@@ -86,6 +90,7 @@ export class RunscCommandRunner implements CommandRunner {
   private readonly processRunner: ProcessRunner
   private readonly maxWorkspaceBytes: number
   private readonly diskQuotaPollMs: number
+  private readonly resolveDnsConfigSource: typeof resolveDnsConfigSource
 
   constructor(options: RunscCommandRunnerOptions = {}) {
     this.runscBinaryPath = options.runscBinaryPath ?? "runsc"
@@ -97,6 +102,8 @@ export class RunscCommandRunner implements CommandRunner {
     this.maxWorkspaceBytes =
       options.maxWorkspaceBytes ?? DEFAULT_ARCHIVE_LIMITS.maxExpandedBytes
     this.diskQuotaPollMs = options.diskQuotaPollMs ?? 1_000
+    this.resolveDnsConfigSource =
+      options.resolveDnsConfigSource ?? resolveDnsConfigSource
   }
 
   async run(
@@ -132,6 +139,7 @@ export class RunscCommandRunner implements CommandRunner {
       hostname: "peephole-preview",
       resourceLimits: this.resourceLimits,
       networkNamespacePath,
+      dnsConfigSource: this.resolveDnsConfigSource(),
     })
 
     await writeFile(

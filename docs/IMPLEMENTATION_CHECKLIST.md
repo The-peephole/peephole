@@ -223,6 +223,37 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       (this host's own default route is itself a private address under
       WSL2), so this needs a deployment-specific decision, not a
       one-size-fits-all rule.
+- [x] Fixed a real DNS bug found on a real AWS EC2 host (Ubuntu,
+      systemd-resolved) that WSL2 never exposed: `/etc/resolv.conf` there
+      points at the `127.0.0.53` stub resolver, which systemd-resolved
+      only listens on inside the *host's own* default network namespace --
+      bind-mounting it verbatim into the sandbox's separate network
+      namespace (per the fix above) looks correct but leaves nothing
+      listening on that address, so every DNS lookup failed with
+      `EAI_AGAIN` even though `network: sandbox` itself worked fine.
+      `resolveDnsConfigSource()` (`services/preview-worker/gvisor/dnsConfig.ts`)
+      now detects a loopback-only `/etc/resolv.conf` and falls back to
+      systemd-resolved's own published uplink file
+      (`/run/systemd/resolve/resolv.conf`, the same file Docker reads for
+      this), which is threaded through `buildOciRuntimeSpec`'s required
+      `dnsConfigSource` field. Environments whose `/etc/resolv.conf`
+      already has a real, non-loopback nameserver (WSL2's own
+      `10.255.255.254`) are left exactly as before -- verified by a real
+      regression run on WSL2 (`tests/realGvisorSandbox.test.ts`'s
+      "resolves a real, non-loopback DNS config source on this host") on
+      top of unit coverage in `tests/dnsConfig.test.ts`.
+- [x] Host prerequisite found while re-verifying the DNS fix on WSL2:
+      `net.ipv4.ip_forward` must be `1` for `network: sandbox` to reach
+      anything at all -- with it `0` (WSL2 resets this on every VM
+      restart; some minimal cloud images ship it disabled too), the host
+      kernel drops forwarded packets before they ever reach the
+      `iptables` FORWARD/NAT rules `VethNatNetworkProvisioner` sets up, so
+      every sandboxed connection attempt times out with no indication
+      anything is misconfigured. Not currently set by the code itself
+      (same category of prerequisite as having `runsc`/`ip`/`iptables`
+      installed) -- confirm with `sysctl net.ipv4.ip_forward` (or
+      `cat /proc/sys/net/ipv4/ip_forward`) before trusting a
+      `network: sandbox` failure as a real bug.
 - [x] Enforce PID limits **on a real gVisor host** -- verified: a
       sandboxed fork bomb against a 16-PID limit fails
       (`tests/realGvisorSandbox.test.ts`)

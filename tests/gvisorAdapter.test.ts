@@ -26,9 +26,16 @@ describe("buildOciRuntimeSpec", () => {
       gid: 65534,
       hostname: "peephole-preview",
       resourceLimits: { cpuCount: 1, memoryBytes: 1_073_741_824, maxPids: 128 },
+      dnsConfigSource: "/run/systemd/resolve/resolv.conf",
     })
 
     expect(spec.process.user).toEqual({ uid: 65534, gid: 65534 })
+    expect(spec.mounts).toContainEqual({
+      destination: "/etc/resolv.conf",
+      type: "bind",
+      source: "/run/systemd/resolve/resolv.conf",
+      options: ["bind", "ro"],
+    })
     expect(spec.process.noNewPrivileges).toBe(true)
     expect(spec.process.capabilities.bounding).toEqual(["CAP_NET_BIND_SERVICE"])
     expect(spec.linux.resources.cpu).toEqual({

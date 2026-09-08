@@ -10,6 +10,7 @@ import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
+import { resolveDnsConfigSource } from "../services/preview-worker/gvisor/dnsConfig"
 import { GVisorOrphanReaper } from "../services/preview-worker/gvisor/gvisorOrphanReaper"
 import { GVisorSandboxProvisioner } from "../services/preview-worker/gvisor/gvisorSandboxProvisioner"
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
@@ -249,6 +250,29 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
 
       expect(throttledMs).toBeGreaterThan(generousMs * 2)
     }, 90_000)
+
+    it("resolves a real, non-loopback DNS config source on this host", async () => {
+      // Regression test for a real AWS EC2 (Ubuntu, systemd-resolved)
+      // finding: /etc/resolv.conf there points at the 127.0.0.53 stub,
+      // which only systemd-resolved's host-netns listener answers on --
+      // bind-mounted verbatim into the sandbox's own network namespace,
+      // nothing is listening there and every DNS lookup fails. This calls
+      // the real (non-fake-readFile) resolveDnsConfigSource() against
+      // whatever this host actually has, and asserts the file it picks
+      // has at least one nameserver that isn't a loopback address --
+      // which is exactly the property that made the "reaches the real
+      // internet" test below fail before this fix, on that host.
+      const source = resolveDnsConfigSource()
+      const content = await readFile(source, "utf8")
+      const nameserverLines = content
+        .split("\n")
+        .filter((line) => /^\s*nameserver\s+\S+/.test(line))
+
+      expect(nameserverLines.length).toBeGreaterThan(0)
+      expect(nameserverLines.some((line) => /127\.0\.0\.\d+/.test(line))).toBe(
+        false,
+      )
+    })
 
     it("reaches the real internet through network: sandbox", async () => {
       const ws = await allocate("real-gvisor-net")
