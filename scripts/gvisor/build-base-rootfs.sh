@@ -16,16 +16,37 @@ fi
 
 OUT_DIR="${1:-/var/lib/peephole/base-rootfs}"
 NODE_VERSION="24.20.0"
-NODE_ARCH="x64"
 UBUNTU_RELEASE="noble"
+
+# Debian/Ubuntu's "primary" archive (archive.ubuntu.com) only carries
+# amd64/i386 packages; every other architecture (arm64, armhf, ppc64el,
+# s390x, riscv64, ...) lives on the separate "ports" archive. debootstrap
+# infers the target architecture from `dpkg --print-architecture`
+# (effectively the host's own arch, since we're not cross-bootstrapping),
+# so the mirror must match it or package resolution fails outright.
+HOST_ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
+case "$HOST_ARCH" in
+  amd64)
+    NODE_ARCH="x64"
+    UBUNTU_MIRROR="http://archive.ubuntu.com/ubuntu"
+    ;;
+  arm64)
+    NODE_ARCH="arm64"
+    UBUNTU_MIRROR="http://ports.ubuntu.com/ubuntu-ports"
+    ;;
+  *)
+    echo "Unsupported host architecture: '${HOST_ARCH:-unknown}' (expected amd64 or arm64; is dpkg installed?)." >&2
+    exit 1
+    ;;
+esac
 
 if [[ -d "$OUT_DIR" ]]; then
   echo "Removing existing rootfs at $OUT_DIR"
   rm -rf "$OUT_DIR"
 fi
 
-echo "Debootstrapping a minimal $UBUNTU_RELEASE base into $OUT_DIR"
-debootstrap --variant=minbase "$UBUNTU_RELEASE" "$OUT_DIR" http://archive.ubuntu.com/ubuntu
+echo "Debootstrapping a minimal $UBUNTU_RELEASE ($HOST_ARCH) base into $OUT_DIR from $UBUNTU_MIRROR"
+debootstrap --variant=minbase "$UBUNTU_RELEASE" "$OUT_DIR" "$UBUNTU_MIRROR"
 
 echo "Installing ca-certificates (needed for npm's HTTPS registry calls)"
 chroot "$OUT_DIR" /bin/sh -c "apt-get update -qq && apt-get install -y -qq ca-certificates && rm -rf /var/lib/apt/lists/*"
