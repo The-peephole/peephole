@@ -6,6 +6,8 @@ describe("readProductionConfig", () => {
   it("defaults worker concurrency to 1 and paths to /var/lib/peephole/*", () => {
     const config = readProductionConfig({})
 
+    expect(config.trustedRegistrableDomain).toBe("peephole.dev")
+    expect(config.trustedAppOrigin).toBe("https://app.peephole.dev")
     expect(config.workerConcurrency).toBe(1)
     expect(config.baseRootfsImage).toBe("/var/lib/peephole/base-rootfs")
     expect(config.bundlesRootDir).toBe("/var/lib/peephole/jobs")
@@ -171,5 +173,100 @@ describe("TLS ask config", () => {
     { PEEPHOLE_ARTIFACT_PORT: "9999", PEEPHOLE_ARTIFACT_TLS_ASK_PORT: "9999" },
   ])("rejects listener port collisions", (environment) => {
     expect(() => readProductionConfig(environment)).toThrow(/must differ/)
+  })
+})
+
+describe("trusted production domains", () => {
+  it("accepts and normalizes the free deployment", () => {
+    const config = readProductionConfig({
+      PEEPHOLE_TRUSTED_REGISTRABLE_DOMAIN: "SSLIP.IO",
+      PEEPHOLE_TRUSTED_APP_ORIGIN: "https://app.3.34.33.24.sslip.io",
+      PEEPHOLE_ARTIFACT_BASE_DOMAIN: "3.34.33.24.nip.io",
+    })
+    expect(config.trustedRegistrableDomain).toBe("sslip.io")
+    expect(config.trustedAppOrigin).toBe("https://app.3.34.33.24.sslip.io")
+    expect(config.artifactBaseDomain).toBe("3.34.33.24.nip.io")
+  })
+
+  it.each([
+    ["peephole.dev", "peephole.dev"],
+    ["peephole.dev", "preview.peephole.dev"],
+    ["preview.peephole.dev", "peephole.dev"],
+    ["sslip.io", "foo.sslip.io"],
+    ["foo.sslip.io", "sslip.io"],
+  ])("rejects overlapping trees %s / %s", (trusted, artifact) => {
+    expect(() =>
+      readProductionConfig({
+        PEEPHOLE_TRUSTED_REGISTRABLE_DOMAIN: trusted,
+        PEEPHOLE_TRUSTED_APP_ORIGIN: `https://${trusted}`,
+        PEEPHOLE_ARTIFACT_BASE_DOMAIN: artifact,
+      }),
+    ).toThrow(/PEEPHOLE_ARTIFACT_BASE_DOMAIN must not share/)
+  })
+
+  it.each([
+    "",
+    " ",
+    "localhost",
+    "app.localhost",
+    "sslip.io:443",
+    "https://sslip.io",
+    "sslip.io/path",
+    "sslip.io?x",
+    "sslip.io#x",
+    "foo..io",
+    ".sslip.io",
+    "sslip.io.",
+    "-foo.io",
+    "foo-.io",
+    "foo_bar.io",
+    "127.0.0.1",
+    `${"a".repeat(64)}.io`,
+    `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(63)}`,
+  ])("rejects malformed trusted domain %s", (domain) => {
+    expect(() =>
+      readProductionConfig({
+        PEEPHOLE_TRUSTED_REGISTRABLE_DOMAIN: domain,
+      }),
+    ).toThrow(/PEEPHOLE_TRUSTED_REGISTRABLE_DOMAIN/)
+  })
+
+  it.each([
+    "",
+    " ",
+    "http://app.sslip.io",
+    "https://app.sslip.io:8443",
+    "https://app.sslip.io:443",
+    "https://user:pass@app.sslip.io",
+    "https://app.sslip.io/path",
+    "https://app.sslip.io?query=1",
+    "https://app.sslip.io#fragment",
+    "https://app.sslip.io?",
+    "https://app.sslip.io#",
+    "https://app.sslip.io/..",
+    "chrome-extension://abc",
+    "javascript:alert(1)",
+    "https://app.peephole.dev",
+    "https://notsslip.io",
+    "https://sslip.io.evil.com",
+    "https://app.sslip.io;script-src *",
+    "https://app.sslip.io\n",
+    "https://app..sslip.io",
+  ])("rejects unsafe or foreign origin %s", (origin) => {
+    expect(() =>
+      readProductionConfig({
+        PEEPHOLE_TRUSTED_REGISTRABLE_DOMAIN: "sslip.io",
+        PEEPHOLE_TRUSTED_APP_ORIGIN: origin,
+      }),
+    ).toThrow(/PEEPHOLE_TRUSTED_APP_ORIGIN/)
+  })
+
+  it("accepts the trusted root and normalizes a root slash and hostname case", () => {
+    expect(
+      readProductionConfig({
+        PEEPHOLE_TRUSTED_REGISTRABLE_DOMAIN: "sslip.io",
+        PEEPHOLE_TRUSTED_APP_ORIGIN: "https://SSLIP.IO/",
+      }).trustedAppOrigin,
+    ).toBe("https://sslip.io")
   })
 })

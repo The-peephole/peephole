@@ -18,6 +18,8 @@ import {
   resolveVerifiedArtifactRoot,
 } from "../artifactServing/staticFile"
 
+import { validateTrustedAppOrigin } from "./trustedOrigin"
+
 import { resolveProductionArtifactHostname } from "./artifactDomain"
 
 const JOB_ID_PATTERN = /^[a-z\d-]{8,64}$/i
@@ -41,6 +43,8 @@ export interface ProductionArtifactHostOptions {
    * environment variable could misconfigure into 0.0.0.0. */
   port?: number
   baseDomain?: string
+  /** Validated again at construction so standalone callers cannot inject CSP. */
+  trustedAppOrigin?: string
   now?: () => Date
 }
 
@@ -73,6 +77,7 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
   private readonly store: ProductionArtifactStore
   private readonly port: number
   private readonly baseDomain: string
+  private readonly trustedAppOrigin: string
   private readonly now: () => Date
   private server: Server | undefined
   private listening: Promise<{ host: string; port: number }> | undefined
@@ -89,6 +94,9 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
     this.store = options.store
     this.port = options.port ?? 8_788
     this.baseDomain = options.baseDomain ?? "peepholeusercontent.dev"
+    this.trustedAppOrigin = validateTrustedAppOrigin(
+      options.trustedAppOrigin ?? "https://app.peephole.dev",
+    )
     this.now = options.now ?? (() => new Date())
   }
 
@@ -345,7 +353,10 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
       }
 
       const body = await readFile(filePath)
-      response.writeHead(200, artifactHeaders(filePath, body.byteLength))
+      response.writeHead(
+        200,
+        artifactHeaders(filePath, body.byteLength, this.trustedAppOrigin),
+      )
       response.end(request.method === "HEAD" ? undefined : body)
     } catch {
       sendText(response, 404, "Not found.")
@@ -373,6 +384,7 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
 function artifactHeaders(
   filePath: string,
   length: number,
+  trustedAppOrigin: string,
 ): Record<string, string | number> {
   return {
     "content-type": contentTypeFor(filePath),
@@ -389,8 +401,7 @@ function artifactHeaders(
     // trusted control-plane origin (once it exists) and the extension
     // itself (the real client today, before that origin exists) may embed
     // preview content -- never an arbitrary website.
-    "content-security-policy":
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; worker-src 'none'; frame-ancestors https://app.peephole.dev chrome-extension:",
+    "content-security-policy": `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; worker-src 'none'; frame-ancestors ${trustedAppOrigin} chrome-extension:`,
   }
 }
 

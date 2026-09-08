@@ -61,6 +61,7 @@ async function main(): Promise<void> {
     storageDir: productionConfig.artifactStorageDir,
     store: artifactStore,
     port: productionConfig.artifactPort,
+    trustedAppOrigin: productionConfig.trustedAppOrigin,
     baseDomain: productionConfig.artifactBaseDomain,
   })
   const artifactAddress = await artifactHost.listen()

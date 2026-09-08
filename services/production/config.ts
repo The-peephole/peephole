@@ -1,3 +1,5 @@
+import { validateTrustedAppOrigin } from "./trustedOrigin"
+
 export interface ProductionConfig {
   /** How many jobs this host runs at once -- each PreviewWorkerLoop
    * instance leases and runs jobs one at a time, so N loops means N
@@ -25,6 +27,9 @@ export interface ProductionConfig {
    * domain, since that separation is the entire point of routing preview
    * content through its own origin. */
   artifactBaseDomain: string
+  /** Operator-supplied site root; no public suffix inference is performed. */
+  trustedRegistrableDomain: string
+  trustedAppOrigin: string
 }
 
 const DEFAULTS = {
@@ -38,14 +43,24 @@ const DEFAULTS = {
   artifactPort: 8_788,
   artifactTlsAskPort: 8_790,
   artifactBaseDomain: "peepholeusercontent.dev",
+  trustedRegistrableDomain: "peephole.dev",
+  trustedAppOrigin: "https://app.peephole.dev",
 } as const
-
-const TRUSTED_REGISTRABLE_DOMAIN = "peephole.dev"
 
 export function readProductionConfig(
   environment: NodeJS.ProcessEnv,
 ): ProductionConfig {
+  const trustedRegistrableDomain = readDomain(
+    "PEEPHOLE_TRUSTED_REGISTRABLE_DOMAIN",
+    environment.PEEPHOLE_TRUSTED_REGISTRABLE_DOMAIN,
+    DEFAULTS.trustedRegistrableDomain,
+  )
   const config = {
+    trustedRegistrableDomain,
+    trustedAppOrigin: validateTrustedAppOrigin(
+      environment.PEEPHOLE_TRUSTED_APP_ORIGIN ?? DEFAULTS.trustedAppOrigin,
+      trustedRegistrableDomain,
+    ),
     workerConcurrency: readInteger(
       "PEEPHOLE_WORKER_CONCURRENCY",
       environment.PEEPHOLE_WORKER_CONCURRENCY,
@@ -103,6 +118,16 @@ export function readProductionConfig(
       DEFAULTS.artifactBaseDomain,
     ),
   }
+  // Compare at label boundaries in both directions, including equality.
+  if (
+    config.artifactBaseDomain === trustedRegistrableDomain ||
+    config.artifactBaseDomain.endsWith(`.${trustedRegistrableDomain}`) ||
+    trustedRegistrableDomain.endsWith(`.${config.artifactBaseDomain}`)
+  ) {
+    throw new Error(
+      `PEEPHOLE_ARTIFACT_BASE_DOMAIN must not share the trusted ${trustedRegistrableDomain} registrable domain.`,
+    )
+  }
   if (config.artifactTlsAskPort === config.artifactPort) {
     throw new Error(
       "PEEPHOLE_ARTIFACT_TLS_ASK_PORT must differ from PEEPHOLE_ARTIFACT_PORT.",
@@ -121,28 +146,18 @@ function readDomain(
   value: string | undefined,
   fallback: string,
 ): string {
-  const trimmed = value?.trim().toLowerCase()
-
-  if (!trimmed) {
-    return fallback
-  }
+  const trimmed = (value ?? fallback).trim().toLowerCase()
 
   if (
     trimmed.length > 253 ||
     trimmed === "localhost" ||
+    trimmed.endsWith(".localhost") ||
+    trimmed.split(".").some((label) => label.length > 63) ||
+    /^[\d.]+$/.test(trimmed) ||
     !trimmed.includes(".") ||
     !/^[a-z\d]([a-z\d-]*[a-z\d])?(\.[a-z\d]([a-z\d-]*[a-z\d])?)+$/.test(trimmed)
   ) {
     throw new Error(`${name} must be a valid registrable domain name.`)
-  }
-
-  if (
-    trimmed === TRUSTED_REGISTRABLE_DOMAIN ||
-    trimmed.endsWith(`.${TRUSTED_REGISTRABLE_DOMAIN}`)
-  ) {
-    throw new Error(
-      `${name} must not share the trusted ${TRUSTED_REGISTRABLE_DOMAIN} registrable domain.`,
-    )
   }
 
   return trimmed

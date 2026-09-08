@@ -580,6 +580,57 @@ describe("ProductionArtifactHost", () => {
   })
 
   describe("security headers", () => {
+    it("changes only frame-ancestors for a configured trusted origin", async () => {
+      const artifactId = newArtifactId()
+      await writeArtifact(storageDir, artifactId)
+      await host.sign(artifactId, jobId, future())
+      const headers = { host: `${artifactId}.${BASE_DOMAIN}` }
+      await host.close()
+      host = new ProductionArtifactHost({
+        storageDir,
+        store,
+        port: TEST_PORT,
+        baseDomain: BASE_DOMAIN,
+        trustedAppOrigin: "https://app.3.34.33.24.sslip.io",
+      })
+      await host.listen()
+      const configured = await rawRequest("/", headers)
+      expect(configured.status).toBe(200)
+      expect(configured.headers["content-security-policy"]).toBe(
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; worker-src 'none'; frame-ancestors https://app.3.34.33.24.sslip.io chrome-extension:",
+      )
+      expect(configured.headers["content-security-policy"]).toContain(
+        "connect-src 'none'",
+      )
+      expect(configured.headers["cross-origin-resource-policy"]).toBe(
+        "same-origin",
+      )
+      expect(configured.headers["access-control-allow-origin"]).toBeUndefined()
+      expect(configured.headers["cache-control"]).toBe("no-store")
+      expect(configured.headers["x-content-type-options"]).toBe("nosniff")
+    })
+
+    it.each([
+      "https://app.peephole.dev; script-src *",
+      "https://app.peephole.dev\r\nX-Injected: yes",
+      "http://app.peephole.dev",
+      "https://app.peephole.dev:443",
+      "https://user:pass@app.peephole.dev",
+      "https://app.peephole.dev/path",
+      "https://app.peephole.dev?query=1",
+      "https://app.peephole.dev#fragment",
+      "",
+    ])("rejects unsafe standalone origin %s", (trustedAppOrigin) => {
+      expect(
+        () =>
+          new ProductionArtifactHost({
+            storageDir,
+            store,
+            trustedAppOrigin,
+          }),
+      ).toThrow(/PEEPHOLE_TRUSTED_APP_ORIGIN/)
+    })
+
     it("sets no Access-Control-Allow-Origin, CORP same-origin, and the rest of the safe defaults", async () => {
       const artifactId = newArtifactId()
       await writeArtifact(storageDir, artifactId)
@@ -597,7 +648,7 @@ describe("ProductionArtifactHost", () => {
       expect(response.headers["permissions-policy"]).toContain("camera=()")
       expect(response.headers["x-content-type-options"]).toBe("nosniff")
       expect(response.headers["content-security-policy"]).toContain(
-        "frame-ancestors",
+        "frame-ancestors https://app.peephole.dev chrome-extension:",
       )
       expect(response.headers["content-security-policy"]).not.toContain("*")
       expect(response.headers["cache-control"]).toBe("no-store")
