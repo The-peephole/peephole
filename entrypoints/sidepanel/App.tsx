@@ -8,6 +8,7 @@ interface SidePanelAppProps {
   repository: RepositoryIdentity | null
   loadRepositoryAnalysis: RepositoryAnalysisLoader
   previewApi: PreviewApi | null
+  previewArtifactBaseDomain?: string | null
   previewConfigurationError?: string | null
 }
 
@@ -16,6 +17,7 @@ export function SidePanelApp({
   loadRepositoryAnalysis,
   previewApi,
   previewConfigurationError = null,
+  previewArtifactBaseDomain = null,
 }: SidePanelAppProps) {
   return (
     <main className="peephole-panel">
@@ -36,6 +38,7 @@ export function SidePanelApp({
               configurationError={previewConfigurationError}
               key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}`}
               previewApi={previewApi}
+              previewArtifactBaseDomain={previewArtifactBaseDomain}
             />
           )}
         />

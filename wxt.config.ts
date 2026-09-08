@@ -2,6 +2,8 @@ import { defineConfig } from "wxt"
 
 import {
   getPreviewApiHostPermission,
+  getPreviewFrameSrc,
+  parsePreviewArtifactBaseDomain,
   parsePreviewApiBaseUrl,
 } from "./core/preview/config"
 
@@ -10,6 +12,10 @@ export default defineConfig({
   manifest: () => {
     const previewApiBaseUrl = parsePreviewApiBaseUrl(
       import.meta.env.WXT_PREVIEW_API_BASE_URL,
+    )
+
+    const previewArtifactBaseDomain = parsePreviewArtifactBaseDomain(
+      import.meta.env.WXT_PREVIEW_ARTIFACT_BASE_DOMAIN,
     )
 
     return {
@@ -25,15 +31,13 @@ export default defineConfig({
           : []),
       ],
       content_security_policy: {
-        // No production preview domain is provisioned yet (see
-        // IMPLEMENTATION_CHECKLIST.md, "Preview Delivery"), so only the
-        // loopback-only local development artifact host may be framed.
+        // Artifacts need framing permission only, never host_permissions.
         // Chrome's MV3 manifest CSP parser rejects an IPv6 host combined
         // with a wildcard port (`http://[::1]:*`), so only IPv4 loopback is
         // listed here; LocalArtifactHost defaults to 127.0.0.1 anyway.
         extension_pages:
           "script-src 'self'; object-src 'self'; " +
-          "frame-src 'self' http://127.0.0.1:*;",
+          getPreviewFrameSrc(previewArtifactBaseDomain),
       },
     }
   },

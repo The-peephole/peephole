@@ -152,6 +152,46 @@ describe("PreviewJobPanel", () => {
     expect(iframe?.getAttribute("referrerpolicy")).toBe("no-referrer")
   })
 
+  it.each([
+    [
+      "https://artifact-12345678-1234-1234-1234-123456789abc.3.34.33.24.nip.io/path",
+      true,
+    ],
+    ["https://artifact-12345678-1234-1234-1234-123456789abc.evil.com/", false],
+  ])(
+    "gates production iframe and new-tab link for %s",
+    async (url, trusted) => {
+      const api = createApi({
+        create: vi.fn().mockResolvedValue({
+          ...queuedJob,
+          status: "ready",
+          artifact: { url, expiresAt: queuedJob.expiresAt },
+        }),
+      })
+      const container = await renderPanel(
+        api,
+        roots,
+        1500,
+        supportedAnalysis,
+        "3.34.33.24.nip.io",
+      )
+      await act(async () => getButton("Build preview").click())
+      const iframe = container.querySelector("iframe")
+      const link = container.querySelector('a[target="_blank"]')
+      if (trusted) {
+        expect(iframe?.getAttribute("src")).toBe(url)
+        expect(iframe?.getAttribute("sandbox")).toBe(
+          "allow-scripts allow-same-origin allow-forms",
+        )
+        expect(iframe?.getAttribute("referrerpolicy")).toBe("no-referrer")
+        expect(link?.getAttribute("href")).toBe(url)
+      } else {
+        expect(iframe).toBeNull()
+        expect(link).toBeNull()
+      }
+    },
+  )
+
   it("refuses to embed an artifact from an untrusted origin", async () => {
     const readyJob: PreviewJob = {
       ...queuedJob,
@@ -281,6 +321,7 @@ async function renderPanel(
   roots: Array<ReturnType<typeof createRoot>>,
   pollIntervalMs = 1_500,
   analysis = supportedAnalysis,
+  previewArtifactBaseDomain: string | null = null,
 ): Promise<HTMLDivElement> {
   const container = document.createElement("div")
   document.body.append(container)
@@ -293,6 +334,7 @@ async function renderPanel(
         analysis={analysis}
         pollIntervalMs={pollIntervalMs}
         previewApi={previewApi}
+        previewArtifactBaseDomain={previewArtifactBaseDomain}
       />,
     )
   })

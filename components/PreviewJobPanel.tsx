@@ -25,6 +25,7 @@ type PreviewUiState =
 interface PreviewJobPanelProps {
   analysis: RepositoryAnalysis
   previewApi: PreviewApi | null
+  previewArtifactBaseDomain?: string | null
   configurationError?: string | null
   pollIntervalMs?: number
 }
@@ -33,6 +34,7 @@ export function PreviewJobPanel({
   analysis,
   previewApi,
   configurationError = null,
+  previewArtifactBaseDomain = null,
   pollIntervalMs = 1_500,
 }: PreviewJobPanelProps) {
   const [state, setState] = useState<PreviewUiState>({ status: "idle" })
@@ -189,7 +191,12 @@ export function PreviewJobPanel({
   const { job } = state
 
   if (job.status === "ready") {
-    return <ReadyPreview job={job} />
+    return (
+      <ReadyPreview
+        job={job}
+        previewArtifactBaseDomain={previewArtifactBaseDomain}
+      />
+    )
   }
 
   if (job.status === "failed") {
@@ -249,10 +256,17 @@ export function PreviewJobPanel({
   )
 }
 
-function ReadyPreview({ job }: { job: PreviewJob }) {
+function ReadyPreview({
+  job,
+  previewArtifactBaseDomain,
+}: {
+  job: PreviewJob
+  previewArtifactBaseDomain: string | null
+}) {
   const artifactUrl = job.artifact?.url ?? null
   const trusted =
-    artifactUrl !== null && isTrustedPreviewArtifactUrl(artifactUrl)
+    artifactUrl !== null &&
+    isTrustedPreviewArtifactUrl(artifactUrl, previewArtifactBaseDomain)
 
   return (
     <section className="peephole__job peephole__job--ready" role="status">
