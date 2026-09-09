@@ -18,6 +18,16 @@ describe("PreviewSessionAuth", () => {
     )
   })
 
+  it("uses the trusted-proxy requester IP resolver", async () => {
+    const issuer = new PreviewSessionIssuer(SECRET)
+    const auth = new PreviewSessionAuth(issuer)
+    const { token } = await issuer.issue("github:42")
+
+    await expect(
+      auth.resolve(fakeRequest(`Bearer ${token}`, "127.0.0.1", "2001:0db8::7")),
+    ).resolves.toEqual({ subject: "github:42", ip: "2001:db8::7" })
+  })
+
   it("rejects a missing Authorization header", async () => {
     const auth = new PreviewSessionAuth(new PreviewSessionIssuer(SECRET))
 
@@ -53,9 +63,13 @@ describe("PreviewSessionAuth", () => {
   })
 })
 
-function fakeRequest(authorization: string | undefined): IncomingMessage {
+function fakeRequest(
+  authorization: string | undefined,
+  remoteAddress = "203.0.113.5",
+  forwardedFor?: string,
+): IncomingMessage {
   return {
-    headers: { authorization },
-    socket: { remoteAddress: "203.0.113.5" },
+    headers: { authorization, "x-forwarded-for": forwardedFor },
+    socket: { remoteAddress },
   } as unknown as IncomingMessage
 }

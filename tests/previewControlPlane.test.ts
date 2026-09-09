@@ -1,3 +1,4 @@
+import type { IncomingMessage } from "node:http"
 import { describe, expect, it, vi } from "vitest"
 
 import { FakePreviewRunner } from "../services/preview-api/fakeRunner"
@@ -10,6 +11,7 @@ import {
 } from "../services/preview-api/inMemoryAdapters"
 import { PreviewControlPlane } from "../services/preview-api/controlPlane"
 import type { PreviewPlanResolver } from "../services/preview-api/ports"
+import { resolveRequesterIp } from "../services/preview-api/requesterIp"
 import type {
   BuildPlan,
   CreatePreviewJobRequest,
@@ -44,6 +46,22 @@ const requester: PreviewRequester = {
 }
 
 describe("PreviewControlPlane", () => {
+  it("accepts a canonical proxy-resolved IP as a requester quota key", async () => {
+    const harness = createHarness()
+    const ip = resolveRequesterIp({
+      headers: { "x-forwarded-for": "2001:0db8:0:0:0:0:0:7" },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as unknown as IncomingMessage)
+
+    await expect(
+      harness.control.create(request, "request-0000000001", {
+        subject: "github:42",
+        ip,
+      }),
+    ).resolves.toMatchObject({ created: true })
+    expect(ip).toBe("2001:db8::7")
+  })
+
   it("creates one commit-pinned queued job idempotently", async () => {
     const harness = createHarness()
 

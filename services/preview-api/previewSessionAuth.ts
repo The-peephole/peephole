@@ -4,6 +4,7 @@ import type { PreviewRequester } from "../../types/preview"
 import { extractBearerToken } from "./bearerToken"
 import { HttpIngressError } from "./nodeHttpServer"
 import type { PreviewSessionIssuer } from "./previewSession"
+import { resolveRequesterIp } from "./requesterIp"
 
 /**
  * Resolves the requester for every preview API route except login
@@ -18,7 +19,7 @@ export class PreviewSessionAuth {
   constructor(private readonly issuer: PreviewSessionIssuer) {}
 
   async resolve(request: IncomingMessage): Promise<PreviewRequester> {
-    const ip = request.socket.remoteAddress ?? "127.0.0.1"
+    const ip = resolveRequesterIp(request)
     const token = extractBearerToken(request.headers.authorization)
 
     if (!token) {
