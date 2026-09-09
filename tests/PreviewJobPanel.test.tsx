@@ -46,6 +46,11 @@ const queuedJob: PreviewJob = {
   expiresAt: "2026-09-02T01:00:00.000Z",
 }
 
+const activeSession = {
+  token: "peephole-session",
+  expiresAt: "2099-01-01T00:00:00.000Z",
+}
+
 describe("PreviewJobPanel", () => {
   const roots: Array<ReturnType<typeof createRoot>> = []
   beforeEach(() => {
@@ -66,6 +71,109 @@ describe("PreviewJobPanel", () => {
 
     expect(button.disabled).toBe(true)
     expect(container.textContent).toContain("WXT_PREVIEW_API_BASE_URL")
+  })
+
+  it("shows Connect GitHub immediately when no valid session exists", async () => {
+    const api = createApi()
+    const connectGitHub = vi.fn().mockResolvedValue(undefined)
+    const clearSession = vi.fn().mockResolvedValue(undefined)
+    const container = await renderPanel(
+      api,
+      roots,
+      1_500,
+      supportedAnalysis,
+      null,
+      connectGitHub,
+      vi.fn().mockResolvedValue(null),
+      clearSession,
+    )
+
+    expect(container.textContent).toContain("Connect GitHub")
+    expect(findButton("Build preview")).toBeUndefined()
+    expect(api.create).not.toHaveBeenCalled()
+    expect(clearSession).toHaveBeenCalledOnce()
+  })
+
+  it("does not flash Build preview while the session lookup is pending", async () => {
+    let resolveSession: ((session: typeof activeSession) => void) | undefined
+    const getSession = vi.fn(
+      () =>
+        new Promise<typeof activeSession>((resolve) => {
+          resolveSession = resolve
+        }),
+    )
+    const container = await renderPanel(
+      createApi(),
+      roots,
+      1_500,
+      supportedAnalysis,
+      null,
+      vi.fn().mockResolvedValue(undefined),
+      getSession,
+    )
+
+    expect(container.textContent).toContain("Checking GitHub connection")
+    expect(findButton("Build preview")).toBeUndefined()
+    expect(findButton("Connect GitHub")).toBeUndefined()
+
+    await act(async () => resolveSession?.(activeSession))
+    expect(container.textContent).toContain("Build preview")
+    expect(getSession).toHaveBeenCalledOnce()
+  })
+
+  it("shows Build preview when the stored session is still valid", async () => {
+    const container = await renderPanel(
+      createApi(),
+      roots,
+      1_500,
+      supportedAnalysis,
+      null,
+      vi.fn().mockResolvedValue(undefined),
+      vi.fn().mockResolvedValue(activeSession),
+    )
+
+    expect(container.textContent).toContain("Build preview")
+    expect(findButton("Connect GitHub")).toBeUndefined()
+  })
+
+  it("switches from Connect GitHub to Build preview after login", async () => {
+    const api = createApi()
+    const connectGitHub = vi.fn().mockResolvedValue(undefined)
+    const container = await renderPanel(
+      api,
+      roots,
+      1_500,
+      supportedAnalysis,
+      null,
+      connectGitHub,
+      vi.fn().mockResolvedValue(null),
+    )
+
+    await act(async () => getButton("Connect GitHub").click())
+
+    expect(connectGitHub).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain("Build preview")
+    expect(api.create).not.toHaveBeenCalled()
+  })
+
+  it("clears an expired session and asks the user to connect", async () => {
+    const clearSession = vi.fn().mockResolvedValue(undefined)
+    const container = await renderPanel(
+      createApi(),
+      roots,
+      1_500,
+      supportedAnalysis,
+      null,
+      vi.fn().mockResolvedValue(undefined),
+      vi.fn().mockResolvedValue({
+        token: "expired-session",
+        expiresAt: new Date(Date.now() - 1).toISOString(),
+      }),
+      clearSession,
+    )
+
+    expect(container.textContent).toContain("Connect GitHub")
+    expect(clearSession).toHaveBeenCalledOnce()
   })
 
   it("creates a pinned job and supports cancellation", async () => {
@@ -352,6 +460,9 @@ async function renderPanel(
   analysis = supportedAnalysis,
   previewArtifactBaseDomain: string | null = null,
   connectGitHub: (() => Promise<void>) | null = null,
+  getSession: () => Promise<typeof activeSession | null> = async () =>
+    activeSession,
+  clearSession: () => Promise<void> = async () => undefined,
 ): Promise<HTMLDivElement> {
   const container = document.createElement("div")
   document.body.append(container)
@@ -362,7 +473,9 @@ async function renderPanel(
     root.render(
       <PreviewJobPanel
         analysis={analysis}
+        clearSession={clearSession}
         connectGitHub={connectGitHub}
+        getSession={getSession}
         pollIntervalMs={pollIntervalMs}
         previewApi={previewApi}
         previewArtifactBaseDomain={previewArtifactBaseDomain}
@@ -373,9 +486,13 @@ async function renderPanel(
 }
 
 function getButton(label: string): HTMLButtonElement {
-  const button = Array.from(document.querySelectorAll("button")).find(
-    (candidate) => candidate.textContent?.includes(label),
-  )
+  const button = findButton(label)
   if (!button) throw new Error(`Button not found: ${label}`)
   return button
+}
+
+function findButton(label: string): HTMLButtonElement | undefined {
+  return Array.from(document.querySelectorAll("button")).find((candidate) =>
+    candidate.textContent?.includes(label),
+  )
 }

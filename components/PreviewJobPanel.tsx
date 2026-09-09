@@ -10,10 +10,18 @@ import {
 import { PreviewApiError, type PreviewApi } from "../core/preview/apiClient"
 import { createBuildPlanFromAnalysis } from "../core/preview/buildPlan"
 import { isTrustedPreviewArtifactUrl } from "../core/preview/config"
+import {
+  clearStoredPreviewSession,
+  getStoredPreviewSession,
+  type StoredPreviewSession,
+} from "../core/preview/sessionStorage"
 import type { RepositoryAnalysis } from "../types/analysis"
 import type { CreatePreviewJobRequest, PreviewJob } from "../types/preview"
 
 const TERMINAL_STATUSES = new Set(["ready", "failed", "cancelled", "expired"])
+const SESSION_EXPIRY_SKEW_MS = 5_000
+
+type AuthenticationStatus = "checking" | "authenticated" | "unauthenticated"
 
 type PreviewUiState =
   | { status: "idle" }
@@ -34,6 +42,8 @@ interface PreviewJobPanelProps {
   previewArtifactBaseDomain?: string | null
   configurationError?: string | null
   connectGitHub?: (() => Promise<void>) | null
+  getSession?: () => Promise<StoredPreviewSession | null>
+  clearSession?: () => Promise<void>
   pollIntervalMs?: number
 }
 
@@ -42,14 +52,46 @@ export function PreviewJobPanel({
   previewApi,
   configurationError = null,
   connectGitHub = null,
+  getSession = getStoredPreviewSession,
+  clearSession = clearStoredPreviewSession,
   previewArtifactBaseDomain = null,
   pollIntervalMs = 1_500,
 }: PreviewJobPanelProps) {
   const [state, setState] = useState<PreviewUiState>({ status: "idle" })
+  const [authenticationStatus, setAuthenticationStatus] =
+    useState<AuthenticationStatus>("checking")
   const activeRequest = useRef<AbortController | null>(null)
   const createKey = useRef<string | null>(null)
   const request = createRequest(analysis)
   const repositoryKey = `${analysis.repository.repositoryId}:${analysis.repository.commitSha}`
+
+  useEffect(() => {
+    let active = true
+
+    void getSession().then(
+      async (session) => {
+        const expiresAt = session ? Date.parse(session.expiresAt) : Number.NaN
+        const authenticated =
+          Boolean(session?.token) &&
+          Number.isFinite(expiresAt) &&
+          expiresAt > Date.now() + SESSION_EXPIRY_SKEW_MS
+
+        if (!authenticated) await clearSession().catch(() => undefined)
+        if (active) {
+          setAuthenticationStatus(
+            authenticated ? "authenticated" : "unauthenticated",
+          )
+        }
+      },
+      () => {
+        if (active) setAuthenticationStatus("unauthenticated")
+      },
+    )
+
+    return () => {
+      active = false
+    }
+  }, [clearSession, getSession])
 
   useEffect(() => {
     activeRequest.current?.abort()
@@ -81,6 +123,9 @@ export function PreviewJobPanel({
           (error: unknown) => {
             if (!abortController.signal.aborted) {
               setState(createErrorState(error, state.job))
+              if (isAuthenticationError(error)) {
+                setAuthenticationStatus("unauthenticated")
+              }
             }
           },
         )
@@ -133,6 +178,62 @@ export function PreviewJobPanel({
     )
   }
 
+  if (authenticationStatus === "checking") {
+    return <JobProgress label="Checking GitHub connection..." />
+  }
+
+  if (authenticationStatus === "unauthenticated") {
+    if (state.status === "authenticating") {
+      return <JobProgress label="Connecting GitHub..." />
+    }
+
+    return (
+      <section className="peephole__preview-action">
+        <button
+          className="peephole__primary"
+          disabled={!connectGitHub}
+          onClick={() => {
+            if (!connectGitHub) return
+            const pendingError =
+              state.status === "error" && state.requiresAuthentication
+                ? state
+                : null
+            setState({ status: "authenticating" })
+            void connectGitHub().then(
+              () => {
+                setAuthenticationStatus("authenticated")
+                if (pendingError?.job) {
+                  setState({ status: "job", job: pendingError.job })
+                } else if (pendingError) {
+                  startPreview(
+                    previewApi,
+                    request,
+                    activeRequest,
+                    setState,
+                    createKey,
+                    setAuthenticationStatus,
+                  )
+                } else {
+                  setState({ status: "idle" })
+                }
+              },
+              (error: unknown) =>
+                setState(createErrorState(error, undefined, true)),
+            )
+          }}
+          type="button"
+        >
+          Connect GitHub
+        </button>
+        <p className="peephole__action-note">
+          {state.status === "error" && state.requiresAuthentication
+            ? state.message
+            : "Connect GitHub before building a preview."}
+        </p>
+      </section>
+    )
+  }
+
   if (state.status === "idle") {
     return (
       <section className="peephole__preview-action">
@@ -145,6 +246,7 @@ export function PreviewJobPanel({
               activeRequest,
               setState,
               createKey,
+              setAuthenticationStatus,
             )
           }
           type="button"
@@ -174,29 +276,6 @@ export function PreviewJobPanel({
         <button
           className="peephole__secondary"
           onClick={() => {
-            if (state.requiresAuthentication && connectGitHub) {
-              const pendingJob = state.job
-              setState({ status: "authenticating" })
-              void connectGitHub().then(
-                () => {
-                  if (pendingJob) {
-                    setState({ status: "job", job: pendingJob })
-                  } else {
-                    startPreview(
-                      previewApi,
-                      request,
-                      activeRequest,
-                      setState,
-                      createKey,
-                    )
-                  }
-                },
-                (error: unknown) =>
-                  setState(createErrorState(error, pendingJob, true)),
-              )
-              return
-            }
-
             if (state.job) {
               setState({ status: "job", job: state.job })
             } else {
@@ -206,16 +285,13 @@ export function PreviewJobPanel({
                 activeRequest,
                 setState,
                 createKey,
+                setAuthenticationStatus,
               )
             }
           }}
           type="button"
         >
-          {state.requiresAuthentication && connectGitHub
-            ? "Connect GitHub"
-            : state.job
-              ? "Check status"
-              : "Retry"}
+          {state.job ? "Check status" : "Retry"}
         </button>
       </section>
     )
@@ -284,7 +360,15 @@ export function PreviewJobPanel({
       <p>Job {job.id}</p>
       <button
         className="peephole__secondary"
-        onClick={() => cancelPreview(previewApi, job, activeRequest, setState)}
+        onClick={() =>
+          cancelPreview(
+            previewApi,
+            job,
+            activeRequest,
+            setState,
+            setAuthenticationStatus,
+          )
+        }
         type="button"
       >
         Cancel
@@ -368,6 +452,7 @@ function startPreview(
   activeRequest: MutableRefObject<AbortController | null>,
   setState: Dispatch<SetStateAction<PreviewUiState>>,
   createKey: MutableRefObject<string | null>,
+  setAuthenticationStatus: Dispatch<SetStateAction<AuthenticationStatus>>,
 ): void {
   activeRequest.current?.abort()
   const abortController = new AbortController()
@@ -387,6 +472,9 @@ function startPreview(
       (error: unknown) => {
         if (!abortController.signal.aborted) {
           setState(createErrorState(error))
+          if (isAuthenticationError(error)) {
+            setAuthenticationStatus("unauthenticated")
+          }
         }
       },
     )
@@ -397,6 +485,7 @@ function cancelPreview(
   job: PreviewJob,
   activeRequest: MutableRefObject<AbortController | null>,
   setState: Dispatch<SetStateAction<PreviewUiState>>,
+  setAuthenticationStatus: Dispatch<SetStateAction<AuthenticationStatus>>,
 ): void {
   activeRequest.current?.abort()
   const abortController = new AbortController()
@@ -412,6 +501,9 @@ function cancelPreview(
     (error: unknown) => {
       if (!abortController.signal.aborted) {
         setState(createErrorState(error, job))
+        if (isAuthenticationError(error)) {
+          setAuthenticationStatus("unauthenticated")
+        }
       }
     },
   )
@@ -437,11 +529,14 @@ function safeErrorMessage(error: unknown): string {
     : "The preview service could not complete the request."
 }
 
+function isAuthenticationError(error: unknown): boolean {
+  return error instanceof PreviewApiError && error.code === "UNAUTHORIZED"
+}
+
 function createErrorState(
   error: unknown,
   job?: PreviewJob,
-  requiresAuthentication = error instanceof PreviewApiError &&
-    error.code === "UNAUTHORIZED",
+  requiresAuthentication = isAuthenticationError(error),
 ): Extract<PreviewUiState, { status: "error" }> {
   return {
     status: "error",

@@ -110,6 +110,20 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       `services/preview-api/previewSessionAuth.ts`, and
       `docs/GITHUB_APP_AUTH.md`.
 
+- [x] Verify the production GitHub App and preview path end to end
+      (2026-09-09):
+      - GitHub App OAuth
+      - PKCE S256
+      - HMAC-signed state
+      - allowlisted `chromiumapp.org` redirect
+      - GitHub identity and Peephole session issuance
+      - authenticated gVisor preview build
+      - HTTPS artifact publication and SidePanel embedding
+
+      This is a real production E2E result rather than only automated or local
+      coverage. Refresh sessions and private-repository Installation Access
+      Tokens remain separate follow-up scopes; see `docs/GITHUB_APP_AUTH.md`.
+
 ## Isolated Static Runner
 
 - [x] Define the worker's fetch/install/build/publish port contracts

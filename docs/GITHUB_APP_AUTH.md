@@ -36,6 +36,25 @@ errors and upstream responses are bounded and returned without secret details.
 HMAC state expiry is ten minutes. A GitHub code is one-use, while nonce
 comparison binds the browser completion to the flow the extension initiated.
 
+## Production E2E verification
+
+**Status:** Verified on 2026-09-09
+
+The deployed production path has been exercised end to end with the real
+Chrome Extension, GitHub, Preview API, production worker, and artifact origin:
+
+- [x] GitHub App OAuth authorization and callback
+- [x] PKCE S256 challenge and verifier
+- [x] HMAC-signed state validation
+- [x] allowlisted `chromiumapp.org` Extension redirect
+- [x] GitHub identity resolution and Peephole session issuance
+- [x] authenticated preview request and gVisor preview build
+- [x] HTTPS artifact publication and SidePanel embedding
+
+This records an actual production E2E run, not only unit, integration, or
+local-development coverage. Private repository Installation Access Tokens and
+refreshable Peephole sessions remain outside the verified scope.
+
 ## Expiry and reconnect MVP
 
 The current access session deliberately keeps its existing 30-minute TTL. On
