@@ -48,7 +48,7 @@ describe("PreviewSessionAuth", () => {
     const auth = new PreviewSessionAuth(new PreviewSessionIssuer(SECRET))
 
     await expect(
-      auth.resolve(fakeRequest("Bearer ghp_looksLikeARealGitHubToken1234")),
+      auth.resolve(fakeRequest("Bearer fake-peephole-session-token")),
     ).rejects.toMatchObject({ status: 401 })
   })
 })

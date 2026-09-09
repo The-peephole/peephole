@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net"
 
 import type { PreviewApiErrorCode, PreviewRequester } from "../../types/preview"
 import type { PreviewHttpRequest, PreviewHttpResponse } from "./http"
+import { GitHubAppOAuthError } from "./githubAppOAuth"
 import type { IssuedPreviewSession } from "./previewSession"
 
 const DEFAULT_MAX_BODY_BYTES = 16 * 1024
@@ -23,15 +24,15 @@ export interface NodePreviewApiServerOptions {
   resolveRequester: (
     request: IncomingMessage,
   ) => PreviewRequester | Promise<PreviewRequester>
-  /**
-   * Handles `POST /v1/auth/session`: verifies the caller's real credential
-   * (from the request itself, e.g. its Authorization header) and issues a
-   * Peephole session token. Runs before, and independently of,
-   * resolveRequester -- see PreviewSessionIssuer's doc comment for why
-   * these are two different verification steps. If omitted, the route
-   * 404s like any other unrecognized path.
-   */
-  issueSession?: (request: IncomingMessage) => Promise<IssuedPreviewSession>
+  beginGitHubAuth?: (request: IncomingMessage) => Promise<string>
+  completeGitHubAuth?: (request: IncomingMessage) => Promise<string>
+  /** Completes the GitHub App authorization-code flow and returns a
+   * short-lived Peephole session. The request body contains only an
+   * ephemeral authorization code, signed state, and PKCE verifier. */
+  issueSession?: (
+    request: IncomingMessage,
+    body: unknown,
+  ) => Promise<IssuedPreviewSession>
   isReady?: () => boolean | Promise<boolean>
   maxBodyBytes?: number
   requestTimeoutMs?: number
@@ -128,13 +129,34 @@ export class NodePreviewApiServer {
         return
       }
 
+      if (request.method === "GET" && path === "/v1/auth/github/start") {
+        if (!this.options.beginGitHubAuth) {
+          sendError(response, 404, "NOT_FOUND", "Endpoint not found.")
+          return
+        }
+
+        sendRedirect(response, await this.options.beginGitHubAuth(request))
+        return
+      }
+
+      if (request.method === "GET" && path === "/v1/auth/github/callback") {
+        if (!this.options.completeGitHubAuth) {
+          sendError(response, 404, "NOT_FOUND", "Endpoint not found.")
+          return
+        }
+
+        sendRedirect(response, await this.options.completeGitHubAuth(request))
+        return
+      }
+
       if (request.method === "POST" && path === "/v1/auth/session") {
         if (!this.options.issueSession) {
           sendError(response, 404, "NOT_FOUND", "Endpoint not found.")
           return
         }
 
-        const session = await this.options.issueSession(request)
+        const body = await readJsonBody(request, maxBodyBytes)
+        const session = await this.options.issueSession(request, body)
         sendJson(response, 200, session)
         return
       }
@@ -161,7 +183,10 @@ export class NodePreviewApiServer {
 
       sendJson(response, result.status, result.body, result.headers)
     } catch (error) {
-      if (error instanceof HttpIngressError) {
+      if (
+        error instanceof HttpIngressError ||
+        error instanceof GitHubAppOAuthError
+      ) {
         sendError(response, error.status, error.code, error.message)
         return
       }
@@ -174,6 +199,19 @@ export class NodePreviewApiServer {
       )
     }
   }
+}
+
+function sendRedirect(response: ServerResponse, location: string): void {
+  if (response.headersSent || response.destroyed) return
+
+  response.writeHead(302, {
+    location,
+    "cache-control": "no-store",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "content-length": "0",
+  })
+  response.end()
 }
 
 /** Thrown by resolveRequester or request parsing to short-circuit straight

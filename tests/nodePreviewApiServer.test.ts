@@ -140,7 +140,8 @@ describe("NodePreviewApiServer", () => {
 
     const issued = await fetch(`${withLoginUrl}/v1/auth/session`, {
       method: "POST",
-      headers: { authorization: "Bearer ghp_whatever" },
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: "code", state: "state" }),
     })
     expect(issued.status).toBe(200)
     await expect(issued.json()).resolves.toEqual({
@@ -154,7 +155,7 @@ describe("NodePreviewApiServer", () => {
       issueSession: async () => {
         throw new HttpIngressError(
           401,
-          "This GitHub token is invalid.",
+          "GitHub authorization is invalid.",
           "UNAUTHORIZED",
         )
       },
@@ -164,11 +165,41 @@ describe("NodePreviewApiServer", () => {
 
     const response = await fetch(`${baseUrl}/v1/auth/session`, {
       method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
     })
     const body = (await response.json()) as { error: { code: string } }
 
     expect(response.status).toBe(401)
     expect(body.error.code).toBe("UNAUTHORIZED")
+  })
+
+  it("redirects the GitHub App start and callback endpoints without caching", async () => {
+    const server = createTestServer({
+      beginGitHubAuth: async () => "https://github.com/login/oauth/authorize",
+      completeGitHubAuth: async () =>
+        "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/github#code=test",
+    })
+    servers.push(server)
+    const baseUrl = await listen(server)
+
+    const start = await fetch(`${baseUrl}/v1/auth/github/start`, {
+      redirect: "manual",
+    })
+    const callback = await fetch(`${baseUrl}/v1/auth/github/callback`, {
+      redirect: "manual",
+    })
+
+    expect(start.status).toBe(302)
+    expect(start.headers.get("location")).toBe(
+      "https://github.com/login/oauth/authorize",
+    )
+    expect(callback.status).toBe(302)
+    expect(callback.headers.get("location")).toContain(
+      ".chromiumapp.org/github",
+    )
+    expect(callback.headers.get("cache-control")).toBe("no-store")
+    expect(callback.headers.get("referrer-policy")).toBe("no-referrer")
   })
 
   it("does not expose requester resolver failures", async () => {
@@ -194,7 +225,12 @@ function createTestServer(
     isReady?: () => boolean
     maxBodyBytes?: number
     resolveRequester?: () => PreviewRequester
-    issueSession?: () => Promise<{ token: string; expiresAt: string }>
+    beginGitHubAuth?: () => Promise<string>
+    completeGitHubAuth?: () => Promise<string>
+    issueSession?: (
+      request: unknown,
+      body: unknown,
+    ) => Promise<{ token: string; expiresAt: string }>
   } = {},
 ): NodePreviewApiServer {
   const controlPlane = new PreviewControlPlane(
@@ -216,6 +252,8 @@ function createTestServer(
   return new NodePreviewApiServer({
     handlePreviewRequest: createPreviewHttpHandler(controlPlane),
     resolveRequester: options.resolveRequester ?? (() => requester),
+    beginGitHubAuth: options.beginGitHubAuth,
+    completeGitHubAuth: options.completeGitHubAuth,
     issueSession: options.issueSession,
     isReady: options.isReady,
     maxBodyBytes: options.maxBodyBytes,

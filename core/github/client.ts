@@ -62,13 +62,10 @@ export interface GitHubClientOptions {
   apiBaseUrl?: string
   fetcher?: typeof fetch
   /**
-   * Resolves a GitHub personal access token to send as a bearer credential,
-   * or null/undefined to make an unauthenticated request. Read lazily (and
-   * possibly async) on every request so a token set after construction --
-   * e.g. saved from the extension's options page while the background
-   * service worker is already running -- takes effect immediately. Never
-   * logged; see "Never log credentials or secret-like values" in
-   * docs/IMPLEMENTATION_CHECKLIST.md.
+   * Resolves an optional server-owned GitHub API credential, or
+   * null/undefined for public unauthenticated requests. The extension uses
+   * the unauthenticated path; GitHub App user credentials are identity-only
+   * and are never supplied to this repository-data client.
    */
   getToken?: () =>
     string | null | undefined | Promise<string | null | undefined>

@@ -86,34 +86,29 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Compose the API with production-persistent job, queue, cache, quota,
       and authentication adapters (`services/local-preview/devServer.ts`
       composes the persistent Postgres job/queue/cache/quota adapters),
-      replacing the previous fixed dev identity with real, two-step
-      authentication:
-      1. `POST /v1/auth/session` verifies the caller's GitHub personal
-         access token against GitHub's own `/user` API
-         (`GitHubRequesterAuth`) and exchanges it for a short-lived,
-         HMAC-signed Peephole session token (`PreviewSessionIssuer`).
-      2. Every other route verifies that session token instead
-         (`PreviewSessionAuth`), never the raw GitHub credential again.
+      replacing the previous fixed dev identity with GitHub App identity:
+      1. `GET /v1/auth/github/start` validates a server-side allowlisted
+         Chrome Extension callback and creates HMAC-signed state binding the
+         callback, extension nonce, and PKCE challenge.
+      2. `GET /v1/auth/github/callback` validates state and returns the
+         one-time GitHub code to the originating extension callback.
+      3. `POST /v1/auth/session` validates state and PKCE, exchanges the code
+         using the server-only GitHub App Client Secret, resolves `/user`,
+         discards the GitHub credential, and issues the existing short-lived,
+         HMAC-signed Peephole session (`PreviewSessionIssuer`).
+      4. Every preview route verifies that session (`PreviewSessionAuth`) and
+         keeps requester identity in the `github:<id>` form.
 
-      The credential is deliberately sent only once, at login: a
-      compromised Preview API then only ever sees Peephole-scoped
-      session tokens that expire on their own and are useless anywhere
-      else, never the caller's actual GitHub credential repeated on
-      every poll. Verified end to end against a real running server with
-      a real GitHub token: no/invalid token rejected at login with a
-      clear message, a valid token exchanged for a session, that session
-      accepted by a real job route, and -- critically -- the raw GitHub
-      token rejected when presented directly to a job route instead of a
-      session. See `services/preview-api/previewSession.ts`,
-      `services/preview-api/previewSessionAuth.ts`,
-      `services/preview-api/githubRequesterAuth.ts`, and their test
-      files. Reusing an existing GitHub token (rather than a dedicated
-      OAuth App + login UI) for the *credential-acquisition* step was a
-      deliberate scope choice, not an oversight -- see
-      `GitHubRequesterAuth`'s doc comment. Swapping that acquisition
-      method later (e.g. a GitHub App + PKCE flow) would not require
-      touching the session layer or the `github:<id>` identity model at
-      all.
+      The extension stores only the Peephole access session in
+      `browser.storage.session`; it removes the legacy PAT value and exposes
+      Connect/Disconnect/reconnect UI. Current expiry UX reconnects through
+      GitHub. A refreshable Peephole authentication credential remains a
+      documented, separable follow-up requiring server-side hashed token
+      storage, rotation, revocation, and reuse detection. See
+      `services/preview-api/githubAppOAuth.ts`,
+      `services/preview-api/previewSession.ts`,
+      `services/preview-api/previewSessionAuth.ts`, and
+      `docs/GITHUB_APP_AUTH.md`.
 
 ## Isolated Static Runner
 

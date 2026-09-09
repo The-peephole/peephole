@@ -1,7 +1,8 @@
 import { GitHubClient } from "../../core/github/client"
 import { KnownRepositoryFilesLoader } from "../../core/github/knownFiles"
+import { GitHubAppOAuth } from "../preview-api/githubAppOAuth"
+import { readGitHubAppOAuthConfig } from "../preview-api/githubAppOAuthConfig"
 import { GitHubPreviewPlanResolver } from "../preview-api/githubPlanResolver"
-import { GitHubRequesterAuth } from "../preview-api/githubRequesterAuth"
 import { PgPoolDatabase } from "../preview-api/postgres/database"
 import { PreviewSessionAuth } from "../preview-api/previewSessionAuth"
 import { PreviewSessionIssuer } from "../preview-api/previewSession"
@@ -89,20 +90,24 @@ async function main(): Promise<void> {
     controlPlane: { runnerVersion: "production-1" },
   })
 
-  const credentialAuth = new GitHubRequesterAuth()
   const sessionIssuer = new PreviewSessionIssuer(
     readRequiredSessionSigningSecret(),
   )
   const sessionAuth = new PreviewSessionAuth(sessionIssuer)
+  const githubAppOAuth = new GitHubAppOAuth(
+    readGitHubAppOAuthConfig(process.env),
+  )
   const apiConfig = readPreviewApiServerConfig(process.env)
   const api = await startNodePreviewApi({
     controlPlane: composition.controlPlane,
     config: apiConfig,
     resolveRequester: (request) => sessionAuth.resolve(request),
-    issueSession: async (request) => {
-      const requester = await credentialAuth.resolve(request)
-      return sessionIssuer.issue(requester.subject)
-    },
+    beginGitHubAuth: (request) =>
+      githubAppOAuth.createAuthorizationUrl(request.url ?? "/"),
+    completeGitHubAuth: (request) =>
+      githubAppOAuth.completeCallback(request.url ?? "/"),
+    issueSession: (_request, body) =>
+      githubAppOAuth.issueSession(body, sessionIssuer),
     isReady: composition.isReady,
   })
 

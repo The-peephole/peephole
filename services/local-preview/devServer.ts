@@ -6,8 +6,9 @@ import { fileURLToPath } from "node:url"
 
 import { GitHubClient } from "../../core/github/client"
 import { KnownRepositoryFilesLoader } from "../../core/github/knownFiles"
+import { GitHubAppOAuth } from "../preview-api/githubAppOAuth"
+import { readGitHubAppOAuthConfig } from "../preview-api/githubAppOAuthConfig"
 import { GitHubPreviewPlanResolver } from "../preview-api/githubPlanResolver"
-import { GitHubRequesterAuth } from "../preview-api/githubRequesterAuth"
 import { PgPoolDatabase } from "../preview-api/postgres/database"
 import { PreviewSessionAuth } from "../preview-api/previewSessionAuth"
 import { PreviewSessionIssuer } from "../preview-api/previewSession"
@@ -27,12 +28,10 @@ import { LocalArtifactHost } from "./artifactHost"
  * the NOT-PRODUCTION-SAFE local adapters (see composeLocalDevWorker) +
  * a loopback-only static artifact host.
  *
- * Requests are authenticated with real, per-GitHub-account identity, in
- * two steps: the extension exchanges its GitHub personal access token for
- * a short-lived Peephole session once (`POST /v1/auth/session`,
- * GitHubRequesterAuth verifies the token), then uses that session
- * (PreviewSessionAuth) for every other request -- see
- * services/preview-api/previewSession.ts for why. What is NOT real here
+ * Requests are authenticated with GitHub App OAuth. The server exchanges
+ * the short-lived authorization code, verifies GET /user, and gives the
+ * extension a short-lived Peephole session. PreviewSessionAuth verifies
+ * that session for every preview request. What is NOT real here
  * is sandbox isolation: it must only ever be pointed at repositories you
  * already trust, on a developer machine. It is not a production
  * deployment of Peephole's preview
@@ -66,19 +65,23 @@ async function main(): Promise<void> {
     controlPlane: { runnerVersion: "local-dev-1" },
   })
 
-  const credentialAuth = new GitHubRequesterAuth()
   const sessionSigningSecret = readOrGenerateSessionSigningSecret()
   const sessionIssuer = new PreviewSessionIssuer(sessionSigningSecret)
   const sessionAuth = new PreviewSessionAuth(sessionIssuer)
+  const githubAppOAuth = new GitHubAppOAuth(
+    readGitHubAppOAuthConfig(process.env),
+  )
   const apiConfig = readPreviewApiServerConfig(process.env)
   const api = await startNodePreviewApi({
     controlPlane: composition.controlPlane,
     config: apiConfig,
     resolveRequester: (request) => sessionAuth.resolve(request),
-    issueSession: async (request) => {
-      const requester = await credentialAuth.resolve(request)
-      return sessionIssuer.issue(requester.subject)
-    },
+    beginGitHubAuth: (request) =>
+      githubAppOAuth.createAuthorizationUrl(request.url ?? "/"),
+    completeGitHubAuth: (request) =>
+      githubAppOAuth.completeCallback(request.url ?? "/"),
+    issueSession: (_request, body) =>
+      githubAppOAuth.issueSession(body, sessionIssuer),
     isReady: composition.isReady,
   })
 

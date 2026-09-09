@@ -40,17 +40,13 @@ const job: PreviewJob = {
   expiresAt: "2026-09-02T01:00:00.000Z",
 }
 
-const FAR_FUTURE = "2099-01-01T00:00:00.000Z"
+const ACTIVE_SESSION = {
+  token: "session-token",
+  expiresAt: "2099-01-01T00:00:00.000Z",
+}
 
 describe("PreviewApiClient", () => {
-  it("calls fetch with a receiver that satisfies native fetch's own branding check", async () => {
-    // Chrome's native `fetch` throws "Illegal invocation" unless invoked with
-    // `this === globalThis` (or another WindowOrWorkerGlobalScope). Storing
-    // `options.fetch ?? globalThis.fetch` without binding it, then calling it
-    // as `this.fetch(...)`, reproduces exactly that failure in a real
-    // browser while every other test here (which injects a plain vi.fn())
-    // stays green either way. This test asserts the receiver explicitly
-    // instead of relying on a real native fetch implementation.
+  it("calls native fetch with the correct receiver", async () => {
     const originalFetch = globalThis.fetch
     const brandedFetch = function (
       this: unknown,
@@ -59,13 +55,14 @@ describe("PreviewApiClient", () => {
       if (this !== globalThis) {
         throw new TypeError("Failed to execute 'fetch': Illegal invocation")
       }
-      return Promise.resolve(routedResponse(url))
+      void url
+      return Promise.resolve(jsonResponse(200, job))
     } as typeof fetch
     globalThis.fetch = brandedFetch
 
     try {
       const client = new PreviewApiClient("https://api.example.test/", {
-        getToken: () => "ghp_test",
+        getSession: () => ACTIVE_SESSION,
       })
       await expect(client.get(job.id)).resolves.toEqual(job)
     } finally {
@@ -73,13 +70,13 @@ describe("PreviewApiClient", () => {
     }
   })
 
-  it("logs in once with the GitHub token, then uses the session for the actual request", async () => {
-    const fetch = createRoutedFetch({
-      jobResponse: () => jsonResponse(202, { created: true, job }),
-    })
+  it("uses only the stored Peephole session for preview requests", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(jsonResponse(202, { created: true, job }))
     const client = new PreviewApiClient("https://api.example.test/base/", {
       fetch,
-      getToken: () => "ghp_the_real_token",
+      getSession: () => ACTIVE_SESSION,
       createIdempotencyKey: () => "request-0000000001",
     })
 
@@ -90,21 +87,10 @@ describe("PreviewApiClient", () => {
       }),
     ).resolves.toEqual(job)
 
-    expect(fetch).toHaveBeenCalledTimes(2)
-    const [loginUrl, loginInit] = fetch.mock.calls[0]!
-    expect(String(loginUrl)).toBe(
-      "https://api.example.test/base/v1/auth/session",
-    )
-    expect(loginInit).toMatchObject({
-      method: "POST",
-      credentials: "omit",
-      cache: "no-store",
-      headers: { authorization: "Bearer ghp_the_real_token" },
-    })
-
-    const [jobUrl, jobInit] = fetch.mock.calls[1]!
-    expect(String(jobUrl)).toBe("https://api.example.test/base/v1/preview-jobs")
-    expect(jobInit).toMatchObject({
+    expect(fetch).toHaveBeenCalledOnce()
+    const [url, init] = fetch.mock.calls[0]!
+    expect(String(url)).toBe("https://api.example.test/base/v1/preview-jobs")
+    expect(init).toMatchObject({
       method: "POST",
       credentials: "omit",
       cache: "no-store",
@@ -113,119 +99,81 @@ describe("PreviewApiClient", () => {
         authorization: "Bearer session-token",
       }),
     })
+    expect(JSON.stringify(init)).not.toContain("ghp_")
+    expect(JSON.stringify(init)).not.toContain("ghu_")
   })
 
-  it("reuses a cached session across requests instead of logging in every time", async () => {
-    const fetch = createRoutedFetch()
-    const client = new PreviewApiClient("https://api.example.test/", {
-      fetch,
-      getToken: () => "ghp_test",
-    })
-
-    await client.get(job.id)
-    await client.get(job.id)
-    await client.cancel(job.id)
-
-    const loginCalls = fetch.mock.calls.filter(([url]) =>
-      String(url).endsWith("/v1/auth/session"),
+  it("clears a rejected session and requires an explicit reconnect", async () => {
+    const clearSession = vi.fn()
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      jsonResponse(401, {
+        error: { code: "UNAUTHORIZED", message: "Session expired." },
+      }),
     )
-    expect(loginCalls).toHaveLength(1)
-  })
-
-  it("deduplicates concurrent logins into a single request", async () => {
-    const fetch = createRoutedFetch()
     const client = new PreviewApiClient("https://api.example.test/", {
       fetch,
-      getToken: () => "ghp_test",
-    })
-
-    await Promise.all([
-      client.get(job.id),
-      client.get(job.id),
-      client.get(job.id),
-    ])
-
-    const loginCalls = fetch.mock.calls.filter(([url]) =>
-      String(url).endsWith("/v1/auth/session"),
-    )
-    expect(loginCalls).toHaveLength(1)
-  })
-
-  it("discards an expired or rejected session and signs in again exactly once", async () => {
-    let jobCallCount = 0
-    const fetch = createRoutedFetch({
-      jobResponse: () => {
-        jobCallCount += 1
-        return jobCallCount === 1
-          ? new Response(null, { status: 401 })
-          : jsonResponse(200, job)
-      },
-    })
-    const client = new PreviewApiClient("https://api.example.test/", {
-      fetch,
-      getToken: () => "ghp_test",
-    })
-
-    await expect(client.get(job.id)).resolves.toEqual(job)
-
-    const loginCalls = fetch.mock.calls.filter(([url]) =>
-      String(url).endsWith("/v1/auth/session"),
-    )
-    expect(loginCalls).toHaveLength(2) // initial login + one retry login
-    expect(jobCallCount).toBe(2) // the failed attempt, then the retry
-  })
-
-  it("never calls fetch at all when no GitHub token is configured", async () => {
-    const fetch = createRoutedFetch()
-    const client = new PreviewApiClient("https://api.example.test/", {
-      fetch,
-      getToken: () => null,
+      getSession: () => ACTIVE_SESSION,
+      clearSession,
     })
 
     await expect(client.get(job.id)).rejects.toMatchObject({
       code: "UNAUTHORIZED",
+      message: "Session expired.",
     })
+    expect(clearSession).toHaveBeenCalledOnce()
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+
+  it("does not call the API without a Peephole session", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+    const clearSession = vi.fn()
+    const client = new PreviewApiClient("https://api.example.test/", {
+      fetch,
+      getSession: () => null,
+      clearSession,
+    })
+
+    await expect(client.get(job.id)).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+      message: "Connect GitHub to build a preview.",
+    })
+    expect(clearSession).toHaveBeenCalledOnce()
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it("surfaces a rejected GitHub token as a structured login error", async () => {
-    const fetch = createRoutedFetch({
-      loginResponse: () =>
-        new Response(
-          JSON.stringify({
-            error: {
-              code: "UNAUTHORIZED",
-              message: "This GitHub token is invalid.",
-            },
-          }),
-          { status: 401 },
-        ),
-    })
+  it("rejects an expired stored session before making a request", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+    const clearSession = vi.fn()
     const client = new PreviewApiClient("https://api.example.test/", {
       fetch,
-      getToken: () => "ghp_revoked",
+      getSession: () => ({
+        token: "expired-session",
+        expiresAt: "2020-01-01T00:00:00.000Z",
+      }),
+      clearSession,
     })
 
     await expect(client.get(job.id)).rejects.toMatchObject({
       code: "UNAUTHORIZED",
-      message: "This GitHub token is invalid.",
     })
+    expect(clearSession).toHaveBeenCalledOnce()
+    expect(fetch).not.toHaveBeenCalled()
   })
 
   it("reads and cancels only validated job ids", async () => {
-    const fetch = createRoutedFetch()
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(async () => jsonResponse(200, job))
     const client = new PreviewApiClient("https://api.example.test/", {
       fetch,
-      getToken: () => "ghp_test",
+      getSession: () => ACTIVE_SESSION,
     })
 
     await client.get(job.id)
     await client.cancel(job.id)
 
     expect(
-      fetch.mock.calls
-        .filter(([url]) => !String(url).endsWith("/v1/auth/session"))
-        .map(([url, init]) => [String(url), init?.method]),
+      fetch.mock.calls.map(([url, init]) => [String(url), init?.method]),
     ).toEqual([
       ["https://api.example.test/v1/preview-jobs/job-00000001", "GET"],
       ["https://api.example.test/v1/preview-jobs/job-00000001", "DELETE"],
@@ -236,18 +184,17 @@ describe("PreviewApiClient", () => {
   })
 
   it("returns sanitized structured service errors", async () => {
-    const fetch = createRoutedFetch({
-      jobResponse: () =>
-        new Response(
-          JSON.stringify({
-            error: { code: "RATE_LIMITED", message: "Try later." },
-          }),
-          { status: 429, headers: { "retry-after": "60" } },
-        ),
-    })
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { code: "RATE_LIMITED", message: "Try later." },
+        }),
+        { status: 429, headers: { "retry-after": "60" } },
+      ),
+    )
     const client = new PreviewApiClient("https://api.example.test/", {
       fetch,
-      getToken: () => "ghp_test",
+      getSession: () => ACTIVE_SESSION,
     })
 
     await expect(client.get(job.id)).rejects.toMatchObject({
@@ -259,12 +206,12 @@ describe("PreviewApiClient", () => {
   })
 
   it("rejects malformed success responses", async () => {
-    const fetch = createRoutedFetch({
-      jobResponse: () => jsonResponse(200, { status: "ready" }),
-    })
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(jsonResponse(200, { status: "ready" }))
     const client = new PreviewApiClient("https://api.example.test/", {
       fetch,
-      getToken: () => "ghp_test",
+      getSession: () => ACTIVE_SESSION,
     })
 
     await expect(client.get(job.id)).rejects.toMatchObject({
@@ -298,31 +245,5 @@ function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
-  })
-}
-
-function routedResponse(url: string | URL | Request): Response {
-  const path = new URL(String(url instanceof Request ? url.url : url)).pathname
-  return path.endsWith("/v1/auth/session")
-    ? jsonResponse(200, { token: "session-token", expiresAt: FAR_FUTURE })
-    : jsonResponse(200, job)
-}
-
-function createRoutedFetch(
-  options: {
-    loginResponse?: () => Response
-    jobResponse?: () => Response
-  } = {},
-): ReturnType<typeof vi.fn<typeof globalThis.fetch>> {
-  return vi.fn<typeof globalThis.fetch>().mockImplementation(async (url) => {
-    const path = new URL(String(url instanceof Request ? url.url : url))
-      .pathname
-    if (path.endsWith("/v1/auth/session")) {
-      return (
-        options.loginResponse?.() ??
-        jsonResponse(200, { token: "session-token", expiresAt: FAR_FUTURE })
-      )
-    }
-    return options.jobResponse?.() ?? jsonResponse(200, job)
   })
 }

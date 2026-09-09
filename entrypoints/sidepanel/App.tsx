@@ -7,6 +7,7 @@ import type { RepositoryIdentity } from "../../types/repository"
 interface SidePanelAppProps {
   repository: RepositoryIdentity | null
   loadRepositoryAnalysis: RepositoryAnalysisLoader
+  connectGitHub?: (() => Promise<void>) | null
   previewApi: PreviewApi | null
   previewArtifactBaseDomain?: string | null
   previewConfigurationError?: string | null
@@ -15,6 +16,7 @@ interface SidePanelAppProps {
 export function SidePanelApp({
   repository,
   loadRepositoryAnalysis,
+  connectGitHub = null,
   previewApi,
   previewConfigurationError = null,
   previewArtifactBaseDomain = null,
@@ -36,6 +38,7 @@ export function SidePanelApp({
             <PreviewJobPanel
               analysis={analysis}
               configurationError={previewConfigurationError}
+              connectGitHub={connectGitHub}
               key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}`}
               previewApi={previewApi}
               previewArtifactBaseDomain={previewArtifactBaseDomain}

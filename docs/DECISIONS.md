@@ -237,7 +237,7 @@ Chrome extension), not a step toward relaxing D-013's isolation requirement.
 
 ## D-024 - GitHub token: client-side storage only, never a `WXT_` build variable
 
-**Status:** Accepted
+**Status:** Superseded by D-025
 
 Unauthenticated GitHub REST calls are capped at 60 requests/hour per IP.
 Peephole's own design intentionally doubles that cost per `Build preview`
@@ -266,4 +266,40 @@ personal access token must never be one. Instead:
   passes it to its own `GitHubClient` instance through the same hook.
 
 The token is never logged (see "Never log credentials or secret-like
-values" in `docs/IMPLEMENTATION_CHECKLIST.md`).
+values" in `docs/IMPLEMENTATION_CHECKLIST.md`). This was the original PAT
+design and remains here as decision history only. D-025 removes end-user PAT
+storage and input entirely.
+
+## D-025 - GitHub App identity with ephemeral Peephole access sessions
+
+**Status:** Accepted
+
+End users authenticate with a GitHub App web flow instead of creating or
+pasting a personal access token. The Preview API owns the GitHub App Client
+Secret and exchanges the one-time authorization code server-side. It uses the
+resulting GitHub user access token only for `GET /user`, derives requester
+subject `github:<id>`, and discards the token. The existing
+`PreviewSessionIssuer` and `PreviewSessionAuth` remain the access-session
+boundary for all preview routes.
+
+The extension generates a nonce and PKCE verifier, launches the browser auth
+flow, verifies the returned nonce, and stores only the 30-minute Peephole
+access session in `browser.storage.session`. It never stores a GitHub access
+token, Client Secret, App private key, or session-signing secret. Any legacy
+`peepholeGithubToken` value is removed from `browser.storage.local`.
+
+The server accepts extension callback URLs only when the extension ID is in
+`PEEPHOLE_ALLOWED_EXTENSION_IDS` and the URL is exactly
+`https://<allowed-extension-id>.chromiumapp.org/github`. The HMAC-signed,
+short-lived state binds that redirect URL, the extension nonce, and the PKCE
+challenge. The callback never trusts an unsigned client redirect target.
+
+This milestone intentionally uses reconnect-on-expiry rather than a long-lived
+refresh bearer in persistent extension storage. A secure refresh design needs
+server-side revocation state, hashed opaque refresh-token storage, rotation,
+and reuse detection; it is kept as a separable follow-up instead of weakening
+the new credential-storage rule. See `docs/GITHUB_APP_AUTH.md`.
+
+The GitHub App is identity-only. Public repository fetching and every preview
+job, worker, gVisor, artifact, and cache contract remain unchanged. Private
+repository support with Installation Access Tokens is a separate future scope.

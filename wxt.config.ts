@@ -29,7 +29,7 @@ export default defineConfig({
         128: "icons/peephole-128.png",
       },
       minimum_chrome_version: "116",
-      permissions: ["sidePanel", "storage"],
+      permissions: ["identity", "sidePanel", "storage"],
       host_permissions: [
         "https://api.github.com/*",
         ...(previewApiBaseUrl

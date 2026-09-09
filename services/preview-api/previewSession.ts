@@ -13,14 +13,10 @@ export interface IssuedPreviewSession {
 /**
  * Issues and verifies short-lived, stateless Peephole session tokens
  * (HMAC-SHA256 signed: `base64url(subject).expiresAtSeconds.base64url(sig)`,
- * no server-side session store to manage or leak). A caller authenticates
- * once with a real credential -- currently a GitHub personal access token,
- * verified by GitHubRequesterAuth -- and exchanges it for one of these;
- * every other preview API request then presents the session token
- * instead of the original credential. That is the entire point: a
- * compromised Preview API only ever sees Peephole-scoped tokens that
- * expire on their own and are useless anywhere else, never the caller's
- * actual GitHub credential repeated on every request.
+ * no server-side session store to manage or leak). GitHubAppOAuth verifies
+ * a GitHub authorization code and user identity once, then issues one of
+ * these. Every preview API request presents only the Peephole token. GitHub
+ * access tokens are never stored in or repeatedly sent by the extension.
  *
  * The signing secret must be at least 32 bytes, matching
  * HmacPreviewArtifactSigner's own requirement -- see that class for the

@@ -2,12 +2,16 @@ import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 
 import { createRepositoryAnalysisMessageLoader } from "../../core/analyzer/messages"
-import { getStoredGitHubToken } from "../../core/github/tokenStorage"
 import { PreviewApiClient } from "../../core/preview/apiClient"
 import {
   parsePreviewApiBaseUrl,
   parsePreviewArtifactBaseDomain,
 } from "../../core/preview/config"
+import { connectGitHub } from "../../core/preview/githubConnection"
+import {
+  clearStoredPreviewSession,
+  getStoredPreviewSession,
+} from "../../core/preview/sessionStorage"
 import { parseSidePanelRepository } from "../../core/sidepanel/messages"
 import { SidePanelApp } from "./App"
 import "./style.css"
@@ -17,6 +21,7 @@ const loadRepositoryAnalysis = createRepositoryAnalysisMessageLoader({
   send: (message) => browser.runtime.sendMessage(message),
 })
 let previewApi: PreviewApiClient | null = null
+let reconnectGitHub: (() => Promise<void>) | null = null
 let previewArtifactBaseDomain: string | null = null
 let previewConfigurationError: string | null = null
 
@@ -29,8 +34,14 @@ try {
   )
   previewApi = previewApiBaseUrl
     ? new PreviewApiClient(previewApiBaseUrl, {
-        getToken: () => getStoredGitHubToken(),
+        getSession: getStoredPreviewSession,
+        clearSession: clearStoredPreviewSession,
       })
+    : null
+  reconnectGitHub = previewApiBaseUrl
+    ? async () => {
+        await connectGitHub(previewApiBaseUrl)
+      }
     : null
 } catch (error) {
   previewConfigurationError =
@@ -48,6 +59,7 @@ createRoot(root).render(
   <StrictMode>
     <SidePanelApp
       loadRepositoryAnalysis={loadRepositoryAnalysis}
+      connectGitHub={reconnectGitHub}
       previewApi={previewApi}
       previewArtifactBaseDomain={previewArtifactBaseDomain}
       previewConfigurationError={previewConfigurationError}

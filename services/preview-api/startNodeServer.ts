@@ -14,7 +14,12 @@ export interface StartNodePreviewApiOptions {
   resolveRequester: (
     request: IncomingMessage,
   ) => PreviewRequester | Promise<PreviewRequester>
-  issueSession?: (request: IncomingMessage) => Promise<IssuedPreviewSession>
+  beginGitHubAuth?: (request: IncomingMessage) => Promise<string>
+  completeGitHubAuth?: (request: IncomingMessage) => Promise<string>
+  issueSession?: (
+    request: IncomingMessage,
+    body: unknown,
+  ) => Promise<IssuedPreviewSession>
   isReady: () => boolean | Promise<boolean>
 }
 
@@ -29,6 +34,8 @@ export async function startNodePreviewApi(
   const server = new NodePreviewApiServer({
     handlePreviewRequest: createPreviewHttpHandler(options.controlPlane),
     resolveRequester: options.resolveRequester,
+    beginGitHubAuth: options.beginGitHubAuth,
+    completeGitHubAuth: options.completeGitHubAuth,
     issueSession: options.issueSession,
     isReady: options.isReady,
     maxBodyBytes: options.config.maxBodyBytes,

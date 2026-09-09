@@ -56,28 +56,6 @@ body {
   color: #e6edf3;
 }
 
-.peephole-options__field {
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-
-.peephole-options input {
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  color: #f0f6fc;
-  font: inherit;
-  padding: 8px 10px;
-  width: 100%;
-}
-
-.peephole-options input:focus-visible {
-  outline: 2px solid #2f81f7;
-  outline-offset: 2px;
-}
-
 .peephole-options__actions {
   display: flex;
   gap: 8px;
@@ -121,4 +99,8 @@ body {
 .peephole-options__message {
   color: #3fb950;
   margin: 12px 0 0;
+}
+
+.peephole-options__message--error {
+  color: #ff7b72;
 }

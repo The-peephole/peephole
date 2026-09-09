@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { PreviewJobPanel } from "../components/PreviewJobPanel"
-import type { PreviewApi } from "../core/preview/apiClient"
+import { PreviewApiError, type PreviewApi } from "../core/preview/apiClient"
 import type { PreviewJob } from "../types/preview"
 import { supportedAnalysis } from "./analysisFixture"
 
@@ -109,6 +109,35 @@ describe("PreviewJobPanel", () => {
     expect(create).toHaveBeenCalledTimes(1)
 
     await act(async () => getButton("Retry").click())
+    expect(create).toHaveBeenCalledTimes(2)
+    expect(container.textContent).toContain("Queued")
+  })
+
+  it("offers GitHub reconnection when the Peephole session expires", async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new PreviewApiError(
+          "UNAUTHORIZED",
+          "Connect GitHub to build a preview.",
+        ),
+      )
+      .mockResolvedValueOnce(queuedJob)
+    const connectGitHub = vi.fn().mockResolvedValue(undefined)
+    const container = await renderPanel(
+      createApi({ create }),
+      roots,
+      1_500,
+      supportedAnalysis,
+      null,
+      connectGitHub,
+    )
+
+    await act(async () => getButton("Build preview").click())
+    expect(container.textContent).toContain("Connect GitHub to build a preview")
+    await act(async () => getButton("Connect GitHub").click())
+
+    expect(connectGitHub).toHaveBeenCalledOnce()
     expect(create).toHaveBeenCalledTimes(2)
     expect(container.textContent).toContain("Queued")
   })
@@ -322,6 +351,7 @@ async function renderPanel(
   pollIntervalMs = 1_500,
   analysis = supportedAnalysis,
   previewArtifactBaseDomain: string | null = null,
+  connectGitHub: (() => Promise<void>) | null = null,
 ): Promise<HTMLDivElement> {
   const container = document.createElement("div")
   document.body.append(container)
@@ -332,6 +362,7 @@ async function renderPanel(
     root.render(
       <PreviewJobPanel
         analysis={analysis}
+        connectGitHub={connectGitHub}
         pollIntervalMs={pollIntervalMs}
         previewApi={previewApi}
         previewArtifactBaseDomain={previewArtifactBaseDomain}

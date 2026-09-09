@@ -7,7 +7,7 @@ import {
   type SetStateAction,
 } from "react"
 
-import type { PreviewApi } from "../core/preview/apiClient"
+import { PreviewApiError, type PreviewApi } from "../core/preview/apiClient"
 import { createBuildPlanFromAnalysis } from "../core/preview/buildPlan"
 import { isTrustedPreviewArtifactUrl } from "../core/preview/config"
 import type { RepositoryAnalysis } from "../types/analysis"
@@ -20,13 +20,20 @@ type PreviewUiState =
   | { status: "creating" }
   | { status: "job"; job: PreviewJob }
   | { status: "cancelling"; job: PreviewJob }
-  | { status: "error"; message: string; job?: PreviewJob }
+  | { status: "authenticating" }
+  | {
+      status: "error"
+      message: string
+      requiresAuthentication: boolean
+      job?: PreviewJob
+    }
 
 interface PreviewJobPanelProps {
   analysis: RepositoryAnalysis
   previewApi: PreviewApi | null
   previewArtifactBaseDomain?: string | null
   configurationError?: string | null
+  connectGitHub?: (() => Promise<void>) | null
   pollIntervalMs?: number
 }
 
@@ -34,6 +41,7 @@ export function PreviewJobPanel({
   analysis,
   previewApi,
   configurationError = null,
+  connectGitHub = null,
   previewArtifactBaseDomain = null,
   pollIntervalMs = 1_500,
 }: PreviewJobPanelProps) {
@@ -72,11 +80,7 @@ export function PreviewJobPanel({
           },
           (error: unknown) => {
             if (!abortController.signal.aborted) {
-              setState({
-                status: "error",
-                message: safeErrorMessage(error),
-                job: state.job,
-              })
+              setState(createErrorState(error, state.job))
             }
           },
         )
@@ -158,6 +162,10 @@ export function PreviewJobPanel({
     return <JobProgress label="Creating preview job..." />
   }
 
+  if (state.status === "authenticating") {
+    return <JobProgress label="Connecting GitHub..." />
+  }
+
   if (state.status === "error") {
     return (
       <section className="peephole__job peephole__job--error" role="alert">
@@ -165,20 +173,49 @@ export function PreviewJobPanel({
         <p>{state.message}</p>
         <button
           className="peephole__secondary"
-          onClick={() =>
-            state.job
-              ? setState({ status: "job", job: state.job })
-              : startPreview(
-                  previewApi,
-                  request,
-                  activeRequest,
-                  setState,
-                  createKey,
-                )
-          }
+          onClick={() => {
+            if (state.requiresAuthentication && connectGitHub) {
+              const pendingJob = state.job
+              setState({ status: "authenticating" })
+              void connectGitHub().then(
+                () => {
+                  if (pendingJob) {
+                    setState({ status: "job", job: pendingJob })
+                  } else {
+                    startPreview(
+                      previewApi,
+                      request,
+                      activeRequest,
+                      setState,
+                      createKey,
+                    )
+                  }
+                },
+                (error: unknown) =>
+                  setState(createErrorState(error, pendingJob, true)),
+              )
+              return
+            }
+
+            if (state.job) {
+              setState({ status: "job", job: state.job })
+            } else {
+              startPreview(
+                previewApi,
+                request,
+                activeRequest,
+                setState,
+                createKey,
+              )
+            }
+          }}
           type="button"
         >
-          {state.job ? "Check status" : "Retry"}
+          {state.requiresAuthentication && connectGitHub
+            ? "Connect GitHub"
+            : state.job
+              ? "Check status"
+              : "Retry"}
         </button>
       </section>
     )
@@ -349,7 +386,7 @@ function startPreview(
       },
       (error: unknown) => {
         if (!abortController.signal.aborted) {
-          setState({ status: "error", message: safeErrorMessage(error) })
+          setState(createErrorState(error))
         }
       },
     )
@@ -374,7 +411,7 @@ function cancelPreview(
     },
     (error: unknown) => {
       if (!abortController.signal.aborted) {
-        setState({ status: "error", message: safeErrorMessage(error), job })
+        setState(createErrorState(error, job))
       }
     },
   )
@@ -398,4 +435,18 @@ function safeErrorMessage(error: unknown): string {
   return error instanceof Error
     ? error.message
     : "The preview service could not complete the request."
+}
+
+function createErrorState(
+  error: unknown,
+  job?: PreviewJob,
+  requiresAuthentication = error instanceof PreviewApiError &&
+    error.code === "UNAUTHORIZED",
+): Extract<PreviewUiState, { status: "error" }> {
+  return {
+    status: "error",
+    message: safeErrorMessage(error),
+    requiresAuthentication,
+    ...(job ? { job } : {}),
+  }
 }
