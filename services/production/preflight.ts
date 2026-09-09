@@ -24,6 +24,7 @@ export interface ProductionPreflightOptions {
   runscBinaryPath?: string
   ipBinaryPath?: string
   iptablesBinaryPath?: string
+  ip6tablesBinaryPath?: string
   /** Overridable for tests; defaults to real process spawning. */
   processRunner?: ProcessRunner
   /** Overridable for tests; defaults to reading real host files. */
@@ -39,7 +40,7 @@ export interface ProductionPreflightOptions {
  * `VethNatNetworkProvisioner` silently assume rather than check themselves --
  * each one was found the hard way, on a real host, during earlier phases of
  * this project (see docs/IMPLEMENTATION_CHECKLIST.md): `runsc`/`ip`/
- * `iptables` missing from PATH, a non-unified (v1/hybrid) cgroup hierarchy
+ * `iptables`/`ip6tables` missing from PATH, a non-unified (v1/hybrid) cgroup hierarchy
  * gVisor's resource limits can't attach to, `net.ipv4.ip_forward=0` (which
  * silently drops every forwarded packet before `iptables` FORWARD/NAT rules
  * ever see it -- discovered when a real AWS EC2/WSL2 host reset it on
@@ -61,11 +62,13 @@ export async function runProductionPreflightChecks(
   const runscBinaryPath = options.runscBinaryPath ?? "runsc"
   const ipBinaryPath = options.ipBinaryPath ?? "ip"
   const iptablesBinaryPath = options.iptablesBinaryPath ?? "iptables"
+  const ip6tablesBinaryPath = options.ip6tablesBinaryPath ?? "ip6tables"
 
   return Promise.all([
     checkBinary(processRunner, "runsc", runscBinaryPath, ["--version"]),
     checkBinary(processRunner, "ip", ipBinaryPath, ["-V"]),
     checkBinary(processRunner, "iptables", iptablesBinaryPath, ["--version"]),
+    checkBinary(processRunner, "ip6tables", ip6tablesBinaryPath, ["--version"]),
     checkCgroupV2(pathExists),
     checkIpForward(readFile),
     checkBaseRootfsImage(pathExists, options.baseRootfsImage),
@@ -186,7 +189,7 @@ function checkDnsConfigSource(
   return {
     name: "DNS config source",
     ok: false,
-    detail: `resolveDnsConfigSource() picked ${source}, but it has no usable (non-loopback) nameserver -- network: sandbox DNS lookups will fail. See services/preview-worker/gvisor/dnsConfig.ts.`,
+    detail: `resolveDnsConfigSource() picked ${source}, but it has no usable non-loopback IPv4 nameserver -- network: sandbox DNS lookups will fail. See services/preview-worker/gvisor/dnsConfig.ts.`,
   }
 }
 

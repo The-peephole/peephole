@@ -6,17 +6,21 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises"
+import { createServer } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
-import { resolveDnsConfigSource } from "../services/preview-worker/gvisor/dnsConfig"
+import {
+  resolveDnsConfig,
+  resolveDnsConfigSource,
+} from "../services/preview-worker/gvisor/dnsConfig"
 import { GVisorOrphanReaper } from "../services/preview-worker/gvisor/gvisorOrphanReaper"
 import { GVisorSandboxProvisioner } from "../services/preview-worker/gvisor/gvisorSandboxProvisioner"
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
 import { RunscCommandRunner } from "../services/preview-worker/gvisor/runscCommandRunner"
 
-// Requires a real Linux host with runsc, ip, and iptables on PATH and root
+// Requires a real Linux host with runsc, ip, iptables, and ip6tables on PATH and root
 // (or equivalent) privilege, plus a prepared base rootfs image (see
 // scripts/gvisor/build-base-rootfs.sh) -- opt-in, separate from
 // PEEPHOLE_REAL_NETWORK_TESTS, since it needs a real Linux kernel, not just
@@ -304,6 +308,40 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       ).rejects.toThrow()
     }, 20_000)
 
+    it("blocks services bound to the sandbox veth gateway on the host", async () => {
+      const ws = await allocate("real-gvisor-host-service")
+      const dnsConfig = resolveDnsConfig()
+      const networkPath = await ws.ensureNetworkNamespace(dnsConfig.nameservers)
+      const match = /peephole-(\d+)$/.exec(networkPath)
+      if (!match?.[1]) throw new Error(`unexpected netns path: ${networkPath}`)
+
+      const blockStart = Number(match[1]) * 4
+      const hostIp = `10.200.${String(Math.floor(blockStart / 256) % 256)}.${String((blockStart % 256) + 1)}`
+      const server = createServer((_request, response) => response.end("host"))
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.once("error", reject)
+          server.listen(0, hostIp, resolve)
+        })
+        const address = server.address()
+        if (!address || typeof address === "string") {
+          throw new Error("host probe server did not bind a TCP port")
+        }
+
+        const runner = new RunscCommandRunner({ network: "sandbox" })
+        const url = `http://${hostIp}:${String(address.port)}/`
+        await expect(
+          runner.run(ws, "node", ["-e", rejectedFetchScript(url)], {
+            timeoutMs: 10_000,
+            env: { PATH: process.env.PATH ?? "" },
+          }),
+        ).rejects.toThrow()
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()))
+      }
+    }, 20_000)
+
     it("gives concurrent jobs independent, non-conflicting networks", async () => {
       const wsA = await allocate("real-gvisor-net-a")
       const runnerA = new RunscCommandRunner({ network: "sandbox" })
@@ -361,3 +399,7 @@ function fetchToFileScript(outFile: string): string {
 
 const metadataProbeScript =
   "fetch('http://169.254.169.254/',{signal:AbortSignal.timeout(5000)}).then(()=>{console.log('REACHED');process.exit(0)}).catch(e=>{console.error('BLOCKED',String(e));process.exit(1)})"
+
+function rejectedFetchScript(url: string): string {
+  return `fetch(${JSON.stringify(url)},{signal:AbortSignal.timeout(5000)}).then(()=>{console.log('REACHED');process.exit(0)}).catch(e=>{console.error('BLOCKED',String(e));process.exit(1)})`
+}

@@ -14,7 +14,7 @@ import {
 } from "../local/commandRunner"
 import { directorySizeExceeds } from "../local/directorySize"
 import type { LocalPreviewWorkspace } from "../local/localWorkspace"
-import { resolveDnsConfigSource } from "./dnsConfig"
+import { resolveDnsConfig } from "./dnsConfig"
 import { asGVisorWorkspace } from "./gvisorWorkspace"
 import { buildOciRuntimeSpec } from "./ociConfig"
 import { NodeProcessRunner } from "./nodeProcessRunner"
@@ -37,9 +37,9 @@ export interface RunscCommandRunnerOptions {
    * after it exits) -- see run()'s disk-quota watcher. */
   maxWorkspaceBytes?: number
   diskQuotaPollMs?: number
-  /** Overridable for tests; defaults to the real resolveDnsConfigSource()
+  /** Overridable for tests; defaults to the real resolveDnsConfig()
    * (reads the actual host's resolv.conf files). */
-  resolveDnsConfigSource?: typeof resolveDnsConfigSource
+  resolveDnsConfig?: typeof resolveDnsConfig
 }
 
 /**
@@ -51,9 +51,10 @@ export interface RunscCommandRunnerOptions {
  * `network` defaults to "none" (no network stack at all). Passing
  * "sandbox" gives the process a real, routable network namespace (via
  * `workspace.ensureNetworkNamespace()`, see gvisorSandboxProvisioner.ts)
- * with outbound NAT and cloud metadata/link-local blocked -- npm-registry-
- * only egress is not implemented (the registry's IPs aren't stable enough
- * to allowlist directly); see VethNatNetworkProvisioner's doc comment.
+ * with outbound NAT, DNS-only private resolver exceptions, and non-public
+ * destination ranges blocked. Registry-only egress is not implemented (the
+ * registry's IPs aren't stable enough to allowlist directly); see
+ * VethNatNetworkProvisioner's doc comment.
  *
  * Command execution itself (non-root uid, on-disk persistence across
  * containers, resource limits) is verified against a real gVisor host --
@@ -90,7 +91,7 @@ export class RunscCommandRunner implements CommandRunner {
   private readonly processRunner: ProcessRunner
   private readonly maxWorkspaceBytes: number
   private readonly diskQuotaPollMs: number
-  private readonly resolveDnsConfigSource: typeof resolveDnsConfigSource
+  private readonly resolveDnsConfig: typeof resolveDnsConfig
 
   constructor(options: RunscCommandRunnerOptions = {}) {
     this.runscBinaryPath = options.runscBinaryPath ?? "runsc"
@@ -102,8 +103,7 @@ export class RunscCommandRunner implements CommandRunner {
     this.maxWorkspaceBytes =
       options.maxWorkspaceBytes ?? DEFAULT_ARCHIVE_LIMITS.maxExpandedBytes
     this.diskQuotaPollMs = options.diskQuotaPollMs ?? 1_000
-    this.resolveDnsConfigSource =
-      options.resolveDnsConfigSource ?? resolveDnsConfigSource
+    this.resolveDnsConfig = options.resolveDnsConfig ?? resolveDnsConfig
   }
 
   async run(
@@ -117,9 +117,10 @@ export class RunscCommandRunner implements CommandRunner {
     const containerId = `${workspace.id}-${randomBytes(4).toString("hex")}`
     sandbox.registerContainer(containerId)
 
+    const dnsConfig = this.resolveDnsConfig()
     const networkNamespacePath =
       this.network === "sandbox"
-        ? await sandbox.ensureNetworkNamespace()
+        ? await sandbox.ensureNetworkNamespace(dnsConfig.nameservers)
         : undefined
 
     const spec = buildOciRuntimeSpec({
@@ -139,7 +140,7 @@ export class RunscCommandRunner implements CommandRunner {
       hostname: "peephole-preview",
       resourceLimits: this.resourceLimits,
       networkNamespacePath,
-      dnsConfigSource: this.resolveDnsConfigSource(),
+      dnsConfigSource: dnsConfig.source,
     })
 
     await writeFile(

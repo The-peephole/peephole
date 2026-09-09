@@ -141,8 +141,8 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
       remainingMs: () => deadline - now().getTime(),
       registerContainer: (containerId) => containers.add(containerId),
       listContainers: () => Array.from(containers),
-      ensureNetworkNamespace: async () => {
-        networkNamespace ??= networkProvisioner.create(jobId)
+      ensureNetworkNamespace: async (dnsServers) => {
+        networkNamespace ??= networkProvisioner.create(jobId, dnsServers)
         return (await networkNamespace).path
       },
       destroy: async () => {

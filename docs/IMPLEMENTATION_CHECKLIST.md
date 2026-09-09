@@ -222,16 +222,18 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       aren't stable enough to allowlist directly, so install-phase egress
       is full outbound internet minus the block below, not
       registry-only.
-- [x] Block cloud metadata and the rest of link-local (169.254.0.0/16,
-      which covers 169.254.169.254 on every major cloud) via an `iptables
-      -I FORWARD` DROP rule evaluated before the NAT ACCEPT rules --
-      verified in `tests/realGvisorSandbox.test.ts` ("blocks the cloud
-      metadata address"). **Not done**: blocking the rest of RFC1918
-      (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) -- which private ranges
-      are safe to block depends on the deployment's own network topology
-      (this host's own default route is itself a private address under
-      WSL2), so this needs a deployment-specific decision, not a
-      one-size-fits-all rule.
+- [x] Install-stage egress now blocks loopback, link-local/cloud metadata,
+      RFC 1918, shared CGNAT, the `10.200.0.0/16` inter-job pool, and other
+      non-public/special-purpose IPv4 destinations in per-veth chains.
+      Exact configured resolver addresses receive only UDP/TCP 53 exceptions
+      before those drops, so an AWS VPC or link-local Route 53 resolver keeps
+      working without exposing its other ports. A separate INPUT chain blocks
+      host services, the reverse FORWARD chain accepts only
+      `ESTABLISHED,RELATED`, and IPv6 INPUT/FORWARD is denied completely.
+      All mandatory rules precede NAT and any failure aborts setup. Full policy,
+      packet-flow reasoning, verification, and limitations are documented in
+      `docs/SANDBOX_NETWORK_SECURITY.md` and tested in
+      `tests/networkNamespace.test.ts` / `tests/realGvisorSandbox.test.ts`.
 - [x] Fixed a real DNS bug found on a real AWS EC2 host (Ubuntu,
       systemd-resolved) that WSL2 never exposed: `/etc/resolv.conf` there
       points at the `127.0.0.53` stub resolver, which systemd-resolved
@@ -240,12 +242,13 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       namespace (per the fix above) looks correct but leaves nothing
       listening on that address, so every DNS lookup failed with
       `EAI_AGAIN` even though `network: sandbox` itself worked fine.
-      `resolveDnsConfigSource()` (`services/preview-worker/gvisor/dnsConfig.ts`)
+      `resolveDnsConfig()` (`services/preview-worker/gvisor/dnsConfig.ts`)
       now detects a loopback-only `/etc/resolv.conf` and falls back to
       systemd-resolved's own published uplink file
       (`/run/systemd/resolve/resolv.conf`, the same file Docker reads for
       this), which is threaded through `buildOciRuntimeSpec`'s required
-      `dnsConfigSource` field. Environments whose `/etc/resolv.conf`
+      `dnsConfigSource` field while its exact IPv4 nameservers configure the
+      DNS-only firewall exceptions. Environments whose `/etc/resolv.conf`
       already has a real, non-loopback nameserver (WSL2's own
       `10.255.255.254`) are left exactly as before -- verified by a real
       regression run on WSL2 (`tests/realGvisorSandbox.test.ts`'s
@@ -348,8 +351,8 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Startup preflight (`services/production/preflight.ts`,
       `ensureProductionPreflight`) checks every host prerequisite gVisor
       sandboxing/networking silently assumed until this project found each
-      one the hard way on a real host: `runsc`/`ip`/`iptables` present and
-      runnable, cgroup v2's unified hierarchy
+      one the hard way on a real host: `runsc`/`ip`/`iptables`/`ip6tables`
+      present and runnable, cgroup v2's unified hierarchy
       (`/sys/fs/cgroup/cgroup.controllers`), `net.ipv4.ip_forward=1`, a
       populated base rootfs image, and a DNS config source that actually
       resolves to a usable (non-loopback) nameserver (reusing

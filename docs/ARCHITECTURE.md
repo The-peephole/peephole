@@ -190,7 +190,8 @@ Required controls include:
 - read-only base image and a bounded writable workspace,
 - no host filesystem, container socket, or sibling-job access,
 - blocked private, loopback, link-local, and cloud-metadata networks,
-- allowlisted dependency-registry egress only during installation,
+- public IPv4 egress only during installation, with DNS-only resolver
+  exceptions and private/link-local/host/inter-job destinations denied,
 - no secret environment values,
 - build and artifact TTLs,
 - cancellation and orphan cleanup,

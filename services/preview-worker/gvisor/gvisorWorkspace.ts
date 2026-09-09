@@ -17,7 +17,7 @@ export interface GVisorPreviewWorkspace extends LocalPreviewWorkspace {
    * job's install phase only ever pays veth/NAT setup once even if it
    * runs multiple commands. Torn down by `destroy()`.
    */
-  ensureNetworkNamespace(): Promise<string>
+  ensureNetworkNamespace(dnsServers: readonly string[]): Promise<string>
 }
 
 export function asGVisorWorkspace(

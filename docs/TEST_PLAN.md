@@ -136,7 +136,7 @@ Use intentionally malicious fixtures to verify:
 
 - dependency lifecycle scripts cannot access host files or sockets,
 - builds cannot reach loopback, RFC1918/private, link-local, or cloud metadata endpoints,
-- non-allowlisted egress is denied,
+- private, link-local, metadata, host, and sibling-job egress is denied,
 - fork bombs and process floods hit PID limits,
 - CPU, memory, disk, output, and wall-time limits terminate the job,
 - one job cannot read another job's workspace or artifacts,

@@ -132,7 +132,9 @@ this environment cannot provide (see D-018..D-021 and PREVIEW_RUNTIME.md
 - [x] durable queue consumer loop with lease acknowledgement, delayed retry,
       and graceful polling shutdown
 - [ ] fresh non-root sandbox per job on a **real** gVisor host (unverified)
-- [ ] deterministic install with registry-only egress (network policy not enforced)
+- [x] deterministic install with public IPv4 egress while host, private,
+      link-local, metadata, and inter-job destinations are denied
+- [ ] replace broad public install egress with an authenticated package proxy
 - [ ] CPU/memory/PID limits actually enforced on a **real** gVisor host (unverified)
 - [x] static artifact publication with restrictive headers, development-only
       (`services/local-preview/artifactHost.ts`: a fresh loopback HTTP

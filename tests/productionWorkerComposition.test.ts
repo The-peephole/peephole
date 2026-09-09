@@ -152,6 +152,10 @@ describe("composeProductionWorker", () => {
       processRunner,
       networkProvisioner,
       codeloadBaseUrl,
+      resolveDnsConfig: () => ({
+        source: "/etc/resolv.conf",
+        nameservers: ["172.31.0.2"],
+      }),
     })
 
     const queuedJob = queue.dequeue()

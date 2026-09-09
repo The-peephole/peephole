@@ -52,6 +52,7 @@ function healthyOptions() {
       runsc: ok("runsc version release-20260817.0"),
       ip: ok("ip utility, iproute2-6.19.0"),
       iptables: ok("iptables v1.8.11 (nf_tables)"),
+      ip6tables: ok("ip6tables v1.8.11 (nf_tables)"),
     }),
     readFile: (path: string) => HEALTHY_FILES[path] ?? null,
     pathExists: async (path: string) => HEALTHY_EXISTS.has(path),
@@ -67,6 +68,7 @@ describe("runProductionPreflightChecks", () => {
       "runsc",
       "ip",
       "iptables",
+      "ip6tables",
       "cgroup v2",
       "net.ipv4.ip_forward",
       "base rootfs image",
@@ -79,6 +81,7 @@ describe("runProductionPreflightChecks", () => {
     options.processRunner = new FakeProcessRunner({
       ip: ok("ip utility, iproute2-6.19.0"),
       iptables: ok("iptables v1.8.11 (nf_tables)"),
+      ip6tables: ok("ip6tables v1.8.11 (nf_tables)"),
     })
 
     const results = await runProductionPreflightChecks(options)
@@ -86,6 +89,21 @@ describe("runProductionPreflightChecks", () => {
 
     expect(runsc?.ok).toBe(false)
     expect(runsc?.detail).toMatch(/not runnable on PATH/)
+  })
+
+  it("fails closed before accepting jobs when ip6tables is unavailable", async () => {
+    const options = healthyOptions()
+    options.processRunner = new FakeProcessRunner({
+      runsc: ok("runsc version release-20260817.0"),
+      ip: ok("ip utility, iproute2-6.19.0"),
+      iptables: ok("iptables v1.8.11 (nf_tables)"),
+    })
+
+    const results = await runProductionPreflightChecks(options)
+    const ip6tables = results.find((result) => result.name === "ip6tables")
+
+    expect(ip6tables?.ok).toBe(false)
+    expect(ip6tables?.detail).toMatch(/not runnable on PATH/)
   })
 
   it("fails the ip_forward check when it reads 0", async () => {
@@ -169,6 +187,7 @@ describe("ensureProductionPreflight", () => {
     const options = healthyOptions()
     options.processRunner = new FakeProcessRunner({
       iptables: ok("iptables v1.8.11 (nf_tables)"),
+      ip6tables: ok("ip6tables v1.8.11 (nf_tables)"),
     })
     options.readFile = (path: string) =>
       path === "/proc/sys/net/ipv4/ip_forward" ? "0\n" : null

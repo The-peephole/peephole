@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest"
 
-import { resolveDnsConfigSource } from "../services/preview-worker/gvisor/dnsConfig"
+import {
+  resolveDnsConfig,
+  resolveDnsConfigSource,
+} from "../services/preview-worker/gvisor/dnsConfig"
 
 function fakeReadFile(files: Record<string, string>) {
   return (path: string): string | null => files[path] ?? null
@@ -85,5 +88,40 @@ describe("resolveDnsConfigSource", () => {
     })
 
     expect(source).toBe("/etc/resolv.conf")
+  })
+
+  it("returns the exact canonical IPv4 resolver addresses used by firewall exceptions", () => {
+    const config = resolveDnsConfig({
+      readFile: fakeReadFile({
+        "/etc/resolv.conf": [
+          "nameserver 172.31.0.2",
+          "nameserver 169.254.169.253",
+          "nameserver 172.31.0.2",
+          "nameserver 8.8.8.999",
+          "nameserver ::1",
+        ].join("\n"),
+      }),
+    })
+
+    expect(config).toEqual({
+      source: "/etc/resolv.conf",
+      nameservers: ["172.31.0.2", "169.254.169.253"],
+    })
+  })
+
+  it("does not expose loopback, malformed, multicast, or IPv6 resolvers to the IPv4-only sandbox", () => {
+    const config = resolveDnsConfig({
+      readFile: fakeReadFile({
+        "/etc/resolv.conf": [
+          "nameserver 127.0.0.53",
+          "nameserver 0.0.0.0",
+          "nameserver 224.0.0.1",
+          "nameserver fd00:ec2::253",
+          "nameserver text.invalid",
+        ].join("\n"),
+      }),
+    })
+
+    expect(config).toEqual({ source: "/etc/resolv.conf", nameservers: [] })
   })
 })

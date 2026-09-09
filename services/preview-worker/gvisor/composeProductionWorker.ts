@@ -10,6 +10,7 @@ import { NpmBuildExecutor } from "../local/npmBuildExecutor"
 import { NpmDependencyInstaller } from "../local/npmDependencyInstaller"
 import type { PreviewControlPlane } from "../../preview-api/controlPlane"
 import { GVisorSandboxProvisioner } from "./gvisorSandboxProvisioner"
+import type { resolveDnsConfig } from "./dnsConfig"
 import type { VethNatNetworkProvisioner } from "./networkNamespace"
 import type { ProcessRunner } from "./processRunner"
 import { RunscCommandRunner } from "./runscCommandRunner"
@@ -35,6 +36,8 @@ export interface ComposeProductionWorkerOptions {
    * SubnetAllocator's real default lease directory
    * (/var/run/peephole/net-leases). */
   networkProvisioner?: VethNatNetworkProvisioner
+  /** Test seam for the exact resolver source and firewall exceptions. */
+  resolveDnsConfig?: typeof resolveDnsConfig
 }
 
 /**
@@ -75,12 +78,14 @@ export function composeProductionWorker(
     runscBinaryPath: options.runscBinaryPath,
     runscRootDir: options.runscRootDir,
     processRunner: options.processRunner,
+    resolveDnsConfig: options.resolveDnsConfig,
   })
   const buildRunner = new RunscCommandRunner({
     network: "none",
     runscBinaryPath: options.runscBinaryPath,
     runscRootDir: options.runscRootDir,
     processRunner: options.processRunner,
+    resolveDnsConfig: options.resolveDnsConfig,
   })
 
   return new PreviewJobWorker(
