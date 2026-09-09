@@ -23,6 +23,7 @@ describe("mountPeepholeUi", () => {
         repo: "react",
       },
       async () => undefined,
+      "chrome-extension://peephole/icons/peephole-32.png",
     )
     const shadowHost = document.getElementById(PEEPHOLE_HOST_ID)
 

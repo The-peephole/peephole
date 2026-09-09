@@ -45,14 +45,12 @@
   outline-offset: 2px;
 }
 .peephole__mark {
-  align-items: center;
-  background: #238636;
+  border: 1px solid #57606a;
   border-radius: 50%;
-  color: #fff;
-  display: inline-flex;
-  font-size: 11px;
+  display: block;
+  flex: 0 0 auto;
   height: 18px;
-  justify-content: center;
+  object-fit: cover;
   width: 18px;
 }
 .peephole__error {

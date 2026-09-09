@@ -22,6 +22,12 @@ export default defineConfig({
       name: "Peephole",
       description: "Preview a GitHub repository before you clone it.",
       version: "0.1.0",
+      icons: {
+        16: "icons/peephole-16.png",
+        32: "icons/peephole-32.png",
+        48: "icons/peephole-48.png",
+        128: "icons/peephole-128.png",
+      },
       minimum_chrome_version: "116",
       permissions: ["sidePanel", "storage"],
       host_permissions: [
@@ -29,6 +35,12 @@ export default defineConfig({
         ...(previewApiBaseUrl
           ? [getPreviewApiHostPermission(previewApiBaseUrl)]
           : []),
+      ],
+      web_accessible_resources: [
+        {
+          resources: ["icons/peephole-32.png"],
+          matches: ["https://github.com/*"],
+        },
       ],
       content_security_policy: {
         // Artifacts need framing permission only, never host_permissions.

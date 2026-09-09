@@ -15,6 +15,7 @@ export function mountPeepholeUi(
   target: HTMLElement,
   repository: RepositoryIdentity,
   openSidePanel: (repository: RepositoryIdentity) => Promise<void>,
+  logoUrl = browser.runtime.getURL("/icons/peephole-32.png"),
 ): MountedPeepholeUi {
   document.querySelector<HTMLElement>("[data-peephole-container]")?.remove()
 
@@ -49,7 +50,11 @@ export function mountPeepholeUi(
 
   const reactRoot = createRoot(appRoot)
   reactRoot.render(
-    <PeepholeApp openSidePanel={openSidePanel} repository={repository} />,
+    <PeepholeApp
+      logoUrl={logoUrl}
+      openSidePanel={openSidePanel}
+      repository={repository}
+    />,
   )
 
   return {

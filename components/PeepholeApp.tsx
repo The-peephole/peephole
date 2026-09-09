@@ -3,11 +3,16 @@ import { useEffect, useState } from "react"
 import type { RepositoryIdentity } from "../types/repository"
 
 interface PeepholeAppProps {
+  logoUrl: string
   repository: RepositoryIdentity
   openSidePanel: (repository: RepositoryIdentity) => Promise<void>
 }
 
-export function PeepholeApp({ repository, openSidePanel }: PeepholeAppProps) {
+export function PeepholeApp({
+  logoUrl,
+  repository,
+  openSidePanel,
+}: PeepholeAppProps) {
   const [isOpening, setIsOpening] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -46,9 +51,12 @@ export function PeepholeApp({ repository, openSidePanel }: PeepholeAppProps) {
         }
         type="button"
       >
-        <span aria-hidden="true" className="peephole__mark">
-          P
-        </span>
+        <img
+          alt=""
+          aria-hidden="true"
+          className="peephole__mark"
+          src={logoUrl}
+        />
         {isOpening ? "Opening..." : "Peephole"}
       </button>
       {error && (

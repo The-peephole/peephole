@@ -28,6 +28,7 @@ describe("PeepholeApp", () => {
     await act(async () => {
       root.render(
         <PeepholeApp
+          logoUrl="chrome-extension://peephole/icons/peephole-32.png"
           openSidePanel={openSidePanel}
           repository={{ owner: "react", repo: "react" }}
         />,
@@ -39,7 +40,10 @@ describe("PeepholeApp", () => {
       owner: "react",
       repo: "react",
     })
-    expect(container.textContent).toBe("PPeephole")
+    expect(container.textContent).toBe("Peephole")
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(
+      "chrome-extension://peephole/icons/peephole-32.png",
+    )
   })
 
   it("shows a safe error when Chrome cannot open the side panel", async () => {
@@ -53,6 +57,7 @@ describe("PeepholeApp", () => {
     await act(async () => {
       root.render(
         <PeepholeApp
+          logoUrl="chrome-extension://peephole/icons/peephole-32.png"
           openSidePanel={openSidePanel}
           repository={{ owner: "react", repo: "react" }}
         />,
