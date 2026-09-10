@@ -27,6 +27,8 @@ const COMMAND_TIMEOUT_MS = 30_000
 const ALLOCATION_LOCK_TIMEOUT_MS = 10_000
 const UNKNOWN_LOCK_STALE_MS = 5 * 60_000
 const BUNDLE_NAME_PATTERN = /^peephole-([a-f\d]{32})$/
+const TEMPORARY_ALLOCATION_NAME_PATTERN =
+  /^\.peephole-allocating-([a-f\d]{32})-([a-f\d]{32})$/
 const LOOP_DEVICE_PATTERN = /^\/dev\/loop\d+$/
 const MARKER_NAME = ".peephole-sandbox.json"
 const IMAGE_NAME = "workspace.img"
@@ -114,6 +116,9 @@ export interface LoopbackSandboxDiskManagerOptions {
   bootId?: () => Promise<string | null>
   processExists?: (pid: number) => boolean
   statFilesystem?: (candidate: string) => Promise<FilesystemCapacity>
+  /** Test seam for Windows, where opening a directory for fsync is not
+   * supported. Production uses a real directory fsync on Linux. */
+  syncDirectory?: (candidate: string) => Promise<void>
 }
 
 export interface FilesystemCapacity {
@@ -145,6 +150,7 @@ export class LoopbackSandboxDiskManager implements SandboxDiskManager {
   private readonly statFilesystem: (
     candidate: string,
   ) => Promise<FilesystemCapacity>
+  private readonly syncDirectory: (candidate: string) => Promise<void>
 
   constructor(options: LoopbackSandboxDiskManagerOptions = {}) {
     this.bundlesRootDir = options.bundlesRootDir ?? "/var/lib/peephole/jobs"
@@ -175,6 +181,7 @@ export class LoopbackSandboxDiskManager implements SandboxDiskManager {
     this.readBootId = options.bootId ?? defaultBootId
     this.processExists = options.processExists ?? defaultProcessExists
     this.statFilesystem = options.statFilesystem ?? statfs
+    this.syncDirectory = options.syncDirectory ?? fsyncDirectory
   }
 
   async createAllocation(
@@ -201,14 +208,32 @@ export class LoopbackSandboxDiskManager implements SandboxDiskManager {
       const allocationId = randomBytes(16).toString("hex")
       const bundleDir = path.join(bundlesRoot, `peephole-${allocationId}`)
       const allocation = allocationFor(bundleDir, allocationId)
-      await mkdir(bundleDir, { mode: 0o700 })
+      const temporaryDir = path.join(
+        bundlesRoot,
+        `.peephole-allocating-${allocationId}-${randomBytes(16).toString("hex")}`,
+      )
+      let temporaryCreated = false
+      let published = false
 
       try {
-        await writeFile(
-          path.join(bundleDir, MARKER_NAME),
+        await mkdir(temporaryDir, { mode: 0o700 })
+        temporaryCreated = true
+        await writeDurableFile(
+          path.join(temporaryDir, MARKER_NAME),
           `${JSON.stringify(toMarker(allocation, options.expectedOutsideBytes), null, 2)}\n`,
-          { encoding: "utf8", flag: "wx", mode: 0o600 },
         )
+        await this.syncDirectory(temporaryDir)
+        if (await pathExists(bundleDir)) {
+          throw new Error(
+            "Final sandbox allocation path already exists; refusing to replace it.",
+          )
+        }
+        await rename(temporaryDir, bundleDir)
+        published = true
+        await this.syncDirectory(bundlesRoot)
+
+        // No loop, mount, image, or other host resource may be created before
+        // the valid marker-bearing directory is atomically published.
         const image = await open(allocation.imagePath, "wx", 0o600)
         await image.close()
         await this.run(this.fallocate, [
@@ -225,7 +250,14 @@ export class LoopbackSandboxDiskManager implements SandboxDiskManager {
         )
       } catch (error) {
         try {
-          await rm(bundleDir, { recursive: true, force: true })
+          if (published) {
+            await this.destroyAllocation(allocation)
+          } else if (temporaryCreated) {
+            await this.removeTransactionalTemporaryDirectory(
+              bundlesRoot,
+              temporaryDir,
+            )
+          }
         } catch (cleanupError) {
           throw new AggregateError(
             [error, cleanupError],
@@ -427,13 +459,96 @@ export class LoopbackSandboxDiskManager implements SandboxDiskManager {
   async recoverAllocationLock(): Promise<void> {
     const root = await realpath(this.bundlesRootDir).catch(() => null)
     if (!root) return
-    const lockDir = path.join(root, ALLOCATION_LOCK_NAME)
-    const state = await this.lockState(lockDir)
-    if (state === "absent") return
-    if (state === "live") {
-      throw new Error("A live Peephole disk allocation lock already exists.")
+    // withAllocationLock first proves any previous owner stale (boot-id/pid),
+    // then serializes the scan. Consequently a live allocator can never have
+    // its in-progress temporary directory removed by startup recovery.
+    await this.withAllocationLock(async () => {
+      const entries = await readdir(root, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!TEMPORARY_ALLOCATION_NAME_PATTERN.test(entry.name)) continue
+        await this.removeTransactionalTemporaryDirectory(
+          root,
+          path.join(root, entry.name),
+        )
+      }
+    })
+  }
+
+  private async removeTransactionalTemporaryDirectory(
+    root: string,
+    candidate: string,
+  ): Promise<void> {
+    const expectedRoot = await realpath(this.bundlesRootDir)
+    if (
+      root !== expectedRoot ||
+      path.dirname(path.resolve(candidate)) !== root
+    ) {
+      throw new Error(
+        "Refusing to remove a temporary allocation outside its owned root.",
+      )
     }
-    await this.removeKnownLock(lockDir)
+
+    const match = TEMPORARY_ALLOCATION_NAME_PATTERN.exec(
+      path.basename(candidate),
+    )
+    if (!match?.[1]) {
+      throw new Error("Temporary allocation name is not owned by Peephole.")
+    }
+
+    const stats = await lstat(candidate).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null
+        throw error
+      },
+    )
+    if (!stats) return
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error(
+        "Peephole-shaped temporary allocation is not an ordinary directory.",
+      )
+    }
+    if ((await realpath(candidate)) !== path.resolve(candidate)) {
+      throw new Error("Temporary allocation canonical path is unsafe.")
+    }
+
+    const finalBundle = path.join(root, `peephole-${match[1]}`)
+    if (await pathExists(finalBundle)) {
+      throw new Error(
+        "Temporary and final allocation paths both exist; refusing guessed cleanup.",
+      )
+    }
+
+    const contents = await readdir(candidate, { withFileTypes: true })
+    if (
+      contents.length > 1 ||
+      (contents.length === 1 && contents[0]?.name !== MARKER_NAME)
+    ) {
+      throw new Error(
+        "Temporary allocation contains an unexpected host resource.",
+      )
+    }
+    const marker = contents[0]
+    if (marker) {
+      const markerPath = path.join(candidate, MARKER_NAME)
+      const markerStats = await lstat(markerPath)
+      if (
+        !marker.isFile() ||
+        marker.isSymbolicLink() ||
+        !markerStats.isFile() ||
+        markerStats.isSymbolicLink() ||
+        markerStats.size > 16 * 1024
+      ) {
+        throw new Error(
+          "Temporary allocation marker is not a bounded ordinary file.",
+        )
+      }
+      // A crash may leave a partial marker write. Exact random naming, the
+      // allocation lock, direct-child validation, and marker-only contents
+      // prove this pre-publication directory has no host resources to detach.
+      await rm(markerPath, { force: false })
+    }
+    await rmdir(candidate)
+    await this.syncDirectory(root)
   }
 
   private async cleanupWorkspace(
@@ -902,6 +1017,35 @@ async function isFilesystemExhausted(
 ): Promise<boolean> {
   const filesystem = await getFilesystem(mountpoint)
   return filesystem.bavail === 0 || filesystem.ffree === 0
+}
+
+async function writeDurableFile(candidate: string, contents: string) {
+  const handle = await open(candidate, "wx", 0o600)
+  try {
+    await handle.writeFile(contents, "utf8")
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+}
+
+async function fsyncDirectory(candidate: string): Promise<void> {
+  const handle = await open(candidate, "r")
+  try {
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+}
+
+async function pathExists(candidate: string): Promise<boolean> {
+  try {
+    await lstat(candidate)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+    throw error
+  }
 }
 
 function commandError(command: string, result: ProcessRunResult): Error {

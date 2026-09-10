@@ -56,6 +56,23 @@ Each allocation therefore uses this host-only layout:
   workspace/              # verified host mount, guest /workspace
 ```
 
+Allocation publication is transactional. While holding the cross-process disk
+allocation lock, the manager creates only an exact temporary direct child:
+
+```text
+<bundles-root>/.peephole-allocating-<128-bit-allocation-id>-<128-bit-random>/
+  .peephole-sandbox.json
+```
+
+The marker already contains the canonical paths of the future final bundle.
+Peephole writes and `fsync`s the marker, `fsync`s the temporary directory,
+atomically renames it to `peephole-<allocation-id>`, and `fsync`s the bundles
+root. Only after that publication barrier does it create or preallocate
+`workspace.img`; loop and mount setup remains later. A crash before rename
+therefore leaves no final Peephole bundle or host disk resource. A crash after
+rename leaves a marker-valid final bundle that the normal orphan reaper can
+prove and clean.
+
 `fallocate` consumes the configured image allocation before the allocation lock
 is released. `mkfs.ext4 -m 0` keeps no root-only reserve, and ext4 capacity
 (including its filesystem metadata and finite inode table) is the hard ceiling.
@@ -134,6 +151,20 @@ the exact target, expected loop source, and `ext4` type.
 Unrelated directory names are ignored. A directory matching Peephole's random
 allocation naming shape but missing a valid marker is preserved and causes
 reconciliation/admission to fail closed; it is never guessed safe and deleted.
+The transactional publisher prevents new markerless final bundles; this
+fail-closed rule remains for legacy state, corruption, or operator-created
+lookalikes.
+
+Startup temporary recovery first acquires the same allocation lock. Existing
+boot-id and PID ownership checks must prove any previous lock stale before the
+scan can run, so a live allocator's transaction cannot be removed. Recovery
+only recognizes the exact temporary naming pattern, canonical direct children,
+ordinary non-symlink directories, and either empty or marker-only contents.
+Unexpected files (including an image or mountpoint), a simultaneous final
+bundle, and temporary symlinks all fail closed. Deletion unlinks at most the
+bounded ordinary marker and removes the now-empty directory; it never uses a
+recursive delete for transactional recovery. Arbitrary hidden directories are
+ignored.
 
 At process startup the order is:
 
