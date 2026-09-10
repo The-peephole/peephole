@@ -68,9 +68,7 @@ export interface OciRuntimeSpec {
 
 const CPU_PERIOD_MICROSECONDS = 100_000
 export const SANDBOX_TMPFS_BYTES = 64 * 1024 * 1024
-export const SANDBOX_TMPFS_INODES = 16_384
 export const SANDBOX_DEV_SHM_TMPFS_BYTES = 16 * 1024 * 1024
-export const SANDBOX_DEV_SHM_TMPFS_INODES = 4_096
 
 /**
  * A non-root, capability-stripped, resource-quota'd OCI bundle spec for
@@ -124,7 +122,6 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
           "nodev",
           "noexec",
           `size=${String(SANDBOX_DEV_SHM_TMPFS_BYTES)}`,
-          `nr_inodes=${String(SANDBOX_DEV_SHM_TMPFS_INODES)}`,
           "mode=1777",
         ],
       },
@@ -143,7 +140,6 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
           "nodev",
           "noexec",
           `size=${String(SANDBOX_TMPFS_BYTES)}`,
-          `nr_inodes=${String(SANDBOX_TMPFS_INODES)}`,
           "mode=1777",
         ],
       },

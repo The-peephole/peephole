@@ -49,15 +49,13 @@ describe("buildOciRuntimeSpec", () => {
     })
     expect(
       spec.mounts.find((mount) => mount.destination === "/tmp")?.options,
-    ).toEqual(expect.arrayContaining(["size=67108864", "nr_inodes=16384"]))
+    ).toEqual(["nosuid", "nodev", "noexec", "size=67108864", "mode=1777"])
     expect(
       spec.mounts.find((mount) => mount.destination === "/dev")?.options,
     ).toEqual(["nosuid", "noexec", "mode=755"])
     expect(
       spec.mounts.find((mount) => mount.destination === "/dev/shm")?.options,
-    ).toEqual(
-      expect.arrayContaining(["size=16777216", "nr_inodes=4096", "mode=1777"]),
-    )
+    ).toEqual(["nosuid", "nodev", "noexec", "size=16777216", "mode=1777"])
     expect(spec.linux.maskedPaths).toContain("/dev/mqueue")
     expect(spec.process.capabilities.bounding).toEqual(["CAP_NET_BIND_SERVICE"])
     expect(spec.linux.resources.cpu).toEqual({

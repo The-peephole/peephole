@@ -1,4 +1,12 @@
-import { readFile, rm, stat, statfs, utimes, writeFile } from "node:fs/promises"
+import {
+  lstat,
+  readFile,
+  rm,
+  stat,
+  statfs,
+  utimes,
+  writeFile,
+} from "node:fs/promises"
 import { createServer } from "node:http"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
@@ -8,10 +16,7 @@ import {
   resolveDnsConfigSource,
 } from "../services/preview-worker/gvisor/dnsConfig"
 import { GVisorOrphanReaper } from "../services/preview-worker/gvisor/gvisorOrphanReaper"
-import {
-  SANDBOX_DEV_SHM_TMPFS_BYTES,
-  SANDBOX_DEV_SHM_TMPFS_INODES,
-} from "../services/preview-worker/gvisor/ociConfig"
+import { SANDBOX_DEV_SHM_TMPFS_BYTES } from "../services/preview-worker/gvisor/ociConfig"
 import { GVisorSandboxProvisioner } from "../services/preview-worker/gvisor/gvisorSandboxProvisioner"
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
 import { RunscCommandRunner } from "../services/preview-worker/gvisor/runscCommandRunner"
@@ -37,6 +42,8 @@ import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 const baseRootfsImage =
   process.env.PEEPHOLE_GVISOR_BASE_ROOTFS ?? "/var/lib/peephole/base-rootfs"
 const HOST_IMAGE_ALLOCATION_TOLERANCE_BYTES = 1024 * 1024
+const TMP_ZERO_FILE_LIMIT = 30_000
+const HOST_METADATA_DISK_TOLERANCE_BYTES = 8 * 1024 * 1024
 
 describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
   "real gVisor sandbox (Linux + runsc required)",
@@ -123,21 +130,25 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
     it("enforces read-only rootfs, bounded /tmp and /dev/shm, and audits /dev writability", async () => {
       const ws = await allocate("real-gvisor-filesystems")
       const runner = new RunscCommandRunner({ network: "none" })
+      const workspaceBefore = await statfs(ws.rootDir)
+      const workspaceUsedBefore =
+        (workspaceBefore.blocks - workspaceBefore.bfree) * workspaceBefore.bsize
       const script = String.raw`
         const fs = require('fs');
         const canWrite = (file) => { try { fs.writeFileSync(file, 'x'); return true } catch { return false } };
         const capacity = (dir) => { const s=fs.statfsSync(dir); return { blocks:s.blocks,bfree:s.bfree,bavail:s.bavail,files:s.files,ffree:s.ffree,bsize:s.bsize,bytes:s.blocks*s.bsize,inodes:s.files } };
         const kind = (s) => s.isDirectory()?'directory':s.isCharacterDevice()?'character':s.isBlockDevice()?'block':s.isSymbolicLink()?'symlink':s.isFile()?'file':s.isFIFO()?'fifo':s.isSocket()?'socket':'other';
         const inspect = (file) => { try { const s=fs.lstatSync(file); return { exists:true,type:kind(s),mode:s.mode&0o7777,uid:s.uid,gid:s.gid,...(s.isDirectory()?{statfs:capacity(file)}:{}) } } catch(e) { return { exists:false,error:e.code||String(e) } } };
+        const readMetric = (file) => { try { return fs.readFileSync(file,'utf8').trim() } catch(e) { return null } };
         const probeDirectoryWrite = (dir) => { const file=dir+'/.peephole-write-probe'; try { fs.writeFileSync(file,'x');fs.unlinkSync(file);return true } catch { return false } };
         const auditDevDirectories = (root) => { let names=[];try{names=fs.readdirSync(root)}catch(e){return [{path:root,listError:e.code||String(e)}]};const results=[];for(const name of names){const file=root+'/'+name;const details=inspect(file);if(details.type!=='directory')continue;results.push({path:file,writable:probeDirectoryWrite(file),...details});if(file!=='/dev/shm')results.push(...auditDevDirectories(file))}return results };
         let tmpBytes=0, tmpError='';
         try { for(let i=0;i<80;i++){ fs.appendFileSync('/tmp/capacity.bin', Buffer.alloc(1024*1024)); tmpBytes+=1024*1024 } }
         catch(e){ tmpError=e.code || String(e) }
         try { fs.unlinkSync('/tmp/capacity.bin') } catch {}
-        let tmpInodesCreated=0, tmpInodeError='';
-        try { fs.mkdirSync('/tmp/inodes'); for(;tmpInodesCreated<20000;tmpInodesCreated++) fs.writeFileSync('/tmp/inodes/'+tmpInodesCreated,'') }
-        catch(e){ tmpInodeError=e.code || String(e) }
+        let tmpZeroFilesCreated=0, tmpZeroFileError='';
+        try { fs.mkdirSync('/tmp/zero-files'); for(;tmpZeroFilesCreated<${String(TMP_ZERO_FILE_LIMIT)};tmpZeroFilesCreated++) fs.writeFileSync('/tmp/zero-files/'+tmpZeroFilesCreated,'') }
+        catch(e){ tmpZeroFileError=e.code || String(e) }
         const devEntries=fs.readdirSync('/dev').sort().map(name=>({name,path:'/dev/'+name,...inspect('/dev/'+name)}));
         const devDirectoryAudit=auditDevDirectories('/dev');
         const writableDevDirectories=devDirectoryAudit.filter(entry=>entry.writable).map(entry=>entry.path).sort();
@@ -153,7 +164,9 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
           devWritable:canWrite('/dev/peephole-test'),
           home:process.env.HOME, npmCache:process.env.npm_config_cache,
           tmp:capacity('/tmp'), dev:capacity('/dev'), tmpBytes, tmpError,
-          tmpInodesCreated, tmpInodeError,
+          tmpZeroFilesCreated,tmpZeroFileError,
+          cgroupMemory:{current:readMetric('/sys/fs/cgroup/memory.current'),peak:readMetric('/sys/fs/cgroup/memory.peak'),events:readMetric('/sys/fs/cgroup/memory.events')},
+          processMemory:process.memoryUsage(),
           devEntries,devDirectoryAudit,writableDevDirectories,
           shm:inspect('/dev/shm'),shmBytes,shmError,
           mqueue:inspect('/dev/mqueue'),mqueueWritable:probeDirectoryWrite('/dev/mqueue')
@@ -167,8 +180,11 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       const result = JSON.parse(
         await readFile(path.join(ws.rootDir, "filesystems.json"), "utf8"),
       )
+      const workspaceAfter = await statfs(ws.rootDir)
+      const workspaceUsedAfter =
+        (workspaceAfter.blocks - workspaceAfter.bfree) * workspaceAfter.bsize
       process.stdout.write(
-        `[real-gvisor-dev-audit] ${JSON.stringify({ dev: result.dev, devEntries: result.devEntries, devDirectoryAudit: result.devDirectoryAudit, writableDevDirectories: result.writableDevDirectories, shm: result.shm, shmBytes: result.shmBytes, shmError: result.shmError, mqueue: result.mqueue, mqueueWritable: result.mqueueWritable })}\n`,
+        `[real-gvisor-dev-audit] ${JSON.stringify({ tmp: result.tmp, tmpBytes: result.tmpBytes, tmpError: result.tmpError, tmpZeroFilesCreated: result.tmpZeroFilesCreated, tmpZeroFileError: result.tmpZeroFileError, cgroupMemory: result.cgroupMemory, processMemory: result.processMemory, workspaceUsedBefore, workspaceUsedAfter, dev: result.dev, devEntries: result.devEntries, devDirectoryAudit: result.devDirectoryAudit, writableDevDirectories: result.writableDevDirectories, shm: result.shm, shmBytes: result.shmBytes, shmError: result.shmError, mqueue: result.mqueue, mqueueWritable: result.mqueueWritable })}\n`,
       )
       expect(result.etcWritable).toBe(false)
       expect(result.homeWritable).toBe(false)
@@ -178,11 +194,18 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       expect(result.home).toBe("/workspace/.home")
       expect(result.npmCache).toBe("/workspace/.home/.npm")
       expect(result.tmp.bytes).toBeLessThanOrEqual(64 * 1024 * 1024)
-      expect(result.tmp.inodes).toBeLessThanOrEqual(16_384)
       expect(result.tmpBytes).toBeLessThan(80 * 1024 * 1024)
       expect(result.tmpError).toBeTruthy()
-      expect(result.tmpInodesCreated).toBeLessThan(20_000)
-      expect(result.tmpInodeError).toBeTruthy()
+      expect(result.tmpZeroFilesCreated).toBeGreaterThan(0)
+      expect(result.tmpZeroFilesCreated).toBeLessThanOrEqual(
+        TMP_ZERO_FILE_LIMIT,
+      )
+      expect(workspaceUsedAfter - workspaceUsedBefore).toBeLessThanOrEqual(
+        HOST_METADATA_DISK_TOLERANCE_BYTES,
+      )
+      await expect(
+        lstat(path.join(ws.bundleDir, "rootfs", "tmp", "zero-files")),
+      ).rejects.toMatchObject({ code: "ENOENT" })
       expect(result.shm).toMatchObject({
         exists: true,
         type: "directory",
@@ -192,9 +215,6 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       })
       expect(result.shm.statfs.bytes).toBeLessThanOrEqual(
         SANDBOX_DEV_SHM_TMPFS_BYTES,
-      )
-      expect(result.shm.statfs.inodes).toBeLessThanOrEqual(
-        SANDBOX_DEV_SHM_TMPFS_INODES,
       )
       expect(result.shmBytes).toBeLessThan(32 * 1024 * 1024)
       expect(result.shmError).toBeTruthy()
@@ -207,6 +227,12 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
           ),
         ).toMatchObject({ type: "character", uid: 0, gid: 0 })
       }
+
+      // A bounded metadata-pressure run must not damage the worker/runsc path.
+      await runner.run(ws, "node", ["-e", "process.exit(0)"], {
+        timeoutMs: 15_000,
+        env: { PATH: process.env.PATH ?? "" },
+      })
     }, 90_000)
 
     it("stops an untrusted writer at the ext4 workspace hard capacity", async () => {

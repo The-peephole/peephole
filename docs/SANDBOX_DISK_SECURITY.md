@@ -20,9 +20,9 @@ still retained as a soft limit, but it is no longer the security boundary.
 | --- | --- | --- |
 | Source, `node_modules`, build output | per-allocation `workspace.img` | fixed-size ext4 hard capacity |
 | `HOME` and npm cache | `/workspace/.home` | same ext4 hard capacity |
-| `/tmp` | gVisor tmpfs | 64 MiB, 16,384 inodes, `nosuid,nodev,noexec` |
+| `/tmp` | gVisor tmpfs | 64 MiB byte hard capacity, `nosuid,nodev,noexec` |
 | `/dev` | gVisor device filesystem | root-owned mode `0755`; sandbox uid cannot create regular files |
-| `/dev/shm` | separate gVisor tmpfs | 16 MiB, 4,096 inodes, `nosuid,nodev,noexec` |
+| `/dev/shm` | separate gVisor tmpfs | 16 MiB byte hard capacity, `nosuid,nodev,noexec` |
 | `/dev/mqueue` | masked path | unavailable as a writable storage-like subtree |
 | Copied base rootfs | per-allocation host directory | OCI root is read-only |
 | `/etc/resolv.conf` | host bind mount | read-only |
@@ -221,7 +221,9 @@ The opt-in real suite (`PEEPHOLE_REAL_GVISOR_TESTS=1`) additionally verifies:
 - read-only `/home/sandbox` and `/var/tmp`;
 - writable `/workspace` across install/build-style containers;
 - hard ext4 ENOSPC behavior;
-- `/tmp` and separately mounted `/dev/shm` size/inode exhaustion;
+- `/tmp` and separately mounted `/dev/shm` byte-capacity exhaustion;
+- bounded zero-byte-file metadata pressure under the sandbox memory and
+  wall-clock limits, without persistent host-disk growth;
 - `/dev` root and descendant write probes, standard device-node types, and
   `/dev/mqueue` unavailability;
 - real `npm ci`, esbuild/Vite native execution, and `npm run build`;
@@ -268,8 +270,20 @@ security control. The enforced model is that uid 65534 cannot create arbitrary
 regular files at `/dev` or in any descendant except the explicit, separately
 bounded `/dev/shm` mount; `/dev/mqueue` is masked. The real suite emits a
 `real-gvisor-dev-audit` record containing modes, ownership, file types,
-capacities, and write-probe results so this property is rechecked for every
-runsc upgrade.
+capacities, `/tmp` byte and zero-file observations, optional cgroup memory
+metrics, and write-probe results so this property is rechecked for every runsc
+upgrade.
+
+The verified runsc/gVisor version enforces the `size=` byte capacity on `/tmp`
+and `/dev/shm`, but ignores tmpfs `nr_inodes=`: both mounts reported 243,867
+files despite the smaller requested values. Peephole therefore no longer emits
+or advertises an inode option as a security boundary. A bounded real test
+creates at most 30,000 zero-byte `/tmp` files and confirms they do not appear in
+the host rootfs or materially grow the persistent workspace. Metadata pressure
+is bounded by the sandbox memory cgroup and per-command/job wall-clock limits;
+the test never performs unbounded file creation. `memory.current`,
+`memory.peak`, and `memory.events` are logged when gVisor exposes them, without
+kernel-version-dependent numeric assertions.
 
 After a deliberately interrupted job, verify that restart blocks until cleanup
 completes and leaves no owned resources:
@@ -329,7 +343,9 @@ start if any step is unavailable; it never falls back to polling-only mode.
   `-F` and the default superuser block reserve controlled by `-m`; Peephole
   formats only its newly allocated loop device and sets `-m 0`.
 - [Linux tmpfs documentation](https://docs.kernel.org/filesystems/tmpfs.html)
-  documents `size`, `nr_inodes`, and memory-backed behavior.
+  documents byte capacity and memory-backed behavior. Peephole relies only on
+  the byte `size` behavior verified through its actual runsc/gVisor version,
+  not the ignored inode option.
 - [gVisor filesystem documentation](https://gvisor.dev/docs/user_guide/filesystem/)
   describes Gofer-backed bind mounts and mount configuration through OCI
   source/type/options.

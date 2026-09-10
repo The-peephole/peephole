@@ -32,8 +32,9 @@ export class CommandExecutionError extends Error {
   }
 }
 
-/** Emitted only when Peephole directly observes its workspace watcher trip
- * or the mounted filesystem report block/inode exhaustion. */
+/** Emitted only when Peephole directly observes its workspace watcher trip.
+ * The fixed filesystem capacity remains the security boundary even when an
+ * ENOSPC command failure cannot be classified this specifically. */
 export class RunnerDiskLimitError extends CommandExecutionError {
   constructor(message: string, stdout: string, stderr: string) {
     super(message, stdout, stderr)
