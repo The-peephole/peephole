@@ -50,7 +50,6 @@ export class FakeSandboxDiskManager implements SandboxDiskManager {
     return {
       rootDir: allocation.mountpoint,
       hardLimitBytes: 1024 * 1024 * 1024,
-      isExhausted: async () => false,
     }
   }
 

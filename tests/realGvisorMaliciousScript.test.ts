@@ -1,11 +1,11 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises"
-import os from "node:os"
+import { readFile, rm } from "node:fs/promises"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { GVisorSandboxProvisioner } from "../services/preview-worker/gvisor/gvisorSandboxProvisioner"
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
 import { RunscCommandRunner } from "../services/preview-worker/gvisor/runscCommandRunner"
+import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 
 // Requires a real Linux host with runsc, ip, and iptables on PATH and root
 // (or equivalent) privilege, plus a prepared base rootfs image -- see
@@ -34,8 +34,8 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
     })
 
     async function allocate(jobId: string) {
-      bundlesRootDir = await mkdtemp(
-        path.join(os.tmpdir(), "peephole-real-gvisor-malicious-"),
+      bundlesRootDir = await createRealGvisorTestDirectory(
+        "peephole-real-gvisor-malicious-",
       )
       const provisioner = new GVisorSandboxProvisioner({
         baseRootfsImage,

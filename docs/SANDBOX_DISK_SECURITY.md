@@ -177,8 +177,11 @@ production preflight
 ```
 
 `runsc list` failure, non-zero exit, or malformed JSON aborts reconciliation and
-therefore startup before any uncertain mounted allocation is removed. Periodic
-maintenance uses the same disk-manager ownership contract and retries failures.
+therefore startup before any uncertain mounted allocation is removed. Both
+`null` (emitted by some real runsc versions for an empty Go slice) and `[]` are
+normalized to an empty container list; every other non-array JSON shape remains
+an error. Periodic maintenance uses the same disk-manager ownership contract and
+retries failures.
 Runsc containers whose bundle is below the configured root but has no matching
 valid marker also block startup without guessed deletion; this covers legacy or
 partially-created state that requires explicit operator review.
@@ -187,10 +190,13 @@ two independent worker processes against the same root is unsupported.
 
 ## Error classification
 
-`RUNNER_DISK_LIMIT` is emitted only when Peephole's live size watcher directly
-trips or the mounted filesystem reports zero available blocks/inodes after a
-failed command. Stderr substring matching is deliberately not used. Other
-command failures retain `INSTALL_FAILED` or `BUILD_FAILED` classification.
+`RUNNER_DISK_LIMIT` is a best-effort specialized classification emitted when
+Peephole's live size watcher directly trips. A command may receive real ext4
+`ENOSPC` while a post-failure `statfs` snapshot still reports non-zero
+`bavail`/`ffree`, so Peephole does not infer the classification from that
+snapshot or from stderr substring matching. Such failures retain
+`INSTALL_FAILED` or `BUILD_FAILED`. The fixed-size ext4 capacity—not the API
+error label—is the security boundary.
 
 ## Verification
 
@@ -208,6 +214,14 @@ The opt-in real suite (`PEEPHOLE_REAL_GVISOR_TESTS=1`) additionally verifies:
 - real `npm ci`, esbuild/Vite native execution, and `npm run build`;
 - existing PID, memory, network, and orphan-recovery behavior.
 
+Disk-intensive real-test directories use unique `mkdtemp` children under
+`PEEPHOLE_REAL_GVISOR_TEST_ROOT`. The parent must be an existing, ordinary,
+absolute test-only directory and must not overlap
+`PEEPHOLE_GVISOR_BUNDLES_DIR` (default `/var/lib/peephole/jobs`). Without the
+variable, tests retain an `os.tmpdir()` fallback for development hosts. The
+hard-cap test logs blocks, free/available blocks, inode counts, fill-file
+logical/allocated bytes, and image logical/allocated bytes for each AWS run.
+
 ## AWS deployment checks
 
 Run these on the intended worker host and retain the output with the deployment
@@ -218,7 +232,14 @@ df -B1 /var/lib/peephole/jobs /var/lib/peephole/artifacts
 du -sb /var/lib/peephole/base-rootfs
 findmnt -T /var/lib/peephole/jobs -o TARGET,SOURCE,FSTYPE,OPTIONS
 sudo losetup --list --output NAME,BACK-FILE
-sudo env PEEPHOLE_REAL_GVISOR_TESTS=1 npm test -- tests/realGvisorSandbox.test.ts tests/realGvisorGoldenPath.test.ts
+sudo mkdir -p /var/lib/peephole/test-runs
+sudo chmod 700 /var/lib/peephole/test-runs
+sudo env \
+  PEEPHOLE_REAL_GVISOR_TESTS=1 \
+  PEEPHOLE_REAL_GVISOR_TEST_ROOT=/var/lib/peephole/test-runs \
+  npm test -- \
+  tests/realGvisorSandbox.test.ts \
+  tests/realGvisorGoldenPath.test.ts
 ```
 
 During the tmpfs test, separately sample the sandbox cgroup's

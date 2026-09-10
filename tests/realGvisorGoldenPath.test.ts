@@ -1,5 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises"
-import os from "node:os"
+import { readFile, rm } from "node:fs/promises"
 import path from "node:path"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
@@ -23,6 +22,7 @@ import { NpmBuildExecutor } from "../services/preview-worker/local/npmBuildExecu
 import { NpmDependencyInstaller } from "../services/preview-worker/local/npmDependencyInstaller"
 import { PreviewJobWorker } from "../services/preview-worker/worker"
 import type { BuildPlan, PreviewRequester } from "../types/preview"
+import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 
 // Same trusted, pinned, first-party fixture as
 // tests/realViteReactGoldenPath.test.ts (see that file for why it's safe
@@ -66,11 +66,11 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
     let bundlesRootDir: string
 
     beforeAll(async () => {
-      storageDir = await mkdtemp(
-        path.join(os.tmpdir(), "peephole-gvisor-artifact-"),
+      storageDir = await createRealGvisorTestDirectory(
+        "peephole-gvisor-artifact-",
       )
-      bundlesRootDir = await mkdtemp(
-        path.join(os.tmpdir(), "peephole-gvisor-bundles-"),
+      bundlesRootDir = await createRealGvisorTestDirectory(
+        "peephole-gvisor-bundles-",
       )
     })
 

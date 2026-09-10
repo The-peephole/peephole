@@ -12,7 +12,6 @@ export interface GVisorPreviewWorkspace extends LocalPreviewWorkspace {
   registerContainer(containerId: string): void
   unregisterContainer(containerId: string): void
   listContainers(): string[]
-  isDiskExhausted(): Promise<boolean>
   /**
    * Lazily creates (on first call) a real, routable network namespace for
    * this job and returns its path, reusing it for every later call so a

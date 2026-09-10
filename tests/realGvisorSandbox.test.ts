@@ -1,13 +1,5 @@
-import {
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-  utimes,
-  writeFile,
-} from "node:fs/promises"
+import { readFile, rm, stat, statfs, utimes, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
-import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
@@ -23,7 +15,7 @@ import {
   LoopbackSandboxDiskManager,
   MIN_SANDBOX_DISK_LIMIT_BYTES,
 } from "../services/preview-worker/gvisor/sandboxDisk"
-import { RunnerDiskLimitError } from "../services/preview-worker/local/commandRunner"
+import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 
 // Requires a real Linux host with runsc, ip, iptables, and ip6tables on PATH and root
 // (or equivalent) privilege, plus a prepared base rootfs image (see
@@ -56,8 +48,8 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
     })
 
     async function allocate(jobId: string) {
-      bundlesRootDir = await mkdtemp(
-        path.join(os.tmpdir(), "peephole-real-gvisor-"),
+      bundlesRootDir = await createRealGvisorTestDirectory(
+        "peephole-real-gvisor-",
       )
       const provisioner = new GVisorSandboxProvisioner({
         baseRootfsImage,
@@ -174,12 +166,13 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
     }, 90_000)
 
     it("stops an untrusted writer at the ext4 workspace hard capacity", async () => {
-      bundlesRootDir = await mkdtemp(
-        path.join(os.tmpdir(), "peephole-real-gvisor-disk-cap-"),
+      bundlesRootDir = await createRealGvisorTestDirectory(
+        "peephole-real-gvisor-disk-cap-",
       )
+      const hardLimitBytes = 2 * MIN_SANDBOX_DISK_LIMIT_BYTES
       const diskManager = new LoopbackSandboxDiskManager({
         bundlesRootDir,
-        hardLimitBytes: 2 * MIN_SANDBOX_DISK_LIMIT_BYTES,
+        hardLimitBytes,
         minimumHostReserveBytes: 0,
       })
       const provisioner = new GVisorSandboxProvisioner({
@@ -189,21 +182,67 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       workspace = await provisioner.allocate("fixture-id-format-is-irrelevant")
       const runner = new RunscCommandRunner({ network: "none" })
       const imagePath = path.join(workspace.bundleDir, "workspace.img")
-      expect((await stat(imagePath)).size).toBe(
-        2 * MIN_SANDBOX_DISK_LIMIT_BYTES,
-      )
+      expect((await stat(imagePath)).size).toBe(hardLimitBytes)
       const fill =
         "const fs=require('fs');try{for(let i=0;i<600;i++)fs.appendFileSync('/workspace/fill',Buffer.alloc(1024*1024))}catch(e){console.error(e.code);process.exit(1)}"
 
-      await expect(
-        runner.run(workspace, "node", ["-e", fill], {
+      let writeFailure: unknown
+      try {
+        await runner.run(workspace, "node", ["-e", fill], {
           timeoutMs: 60_000,
           env: { PATH: process.env.PATH ?? "" },
-        }),
-      ).rejects.toBeInstanceOf(RunnerDiskLimitError)
-      expect((await stat(imagePath)).size).toBe(
-        2 * MIN_SANDBOX_DISK_LIMIT_BYTES,
+        })
+      } catch (error) {
+        writeFailure = error
+      }
+      expect(writeFailure).toBeInstanceOf(Error)
+
+      const fillStats = await stat(path.join(workspace.rootDir, "fill"))
+      const imageStats = await stat(imagePath)
+      const filesystem = await statfs(workspace.rootDir)
+      const totalBytes = filesystem.blocks * filesystem.bsize
+      const usedBytes =
+        (filesystem.blocks - filesystem.bfree) * filesystem.bsize
+      const fillAllocatedBytes = fillStats.blocks * 512
+      const imageAllocatedBytes = imageStats.blocks * 512
+      const observation = {
+        blocks: filesystem.blocks,
+        bfree: filesystem.bfree,
+        bavail: filesystem.bavail,
+        files: filesystem.files,
+        ffree: filesystem.ffree,
+        bsize: filesystem.bsize,
+        totalBytes,
+        usedBytes,
+        fillLogicalBytes: fillStats.size,
+        fillAllocatedBytes,
+        imageLogicalBytes: imageStats.size,
+        imageAllocatedBytes,
+        failureClass:
+          writeFailure instanceof Error
+            ? writeFailure.constructor.name
+            : typeof writeFailure,
+      }
+      process.stdout.write(
+        `[real-gvisor-hard-cap] ${JSON.stringify(observation)}\n`,
       )
+
+      expect(fillStats.size).toBeLessThan(600 * 1024 * 1024)
+      expect(fillStats.size).toBeLessThanOrEqual(totalBytes)
+      expect(totalBytes).toBeLessThanOrEqual(hardLimitBytes)
+      expect(totalBytes).toBeGreaterThanOrEqual(
+        hardLimitBytes - 8 * 1024 * 1024,
+      )
+      expect(usedBytes).toBeLessThanOrEqual(totalBytes)
+      expect(fillAllocatedBytes).toBeLessThanOrEqual(hardLimitBytes)
+      expect(imageStats.size).toBe(hardLimitBytes)
+      expect(imageAllocatedBytes).toBeLessThanOrEqual(hardLimitBytes)
+
+      // The failed untrusted writer must not take down the worker/runsc path.
+      await runner.run(workspace, "node", ["-e", "process.exit(0)"], {
+        timeoutMs: 15_000,
+        env: { PATH: process.env.PATH ?? "" },
+      })
     }, 90_000)
 
     it("removes the verified mount, loop, image, and bundle on normal destroy", async () => {
@@ -219,9 +258,10 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       // No allocate()/afterEach here: this simulates a worker process
       // that crashed while a container was still running, so nothing
       // tracks or cleans up this workspace except the reaper itself.
-      const dir = await mkdtemp(
-        path.join(os.tmpdir(), "peephole-real-gvisor-reaper-"),
+      const dir = await createRealGvisorTestDirectory(
+        "peephole-real-gvisor-reaper-",
       )
+      bundlesRootDir = dir
       const provisioner = new GVisorSandboxProvisioner({
         baseRootfsImage,
         bundlesRootDir: dir,
@@ -258,6 +298,7 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
 
       await abandoned
       await rm(dir, { recursive: true, force: true })
+      bundlesRootDir = undefined
     }, 30_000)
 
     it("enforces the configured PID limit", async () => {
@@ -324,8 +365,8 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       // allocate() helper, which only tracks one workspace at a time for
       // afterEach) so the two timed runs can't interfere with each other.
       const time = async (cpuCount: number, iterations: number) => {
-        const dir = await mkdtemp(
-          path.join(os.tmpdir(), "peephole-real-gvisor-cpu-"),
+        const dir = await createRealGvisorTestDirectory(
+          "peephole-real-gvisor-cpu-",
         )
         const provisioner = new GVisorSandboxProvisioner({
           baseRootfsImage,
@@ -446,11 +487,12 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
     it("gives concurrent jobs independent, non-conflicting networks", async () => {
       const wsA = await allocate("real-gvisor-net-a")
       const runnerA = new RunscCommandRunner({ network: "sandbox" })
+      const bundlesRootB = await createRealGvisorTestDirectory(
+        "peephole-real-gvisor-",
+      )
       const provisionerB = new GVisorSandboxProvisioner({
         baseRootfsImage,
-        bundlesRootDir: await mkdtemp(
-          path.join(os.tmpdir(), "peephole-real-gvisor-"),
-        ),
+        bundlesRootDir: bundlesRootB,
       })
       const wsB = await provisionerB.allocate("real-gvisor-net-b")
       const runnerB = new RunscCommandRunner({ network: "sandbox" })
@@ -487,6 +529,7 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
         expect(bodyB).toMatchObject({ name: "yallist" })
       } finally {
         await wsB.destroy()
+        await rm(bundlesRootB, { recursive: true, force: true })
       }
     }, 30_000)
   },

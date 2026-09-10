@@ -13,8 +13,10 @@ import { FakeSandboxDiskManager } from "./fakeSandboxDiskManager"
 class StatefulRunsc implements ProcessRunner {
   readonly calls: Array<{ command: string; args: string[] }> = []
   failList = false
+  timeOutList = false
   malformedList = false
   failDelete = false
+  listStdout: string | undefined
 
   constructor(
     readonly containers: Array<{ id: string; bundle: string }> = [],
@@ -23,13 +25,20 @@ class StatefulRunsc implements ProcessRunner {
   async run(command: string, args: string[]): Promise<ProcessRunResult> {
     this.calls.push({ command, args })
     if (args.includes("list")) {
-      if (this.failList) {
-        return { exitCode: 1, timedOut: false, stdout: "", stderr: "boom" }
+      if (this.failList || this.timeOutList) {
+        return {
+          exitCode: this.failList ? 1 : 0,
+          timedOut: this.timeOutList,
+          stdout: "",
+          stderr: "boom",
+        }
       }
       return {
         exitCode: 0,
         timedOut: false,
-        stdout: this.malformedList ? "{" : JSON.stringify(this.containers),
+        stdout:
+          this.listStdout ??
+          (this.malformedList ? "{" : JSON.stringify(this.containers)),
         stderr: "",
       }
     }
@@ -84,7 +93,7 @@ describe("GVisorOrphanReaper", () => {
     ).toHaveLength(2)
   })
 
-  it.each(["failed", "malformed"])(
+  it.each(["failed", "timed out", "malformed"])(
     "fails closed on a %s runsc list and preserves the allocation",
     async (mode) => {
       const disks = new FakeSandboxDiskManager(bundlesRootDir)
@@ -93,6 +102,7 @@ describe("GVisorOrphanReaper", () => {
       await utimes(stale.bundleDir, old, old)
       const runsc = new StatefulRunsc()
       runsc.failList = mode === "failed"
+      runsc.timeOutList = mode === "timed out"
       runsc.malformedList = mode === "malformed"
       const reaper = new GVisorOrphanReaper({
         maxAgeMs: 30 * 60_000,
@@ -118,6 +128,39 @@ describe("GVisorOrphanReaper", () => {
       path.basename(fresh.bundleDir),
     ])
     expect(disks.destroyed).toEqual([fresh.bundleDir])
+  })
+
+  it.each(["null", "[]"])(
+    "accepts runsc's empty-container JSON representation %s",
+    async (stdout) => {
+      const disks = new FakeSandboxDiskManager(bundlesRootDir)
+      const runsc = new StatefulRunsc()
+      runsc.listStdout = stdout
+      const reaper = new GVisorOrphanReaper({
+        processRunner: runsc,
+        diskManager: disks,
+      })
+
+      await expect(reaper.reapAll()).resolves.toEqual([])
+    },
+  )
+
+  it.each([
+    ["malformed JSON", "{"],
+    ["an object", "{}"],
+    ["a string", '"not-a-list"'],
+    ["an invalid array entry", '[{"id":1,"bundle":"/tmp/bundle"}]'],
+  ])("fails closed when runsc list returns %s", async (_label, stdout) => {
+    const disks = new FakeSandboxDiskManager(bundlesRootDir)
+    const runsc = new StatefulRunsc()
+    runsc.listStdout = stdout
+    const reaper = new GVisorOrphanReaper({
+      processRunner: runsc,
+      diskManager: disks,
+    })
+
+    await expect(reaper.reapAll()).rejects.toThrow(/runsc list/)
+    expect(disks.destroyed).toEqual([])
   })
 
   it("preserves disk resources when runsc container deletion fails", async () => {

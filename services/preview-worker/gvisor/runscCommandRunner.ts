@@ -178,14 +178,10 @@ export class RunscCommandRunner implements CommandRunner {
       }
 
       if (result.exitCode !== 0) {
-        const exhausted = await sandbox.isDiskExhausted().catch(() => false)
-        if (exhausted) {
-          throw new RunnerDiskLimitError(
-            `${command} ${args.join(" ")} exhausted the hard workspace filesystem capacity.`,
-            result.stdout,
-            result.stderr,
-          )
-        }
+        // A post-failure statfs snapshot is not a reliable ENOSPC signal:
+        // ext4 may reject an allocation while bavail/ffree remain non-zero.
+        // Only the live watcher above produces specialized disk-limit errors;
+        // the fixed-size filesystem remains the independent security bound.
         throw new CommandExecutionError(
           `${command} ${args.join(" ")} exited with code ${String(result.exitCode)} inside the sandbox.`,
           result.stdout,

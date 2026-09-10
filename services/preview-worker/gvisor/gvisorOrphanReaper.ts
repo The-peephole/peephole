@@ -180,6 +180,10 @@ export class GVisorOrphanReaper {
     } catch (error) {
       throw new Error("runsc list returned malformed JSON.", { cause: error })
     }
+    // Some real runsc versions encode an empty Go slice as JSON null. This is
+    // the only non-array representation accepted; all other shapes remain a
+    // fail-closed error before disk reconciliation.
+    if (parsed === null) return []
     if (!Array.isArray(parsed)) {
       throw new Error("runsc list did not return an array.")
     }

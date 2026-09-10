@@ -130,7 +130,12 @@ a Linux host, root-equivalent networking privileges, `runsc`, `ip`, `iptables`,
 `ip6tables`, and a prepared base rootfs:
 
 ```sh
-sudo env PEEPHOLE_REAL_GVISOR_TESTS=1 npm test -- tests/realGvisorSandbox.test.ts
+sudo mkdir -p /var/lib/peephole/test-runs
+sudo chmod 700 /var/lib/peephole/test-runs
+sudo env \
+  PEEPHOLE_REAL_GVISOR_TESTS=1 \
+  PEEPHOLE_REAL_GVISOR_TEST_ROOT=/var/lib/peephole/test-runs \
+  npm test -- tests/realGvisorSandbox.test.ts
 ```
 
 On an idle production worker, inspect active jobs without changing policy:

@@ -219,7 +219,7 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
     await workspace.destroy()
   })
 
-  it("classifies disk exhaustion from statfs, never from stderr text alone", async () => {
+  it("does not infer disk exhaustion from stderr or a post-failure statfs snapshot", async () => {
     const processRunner = new FakeProcessRunner({
       exitCode: 1,
       timedOut: false,
@@ -239,10 +239,6 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
       runner.run(workspace, "npm", ["ci"], { timeoutMs: 5_000 }),
     ).rejects.not.toBeInstanceOf(RunnerDiskLimitError)
 
-    workspace.isDiskExhausted = async () => true
-    await expect(
-      runner.run(workspace, "npm", ["ci"], { timeoutMs: 5_000 }),
-    ).rejects.toBeInstanceOf(RunnerDiskLimitError)
     await workspace.destroy()
   })
 

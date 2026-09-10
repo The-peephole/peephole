@@ -182,7 +182,6 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
         registerContainer: (containerId) => containers.add(containerId),
         unregisterContainer: (containerId) => containers.delete(containerId),
         listContainers: () => Array.from(containers),
-        isDiskExhausted: () => disk.isExhausted(),
         ensureNetworkNamespace: async (dnsServers) => {
           networkNamespace ??= this.networkProvisioner.create(
             allocation.allocationId,

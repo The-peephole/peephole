@@ -67,7 +67,6 @@ export interface SandboxDiskAllocation {
 export interface SandboxDiskHandle {
   readonly rootDir: string
   readonly hardLimitBytes: number
-  isExhausted(): Promise<boolean>
 }
 
 export interface CreateSandboxDiskAllocationOptions {
@@ -364,8 +363,6 @@ export class LoopbackSandboxDiskManager implements SandboxDiskManager {
       return {
         rootDir: owned.mountpoint,
         hardLimitBytes: this.hardLimitBytes,
-        isExhausted: () =>
-          isFilesystemExhausted(owned.mountpoint, this.statFilesystem),
       }
     } catch (error) {
       try {
@@ -1009,14 +1006,6 @@ async function assertFreeSpace(
       `Insufficient host disk space for a sandbox: ${String(availableBytes)} bytes available, ${String(requiredBytes)} required.`,
     )
   }
-}
-
-async function isFilesystemExhausted(
-  mountpoint: string,
-  getFilesystem: (candidate: string) => Promise<FilesystemCapacity>,
-): Promise<boolean> {
-  const filesystem = await getFilesystem(mountpoint)
-  return filesystem.bavail === 0 || filesystem.ffree === 0
 }
 
 async function writeDurableFile(candidate: string, contents: string) {
