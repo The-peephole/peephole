@@ -79,7 +79,7 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       await rm(bundlesRootDir, { recursive: true, force: true })
     })
 
-    it("fetches the real commit, runs real npm ci + npm run build inside a real gVisor sandbox with real network egress, and publishes real dist output", async () => {
+    it("runs npm ci, esbuild/Vite native execution, cross-container build, and publication with a read-only rootfs", async () => {
       const queue = new InMemoryPreviewQueue()
       const control = new PreviewControlPlane(
         { resolve: async () => vitePlan },

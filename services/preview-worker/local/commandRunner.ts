@@ -31,3 +31,12 @@ export class CommandExecutionError extends Error {
     this.name = "CommandExecutionError"
   }
 }
+
+/** Emitted only when Peephole directly observes its workspace watcher trip
+ * or the mounted filesystem report block/inode exhaustion. */
+export class RunnerDiskLimitError extends CommandExecutionError {
+  constructor(message: string, stdout: string, stderr: string) {
+    super(message, stdout, stderr)
+    this.name = "RunnerDiskLimitError"
+  }
+}

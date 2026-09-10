@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -15,6 +15,8 @@ import {
   runscKillArgs,
   runscRunArgs,
 } from "../services/preview-worker/gvisor/runscCli"
+import { FakeSandboxDiskManager } from "./fakeSandboxDiskManager"
+import { RunnerDiskLimitError } from "../services/preview-worker/local/commandRunner"
 
 describe("buildOciRuntimeSpec", () => {
   it("produces a non-root, capability-stripped, quota'd spec", () => {
@@ -27,6 +29,7 @@ describe("buildOciRuntimeSpec", () => {
       hostname: "peephole-preview",
       resourceLimits: { cpuCount: 1, memoryBytes: 1_073_741_824, maxPids: 128 },
       dnsConfigSource: "/run/systemd/resolve/resolv.conf",
+      workspaceSource: "/var/lib/peephole/jobs/owned/workspace",
     })
 
     expect(spec.process.user).toEqual({ uid: 65534, gid: 65534 })
@@ -37,6 +40,19 @@ describe("buildOciRuntimeSpec", () => {
       options: ["bind", "ro"],
     })
     expect(spec.process.noNewPrivileges).toBe(true)
+    expect(spec.root.readonly).toBe(true)
+    expect(spec.mounts).toContainEqual({
+      destination: "/workspace",
+      type: "bind",
+      source: "/var/lib/peephole/jobs/owned/workspace",
+      options: ["rbind", "rw", "nosuid", "nodev"],
+    })
+    expect(
+      spec.mounts.find((mount) => mount.destination === "/tmp")?.options,
+    ).toEqual(expect.arrayContaining(["size=67108864", "nr_inodes=16384"]))
+    expect(
+      spec.mounts.find((mount) => mount.destination === "/dev")?.options,
+    ).toEqual(expect.arrayContaining(["size=16777216", "nr_inodes=4096"]))
     expect(spec.process.capabilities.bounding).toEqual(["CAP_NET_BIND_SERVICE"])
     expect(spec.linux.resources.cpu).toEqual({
       quota: 100_000,
@@ -106,7 +122,9 @@ class FakeProcessRunner implements ProcessRunner {
 
   async run(command: string, args: string[]): Promise<ProcessRunResult> {
     this.calls.push({ command, args })
-    return this.result
+    return args.includes("run")
+      ? this.result
+      : { exitCode: 0, timedOut: false, stdout: "", stderr: "" }
   }
 }
 
@@ -118,12 +136,7 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
     baseRootfsImage = await mkdtemp(
       path.join(os.tmpdir(), "peephole-base-rootfs-"),
     )
-    // A real base rootfs image must provide SANDBOX_HOME (see
-    // sandboxIdentity.ts and scripts/gvisor/build-base-rootfs.sh) --
-    // GVisorSandboxProvisioner.allocate chowns it after copying.
-    await mkdir(path.join(baseRootfsImage, "home", "sandbox"), {
-      recursive: true,
-    })
+    await writeFile(path.join(baseRootfsImage, "base-file"), "trusted-rootfs")
     bundlesRootDir = await mkdtemp(path.join(os.tmpdir(), "peephole-bundles-"))
   })
 
@@ -134,19 +147,32 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
 
   it("allocates a bundle with a /workspace rootDir and writes an OCI config before running", async () => {
     const processRunner = new FakeProcessRunner()
+    const diskManager = new FakeSandboxDiskManager(bundlesRootDir)
     const provisioner = new GVisorSandboxProvisioner({
       baseRootfsImage,
       bundlesRootDir,
       processRunner,
+      diskManager,
     })
     const workspace = await provisioner.allocate("job-1")
 
-    expect(workspace.rootDir.endsWith(path.join("rootfs", "workspace"))).toBe(
-      true,
+    expect(workspace.rootDir.endsWith("workspace")).toBe(true)
+    expect(workspace.archiveStagingRoot).toBe(
+      path.join(workspace.bundleDir, "staging"),
     )
+    expect(workspace.archiveStagingRoot?.startsWith(workspace.rootDir)).toBe(
+      false,
+    )
+    expect(diskManager.createOptions[0]?.expectedOutsideBytes).toBeGreaterThan(
+      150 * 1024 * 1024,
+    )
+    expect(diskManager.reservationUpdates).toEqual([150 * 1024 * 1024])
 
     const runner = new RunscCommandRunner({ processRunner })
-    await runner.run(workspace, "npm", ["ci"], { timeoutMs: 5_000 })
+    await runner.run(workspace, "npm", ["ci"], {
+      timeoutMs: 5_000,
+      env: { HOME: "/var/tmp", TEMP: "/var/tmp" },
+    })
 
     expect(processRunner.calls).toHaveLength(2) // run, then delete
     expect(processRunner.calls[0]?.command).toBe("runsc")
@@ -160,6 +186,10 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
     const config = JSON.parse(await readFile(configPath, "utf8"))
     expect(config.process.args).toEqual(["npm", "ci"])
     expect(config.process.user).toEqual({ uid: 65534, gid: 65534 })
+    expect(config.root.readonly).toBe(true)
+    expect(config.process.env).toContain("HOME=/workspace/.home")
+    expect(config.process.env).toContain("TEMP=/tmp")
+    expect(config.process.env).not.toContain("HOME=/var/tmp")
 
     await workspace.destroy()
   })
@@ -175,6 +205,7 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
       baseRootfsImage,
       bundlesRootDir,
       processRunner,
+      diskManager: new FakeSandboxDiskManager(bundlesRootDir),
     })
     const workspace = await provisioner.allocate("job-2")
     const runner = new RunscCommandRunner({ processRunner })
@@ -188,18 +219,49 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
     await workspace.destroy()
   })
 
+  it("classifies disk exhaustion from statfs, never from stderr text alone", async () => {
+    const processRunner = new FakeProcessRunner({
+      exitCode: 1,
+      timedOut: false,
+      stdout: "",
+      stderr: "ENOSPC",
+    })
+    const provisioner = new GVisorSandboxProvisioner({
+      baseRootfsImage,
+      bundlesRootDir,
+      processRunner,
+      diskManager: new FakeSandboxDiskManager(bundlesRootDir),
+    })
+    const workspace = await provisioner.allocate("job-disk-classification")
+    const runner = new RunscCommandRunner({ processRunner })
+
+    await expect(
+      runner.run(workspace, "npm", ["ci"], { timeoutMs: 5_000 }),
+    ).rejects.not.toBeInstanceOf(RunnerDiskLimitError)
+
+    workspace.isDiskExhausted = async () => true
+    await expect(
+      runner.run(workspace, "npm", ["ci"], { timeoutMs: 5_000 }),
+    ).rejects.toBeInstanceOf(RunnerDiskLimitError)
+    await workspace.destroy()
+  })
+
   it("destroy() sweeps every container it ever started and is idempotent", async () => {
     const processRunner = new FakeProcessRunner()
     const provisioner = new GVisorSandboxProvisioner({
       baseRootfsImage,
       bundlesRootDir,
       processRunner,
+      diskManager: new FakeSandboxDiskManager(bundlesRootDir),
     })
     const workspace = await provisioner.allocate("job-3")
     const runner = new RunscCommandRunner({ processRunner })
 
     await runner.run(workspace, "npm", ["ci"], { timeoutMs: 5_000 })
     await runner.run(workspace, "npm", ["run", "build"], { timeoutMs: 5_000 })
+    expect(workspace.listContainers()).toEqual([])
+    workspace.registerContainer("abandoned-a")
+    workspace.registerContainer("abandoned-b")
 
     processRunner.calls.length = 0
     await workspace.destroy()
@@ -247,6 +309,7 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
       baseRootfsImage,
       bundlesRootDir,
       processRunner,
+      diskManager: new FakeSandboxDiskManager(bundlesRootDir),
     })
     const workspace = await provisioner.allocate("job-quota")
     const runner = new RunscCommandRunner({

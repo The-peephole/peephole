@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest"
 
 import {
   ensureProductionPreflight,
+  ensureProductionDiskLayout,
+  ensureSandboxDiskCapability,
   runProductionPreflightChecks,
 } from "../services/production/preflight"
 import type {
@@ -53,6 +55,12 @@ function healthyOptions() {
       ip: ok("ip utility, iproute2-6.19.0"),
       iptables: ok("iptables v1.8.11 (nf_tables)"),
       ip6tables: ok("ip6tables v1.8.11 (nf_tables)"),
+      fallocate: ok("fallocate from util-linux"),
+      "mkfs.ext4": ok("mke2fs 1.47"),
+      mount: ok("mount from util-linux"),
+      umount: ok("umount from util-linux"),
+      losetup: ok("losetup from util-linux"),
+      findmnt: ok("findmnt from util-linux"),
     }),
     readFile: (path: string) => HEALTHY_FILES[path] ?? null,
     pathExists: async (path: string) => HEALTHY_EXISTS.has(path),
@@ -69,6 +77,12 @@ describe("runProductionPreflightChecks", () => {
       "ip",
       "iptables",
       "ip6tables",
+      "fallocate",
+      "mkfs.ext4",
+      "mount",
+      "umount",
+      "losetup",
+      "findmnt",
       "cgroup v2",
       "net.ipv4.ip_forward",
       "base rootfs image",
@@ -195,5 +209,46 @@ describe("ensureProductionPreflight", () => {
     await expect(ensureProductionPreflight(options)).rejects.toThrow(
       /runsc[\s\S]*ip[\s\S]*net\.ipv4\.ip_forward[\s\S]*DNS config source/,
     )
+  })
+})
+
+describe("ensureSandboxDiskCapability", () => {
+  it("fails closed when the post-reconciliation loop/ext4 probe fails", async () => {
+    const unusedManager = {} as Parameters<
+      typeof ensureSandboxDiskCapability
+    >[0]
+    await expect(
+      ensureSandboxDiskCapability(unusedManager, async () => {
+        throw new Error("mount denied")
+      }),
+    ).rejects.toThrow(/hard-quota capability probe failed.*mount denied/)
+  })
+})
+
+describe("ensureProductionDiskLayout", () => {
+  it("requires artifact publication to share the admission filesystem", async () => {
+    const prepared: string[] = []
+    await expect(
+      ensureProductionDiskLayout({
+        bundlesRootDir: "/jobs",
+        artifactStorageDir: "/artifacts",
+        prepareDirectory: async (candidate) => {
+          prepared.push(candidate)
+        },
+        deviceFor: async (candidate) => (candidate === "/jobs" ? 1 : 2),
+      }),
+    ).rejects.toThrow(/must share a filesystem/)
+    expect(prepared).toEqual(["/jobs", "/artifacts"])
+  })
+
+  it("accepts a shared bundles/artifact filesystem", async () => {
+    await expect(
+      ensureProductionDiskLayout({
+        bundlesRootDir: "/jobs",
+        artifactStorageDir: "/artifacts",
+        prepareDirectory: async () => undefined,
+        deviceFor: async () => 7,
+      }),
+    ).resolves.toBeUndefined()
   })
 })

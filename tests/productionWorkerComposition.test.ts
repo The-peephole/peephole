@@ -21,6 +21,7 @@ import type {
   ProcessRunResult,
 } from "../services/preview-worker/gvisor/processRunner"
 import type { BuildPlan, PreviewRequester } from "../types/preview"
+import { FakeSandboxDiskManager } from "./fakeSandboxDiskManager"
 
 /**
  * Proves services/production/server.ts's wiring choice -- composing
@@ -82,11 +83,6 @@ describe("composeProductionWorker", () => {
     baseRootfsImage = await mkdtemp(
       path.join(os.tmpdir(), "peephole-prod-rootfs-"),
     )
-    // GVisorSandboxProvisioner.allocate() chowns this after copying -- see
-    // sandboxIdentity.ts.
-    await mkdir(path.join(baseRootfsImage, "home", "sandbox"), {
-      recursive: true,
-    })
     bundlesRootDir = await mkdtemp(
       path.join(os.tmpdir(), "peephole-prod-bundles-"),
     )
@@ -156,6 +152,7 @@ describe("composeProductionWorker", () => {
         source: "/etc/resolv.conf",
         nameservers: ["172.31.0.2"],
       }),
+      diskManager: new FakeSandboxDiskManager(bundlesRootDir),
     })
 
     const queuedJob = queue.dequeue()

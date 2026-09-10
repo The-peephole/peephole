@@ -1,4 +1,5 @@
 import type { PreviewJobErrorCode, QueuedPreviewJob } from "../../types/preview"
+import { RunnerDiskLimitError } from "./local/commandRunner"
 import {
   DEFAULT_ARCHIVE_LIMITS,
   DEFAULT_OUTPUT_LIMITS,
@@ -189,7 +190,10 @@ async function runPhase<T>(
   try {
     return await action()
   } catch (error) {
-    throw new RunnerPhaseError(code, error)
+    throw new RunnerPhaseError(
+      error instanceof RunnerDiskLimitError ? "RUNNER_DISK_LIMIT" : code,
+      error,
+    )
   }
 }
 

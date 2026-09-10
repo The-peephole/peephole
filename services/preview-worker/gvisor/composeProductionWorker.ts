@@ -14,6 +14,7 @@ import type { resolveDnsConfig } from "./dnsConfig"
 import type { VethNatNetworkProvisioner } from "./networkNamespace"
 import type { ProcessRunner } from "./processRunner"
 import { RunscCommandRunner } from "./runscCommandRunner"
+import type { SandboxDiskManager } from "./sandboxDisk"
 
 export { CommandExecutionError }
 
@@ -38,6 +39,9 @@ export interface ComposeProductionWorkerOptions {
   networkProvisioner?: VethNatNetworkProvisioner
   /** Test seam for the exact resolver source and firewall exceptions. */
   resolveDnsConfig?: typeof resolveDnsConfig
+  /** Shared with startup/maintenance reconciliation in production so disk
+   * lifecycle ownership cannot diverge between allocators and reapers. */
+  diskManager?: SandboxDiskManager
 }
 
 /**
@@ -72,6 +76,7 @@ export function composeProductionWorker(
     runscRootDir: options.runscRootDir,
     processRunner: options.processRunner,
     networkProvisioner: options.networkProvisioner,
+    diskManager: options.diskManager,
   })
   const installRunner = new RunscCommandRunner({
     network: "sandbox",

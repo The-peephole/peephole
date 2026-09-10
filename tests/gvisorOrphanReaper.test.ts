@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, utimes } from "node:fs/promises"
+import { mkdtemp, rm, utimes } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -8,19 +8,39 @@ import type {
   ProcessRunner,
   ProcessRunResult,
 } from "../services/preview-worker/gvisor/processRunner"
+import { FakeSandboxDiskManager } from "./fakeSandboxDiskManager"
 
-class ScriptedProcessRunner implements ProcessRunner {
+class StatefulRunsc implements ProcessRunner {
   readonly calls: Array<{ command: string; args: string[] }> = []
+  failList = false
+  malformedList = false
+  failDelete = false
 
-  constructor(private readonly listResult: ProcessRunResult) {}
+  constructor(
+    readonly containers: Array<{ id: string; bundle: string }> = [],
+  ) {}
 
   async run(command: string, args: string[]): Promise<ProcessRunResult> {
     this.calls.push({ command, args })
-
     if (args.includes("list")) {
-      return this.listResult
+      if (this.failList) {
+        return { exitCode: 1, timedOut: false, stdout: "", stderr: "boom" }
+      }
+      return {
+        exitCode: 0,
+        timedOut: false,
+        stdout: this.malformedList ? "{" : JSON.stringify(this.containers),
+        stderr: "",
+      }
     }
-
+    if (args.includes("delete")) {
+      if (this.failDelete) {
+        return { exitCode: 1, timedOut: false, stdout: "", stderr: "busy" }
+      }
+      const id = args.at(-1)
+      const index = this.containers.findIndex((entry) => entry.id === id)
+      if (index >= 0) this.containers.splice(index, 1)
+    }
     return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }
   }
 }
@@ -36,83 +56,117 @@ describe("GVisorOrphanReaper", () => {
     await rm(bundlesRootDir, { recursive: true, force: true })
   })
 
-  it("kills and deletes containers whose bundle is under a stale directory, then removes it", async () => {
-    const staleBundle = path.join(bundlesRootDir, "job-1-abcd")
-    const freshBundle = path.join(bundlesRootDir, "job-2-efgh")
-    await mkdir(staleBundle, { recursive: true })
-    await mkdir(freshBundle, { recursive: true })
-
+  it("kills containers, verifies refreshed runsc state, then delegates owned disk cleanup", async () => {
+    const disks = new FakeSandboxDiskManager(bundlesRootDir)
+    const stale = await disks.createAllocation({ expectedOutsideBytes: 0 })
+    const fresh = await disks.createAllocation({ expectedOutsideBytes: 0 })
     const old = new Date(Date.now() - 60 * 60_000)
-    await utimes(staleBundle, old, old)
-
-    const processRunner = new ScriptedProcessRunner({
-      exitCode: 0,
-      timedOut: false,
-      stdout: JSON.stringify([
-        { id: "job-1-abcd-c1", bundle: staleBundle },
-        { id: "job-2-efgh-c1", bundle: freshBundle },
-      ]),
-      stderr: "",
-    })
-
+    await utimes(stale.bundleDir, old, old)
+    const runsc = new StatefulRunsc([
+      { id: "stale-c1", bundle: stale.bundleDir },
+      { id: "fresh-c1", bundle: fresh.bundleDir },
+    ])
     const reaper = new GVisorOrphanReaper({
-      bundlesRootDir,
       maxAgeMs: 30 * 60_000,
-      processRunner,
+      processRunner: runsc,
+      diskManager: disks,
     })
 
-    const reaped = await reaper.reap()
-
-    expect(reaped).toEqual(["job-1-abcd"])
-
-    const killAndDeleteCalls = processRunner.calls.filter(
-      (call) => call.args.includes("kill") || call.args.includes("delete"),
-    )
-    expect(killAndDeleteCalls).toHaveLength(2)
-    expect(killAndDeleteCalls[0]?.args).toContain("job-1-abcd-c1")
+    await expect(reaper.reap()).resolves.toEqual([
+      path.basename(stale.bundleDir),
+    ])
+    expect(disks.destroyed).toEqual([stale.bundleDir])
+    expect(runsc.containers).toEqual([
+      { id: "fresh-c1", bundle: fresh.bundleDir },
+    ])
     expect(
-      killAndDeleteCalls.some((call) => call.args.includes("job-2-efgh-c1")),
-    ).toBe(false)
+      runsc.calls.filter((call) => call.args.includes("list")),
+    ).toHaveLength(2)
   })
 
-  it("still removes a stale bundle directory when runsc list fails or is unparsable", async () => {
-    const staleBundle = path.join(bundlesRootDir, "job-3-orphan")
-    await mkdir(staleBundle, { recursive: true })
+  it.each(["failed", "malformed"])(
+    "fails closed on a %s runsc list and preserves the allocation",
+    async (mode) => {
+      const disks = new FakeSandboxDiskManager(bundlesRootDir)
+      const stale = await disks.createAllocation({ expectedOutsideBytes: 0 })
+      const old = new Date(Date.now() - 60 * 60_000)
+      await utimes(stale.bundleDir, old, old)
+      const runsc = new StatefulRunsc()
+      runsc.failList = mode === "failed"
+      runsc.malformedList = mode === "malformed"
+      const reaper = new GVisorOrphanReaper({
+        maxAgeMs: 30 * 60_000,
+        processRunner: runsc,
+        diskManager: disks,
+      })
+
+      await expect(reaper.reap()).rejects.toThrow(/runsc list/)
+      expect(disks.destroyed).toEqual([])
+      expect(await disks.readOwnedAllocation(stale.bundleDir)).not.toBeNull()
+    },
+  )
+
+  it("startup reapAll is not age-gated", async () => {
+    const disks = new FakeSandboxDiskManager(bundlesRootDir)
+    const fresh = await disks.createAllocation({ expectedOutsideBytes: 0 })
+    const reaper = new GVisorOrphanReaper({
+      processRunner: new StatefulRunsc(),
+      diskManager: disks,
+    })
+
+    await expect(reaper.reapAll()).resolves.toEqual([
+      path.basename(fresh.bundleDir),
+    ])
+    expect(disks.destroyed).toEqual([fresh.bundleDir])
+  })
+
+  it("preserves disk resources when runsc container deletion fails", async () => {
+    const disks = new FakeSandboxDiskManager(bundlesRootDir)
+    const stale = await disks.createAllocation({ expectedOutsideBytes: 0 })
     const old = new Date(Date.now() - 60 * 60_000)
-    await utimes(staleBundle, old, old)
-
-    const processRunner = new ScriptedProcessRunner({
-      exitCode: 1,
-      timedOut: false,
-      stdout: "",
-      stderr: "not a real runsc binary",
-    })
-
+    await utimes(stale.bundleDir, old, old)
+    const runsc = new StatefulRunsc([{ id: "busy", bundle: stale.bundleDir }])
+    runsc.failDelete = true
     const reaper = new GVisorOrphanReaper({
-      bundlesRootDir,
       maxAgeMs: 30 * 60_000,
-      processRunner,
+      processRunner: runsc,
+      diskManager: disks,
     })
 
-    await expect(reaper.reap()).resolves.toEqual(["job-3-orphan"])
+    await expect(reaper.reap()).rejects.toThrow(
+      /could not be reconciled safely/,
+    )
+    expect(disks.destroyed).toEqual([])
   })
 
-  it("returns an empty list when nothing is stale and never calls runsc list", async () => {
-    await mkdir(path.join(bundlesRootDir, "job-fresh"), { recursive: true })
-    const processRunner = new ScriptedProcessRunner({
-      exitCode: 0,
-      timedOut: false,
-      stdout: "[]",
-      stderr: "",
-    })
-
+  it("still verifies runsc state when no owned allocation is stale", async () => {
+    const disks = new FakeSandboxDiskManager(bundlesRootDir)
+    await disks.createAllocation({ expectedOutsideBytes: 0 })
+    const runsc = new StatefulRunsc()
     const reaper = new GVisorOrphanReaper({
-      bundlesRootDir,
       maxAgeMs: 30 * 60_000,
-      processRunner,
+      processRunner: runsc,
+      diskManager: disks,
     })
 
     await expect(reaper.reap()).resolves.toEqual([])
-    expect(processRunner.calls).toHaveLength(0)
+    expect(
+      runsc.calls.filter((call) => call.args.includes("list")),
+    ).toHaveLength(1)
+  })
+
+  it("fails closed on a runsc container under the root with no marker-owned bundle", async () => {
+    const disks = new FakeSandboxDiskManager(bundlesRootDir)
+    const legacyBundle = path.join(bundlesRootDir, "legacy-job-bundle")
+    const runsc = new StatefulRunsc([{ id: "legacy", bundle: legacyBundle }])
+    const reaper = new GVisorOrphanReaper({
+      processRunner: runsc,
+      diskManager: disks,
+    })
+
+    await expect(reaper.reapAll()).rejects.toThrow(
+      /without a valid allocation marker/,
+    )
+    expect(runsc.calls.some((call) => call.args.includes("delete"))).toBe(false)
   })
 })

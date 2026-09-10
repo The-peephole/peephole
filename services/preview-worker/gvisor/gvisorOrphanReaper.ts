@@ -1,9 +1,14 @@
-import { readdir, rm, stat } from "node:fs/promises"
+import { stat } from "node:fs/promises"
 import path from "node:path"
 
 import { NodeProcessRunner } from "./nodeProcessRunner"
-import type { ProcessRunner } from "./processRunner"
+import type { ProcessRunner, ProcessRunResult } from "./processRunner"
 import { runscDeleteArgs, runscKillArgs } from "./runscCli"
+import {
+  LoopbackSandboxDiskManager,
+  type SandboxDiskAllocation,
+  type SandboxDiskManager,
+} from "./sandboxDisk"
 
 export interface GVisorOrphanReaperOptions {
   runscBinaryPath?: string
@@ -11,6 +16,7 @@ export interface GVisorOrphanReaperOptions {
   bundlesRootDir?: string
   maxAgeMs?: number
   processRunner?: ProcessRunner
+  diskManager?: SandboxDiskManager
   now?: () => Date
 }
 
@@ -20,55 +26,72 @@ interface RunscListEntry {
 }
 
 /**
- * Sweeps bundle directories under `bundlesRootDir` that are older than
- * `maxAgeMs` -- left behind by a worker process that crashed before its
- * `GVisorSandboxProvisioner.destroy()` ran (a host crash, not a normal
- * success/failure/cancellation). Container ids are tracked only in the
- * allocating process's memory, so after a restart the only durable source
- * of truth is `runsc list` itself; this cross-references its bundle paths
- * against stale directories rather than assuming any in-memory state.
- *
- * Verified against a real gVisor host (runsc, WSL2 Ubuntu):
- * `runsc list --format json` does follow the assumed `{id, bundle, ...}`
- * shape, and reap() correctly finds, kills, and deletes a container
- * abandoned mid-run (simulating a worker crash) and removes its bundle
- * directory (see tests/realGvisorSandbox.test.ts, "reaps a container
- * abandoned mid-run").
+ * Reconciles only cryptographically named, marker-validated allocations
+ * owned by SandboxDiskManager. `runsc list` is a mandatory source of truth:
+ * failure or malformed JSON aborts before any mount, loop, image, or bundle
+ * cleanup. Disk cleanup then applies its own source/target/fstype/backing-file
+ * proofs, so neither component can independently delete an uncertain bundle.
  */
 export class GVisorOrphanReaper {
   private readonly runscBinaryPath: string
   private readonly runscRootDir: string
-  private readonly bundlesRootDir: string
   private readonly maxAgeMs: number
   private readonly processRunner: ProcessRunner
+  private readonly diskManager: SandboxDiskManager
   private readonly now: () => Date
 
   constructor(options: GVisorOrphanReaperOptions = {}) {
     this.runscBinaryPath = options.runscBinaryPath ?? "runsc"
     this.runscRootDir = options.runscRootDir ?? "/var/run/peephole/runsc"
-    this.bundlesRootDir = options.bundlesRootDir ?? "/var/lib/peephole/jobs"
     this.maxAgeMs = options.maxAgeMs ?? 30 * 60_000
     this.processRunner = options.processRunner ?? new NodeProcessRunner()
+    this.diskManager =
+      options.diskManager ??
+      new LoopbackSandboxDiskManager({
+        bundlesRootDir: options.bundlesRootDir,
+        processRunner: this.processRunner,
+      })
     this.now = options.now ?? (() => new Date())
   }
 
-  /** Returns the bundle directory names it removed. */
+  /** Periodic age-gated reconciliation. */
   async reap(): Promise<string[]> {
-    const staleDirs = await this.findStaleBundleDirs()
+    return this.reconcile(false)
+  }
 
-    if (staleDirs.length === 0) {
-      return []
-    }
+  /** Startup gate: no new worker allocation may start until this completes. */
+  async reapAll(): Promise<string[]> {
+    await this.diskManager.recoverAllocationLock()
+    return this.reconcile(true)
+  }
 
-    const containers = await this.listContainers()
-
-    for (const staleDir of staleDirs) {
-      const bundleDir = path.join(this.bundlesRootDir, staleDir)
-      const orphanedContainers = containers.filter((container) =>
-        isWithin(bundleDir, container.bundle),
+  private async reconcile(allOwned: boolean): Promise<string[]> {
+    const owned = await this.diskManager.listOwnedAllocations()
+    const candidates = await this.findCandidates(owned, allOwned)
+    const before = await this.listContainers()
+    const bundlesRoot = await this.diskManager.getBundlesRootDir()
+    const ownedBundles = new Set(
+      owned.map((allocation) => path.resolve(allocation.bundleDir)),
+    )
+    const uncertain = before.filter(
+      (container) =>
+        isWithin(bundlesRoot, container.bundle) &&
+        !ownedBundles.has(path.resolve(container.bundle)),
+    )
+    if (uncertain.length > 0) {
+      throw new Error(
+        "runsc reports a container under the Peephole bundles root without a valid allocation marker; refusing guessed cleanup.",
       )
+    }
+    if (candidates.length === 0) return []
 
-      for (const container of orphanedContainers) {
+    const cleanupErrors: unknown[] = []
+    const containerCleanupErrors = new Map<string, unknown[]>()
+    for (const allocation of candidates) {
+      const containers = before.filter((container) =>
+        sameBundle(allocation.bundleDir, container.bundle),
+      )
+      for (const container of containers) {
         await this.processRunner
           .run(
             this.runscBinaryPath,
@@ -76,82 +99,123 @@ export class GVisorOrphanReaper {
             { timeoutMs: 10_000 },
           )
           .catch(() => undefined)
-        await this.processRunner
-          .run(
+        try {
+          const deleted = await this.processRunner.run(
             this.runscBinaryPath,
             runscDeleteArgs({ runscRootDir: this.runscRootDir }, container.id),
             { timeoutMs: 10_000 },
           )
-          .catch(() => undefined)
+          assertCommandSucceeded("runsc delete", deleted)
+        } catch (error) {
+          const errors =
+            containerCleanupErrors.get(allocation.allocationId) ?? []
+          errors.push(error)
+          containerCleanupErrors.set(allocation.allocationId, errors)
+        }
       }
-
-      await rm(bundleDir, { recursive: true, force: true })
     }
 
-    return staleDirs
+    // Re-read runsc state after every attempted delete. A failed or malformed
+    // result is a hard stop: mounted allocations stay in place for retry.
+    const after = await this.listContainers()
+    const removed: string[] = []
+    for (const allocation of candidates) {
+      if (
+        after.some((container) =>
+          sameBundle(allocation.bundleDir, container.bundle),
+        )
+      ) {
+        cleanupErrors.push(
+          ...(containerCleanupErrors.get(allocation.allocationId) ?? []),
+        )
+        cleanupErrors.push(
+          new Error(
+            `Container state still references ${allocation.bundleDir}; disk cleanup was skipped.`,
+          ),
+        )
+        continue
+      }
+      try {
+        await this.diskManager.destroyAllocation(allocation)
+        removed.push(path.basename(allocation.bundleDir))
+      } catch (error) {
+        cleanupErrors.push(error)
+      }
+    }
+
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        cleanupErrors,
+        "One or more stale gVisor allocations could not be reconciled safely.",
+      )
+    }
+    return removed
   }
 
-  private async findStaleBundleDirs(): Promise<string[]> {
-    let entries: string[]
-
-    try {
-      entries = await readdir(this.bundlesRootDir)
-    } catch {
-      return []
-    }
-
+  private async findCandidates(
+    allocations: SandboxDiskAllocation[],
+    allOwned: boolean,
+  ): Promise<SandboxDiskAllocation[]> {
+    if (allOwned) return allocations
     const nowMs = this.now().getTime()
-    const stale: string[] = []
-
-    for (const entry of entries) {
-      const stats = await stat(path.join(this.bundlesRootDir, entry)).catch(
-        () => null,
-      )
-
-      if (stats?.isDirectory() && nowMs - stats.mtimeMs > this.maxAgeMs) {
-        stale.push(entry)
-      }
+    const stale: SandboxDiskAllocation[] = []
+    for (const allocation of allocations) {
+      const stats = await stat(allocation.bundleDir)
+      if (nowMs - stats.mtimeMs > this.maxAgeMs) stale.push(allocation)
     }
-
     return stale
   }
 
   private async listContainers(): Promise<RunscListEntry[]> {
-    const result = await this.processRunner
-      .run(
-        this.runscBinaryPath,
-        ["--root", this.runscRootDir, "list", "--format", "json"],
-        { timeoutMs: 10_000 },
-      )
-      .catch(() => null)
+    const result = await this.processRunner.run(
+      this.runscBinaryPath,
+      ["--root", this.runscRootDir, "list", "--format", "json"],
+      { timeoutMs: 10_000 },
+    )
+    assertCommandSucceeded("runsc list", result)
 
-    if (!result || result.exitCode !== 0) {
-      return []
-    }
-
+    let parsed: unknown
     try {
-      const parsed: unknown = JSON.parse(result.stdout)
-      if (!Array.isArray(parsed)) {
-        return []
-      }
-
-      return parsed.filter(
-        (entry): entry is RunscListEntry =>
-          typeof entry === "object" &&
-          entry !== null &&
-          typeof (entry as RunscListEntry).id === "string" &&
-          typeof (entry as RunscListEntry).bundle === "string",
-      )
-    } catch {
-      return []
+      parsed = JSON.parse(result.stdout)
+    } catch (error) {
+      throw new Error("runsc list returned malformed JSON.", { cause: error })
     }
+    if (!Array.isArray(parsed)) {
+      throw new Error("runsc list did not return an array.")
+    }
+    return parsed.map((entry) => {
+      if (
+        typeof entry !== "object" ||
+        entry === null ||
+        typeof (entry as RunscListEntry).id !== "string" ||
+        typeof (entry as RunscListEntry).bundle !== "string"
+      ) {
+        throw new Error("runsc list returned an invalid container record.")
+      }
+      return entry as RunscListEntry
+    })
   }
 }
 
-function isWithin(dir: string, candidate: string): boolean {
-  const relative = path.relative(dir, candidate)
+function sameBundle(expected: string, candidate: string): boolean {
+  return path.resolve(candidate) === path.resolve(expected)
+}
+
+function isWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate))
   return (
     relative === "" ||
     (!relative.startsWith("..") && !path.isAbsolute(relative))
   )
+}
+
+function assertCommandSucceeded(
+  command: string,
+  result: ProcessRunResult,
+): void {
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error(
+      `${command} failed (exit ${String(result.exitCode)}, timedOut=${String(result.timedOut)}): ${result.stderr || result.stdout}`,
+    )
+  }
 }

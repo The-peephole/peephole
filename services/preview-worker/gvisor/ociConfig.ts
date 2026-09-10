@@ -25,6 +25,8 @@ export interface OciConfigOptions {
    * unusable as-is from inside a separate network namespace.
    */
   dnsConfigSource: string
+  /** Exact host mountpoint of the allocation's loop-backed ext4 image. */
+  workspaceSource: string
 }
 
 export interface OciRuntimeSpec {
@@ -65,6 +67,10 @@ export interface OciRuntimeSpec {
 }
 
 const CPU_PERIOD_MICROSECONDS = 100_000
+export const SANDBOX_TMPFS_BYTES = 64 * 1024 * 1024
+export const SANDBOX_TMPFS_INODES = 16_384
+export const SANDBOX_DEV_TMPFS_BYTES = 16 * 1024 * 1024
+export const SANDBOX_DEV_TMPFS_INODES = 4_096
 
 /**
  * A non-root, capability-stripped, resource-quota'd OCI bundle spec for
@@ -95,11 +101,22 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
       },
       noNewPrivileges: true,
     },
-    root: { path: "rootfs", readonly: false },
+    root: { path: "rootfs", readonly: true },
     hostname: options.hostname,
     mounts: [
       { destination: "/proc", type: "proc", source: "proc" },
-      { destination: "/dev", type: "tmpfs", source: "tmpfs" },
+      {
+        destination: "/dev",
+        type: "tmpfs",
+        source: "tmpfs",
+        options: [
+          "nosuid",
+          "noexec",
+          `size=${String(SANDBOX_DEV_TMPFS_BYTES)}`,
+          `nr_inodes=${String(SANDBOX_DEV_TMPFS_INODES)}`,
+          "mode=755",
+        ],
+      },
       {
         destination: "/sys",
         type: "sysfs",
@@ -110,7 +127,20 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
         destination: "/tmp",
         type: "tmpfs",
         source: "tmpfs",
-        options: ["nosuid", "nodev", "noexec"],
+        options: [
+          "nosuid",
+          "nodev",
+          "noexec",
+          `size=${String(SANDBOX_TMPFS_BYTES)}`,
+          `nr_inodes=${String(SANDBOX_TMPFS_INODES)}`,
+          "mode=1777",
+        ],
+      },
+      {
+        destination: "/workspace",
+        type: "bind",
+        source: options.workspaceSource,
+        options: ["rbind", "rw", "nosuid", "nodev"],
       },
       // Harmless with network "none" (nothing can reach a resolver either
       // way); with network "sandbox", without this the container's stub

@@ -8,6 +8,8 @@ import type { PreviewWorkspace } from "../ports"
  */
 export interface LocalPreviewWorkspace extends PreviewWorkspace {
   readonly rootDir: string
+  /** Optional host-only directory for bounded compressed archive staging. */
+  readonly archiveStagingRoot?: string
   /** Milliseconds left in this job's total wall-clock budget, may be negative. */
   remainingMs(): number
 }

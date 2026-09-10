@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs"
-import { stat } from "node:fs/promises"
+import { mkdir, stat } from "node:fs/promises"
 import path from "node:path/posix"
 
 import {
@@ -8,6 +8,7 @@ import {
 } from "../preview-worker/gvisor/dnsConfig"
 import { NodeProcessRunner } from "../preview-worker/gvisor/nodeProcessRunner"
 import type { ProcessRunner } from "../preview-worker/gvisor/processRunner"
+import { type SandboxDiskManager } from "../preview-worker/gvisor/sandboxDisk"
 
 const CGROUP_V2_MARKER = "/sys/fs/cgroup/cgroup.controllers"
 const IP_FORWARD_FILE = "/proc/sys/net/ipv4/ip_forward"
@@ -19,12 +20,25 @@ export interface PreflightCheckResult {
   detail: string
 }
 
+export interface ProductionDiskLayoutOptions {
+  bundlesRootDir: string
+  artifactStorageDir: string
+  prepareDirectory?: (candidate: string) => Promise<void>
+  deviceFor?: (candidate: string) => Promise<number | bigint>
+}
+
 export interface ProductionPreflightOptions {
   baseRootfsImage: string
   runscBinaryPath?: string
   ipBinaryPath?: string
   iptablesBinaryPath?: string
   ip6tablesBinaryPath?: string
+  fallocateBinaryPath?: string
+  mkfsExt4BinaryPath?: string
+  mountBinaryPath?: string
+  umountBinaryPath?: string
+  losetupBinaryPath?: string
+  findmntBinaryPath?: string
   /** Overridable for tests; defaults to real process spawning. */
   processRunner?: ProcessRunner
   /** Overridable for tests; defaults to reading real host files. */
@@ -40,7 +54,8 @@ export interface ProductionPreflightOptions {
  * `VethNatNetworkProvisioner` silently assume rather than check themselves --
  * each one was found the hard way, on a real host, during earlier phases of
  * this project (see docs/IMPLEMENTATION_CHECKLIST.md): `runsc`/`ip`/
- * `iptables`/`ip6tables` missing from PATH, a non-unified (v1/hybrid) cgroup hierarchy
+ * `iptables`/`ip6tables` and loop/ext4 utilities missing from PATH, a
+ * non-unified (v1/hybrid) cgroup hierarchy
  * gVisor's resource limits can't attach to, `net.ipv4.ip_forward=0` (which
  * silently drops every forwarded packet before `iptables` FORWARD/NAT rules
  * ever see it -- discovered when a real AWS EC2/WSL2 host reset it on
@@ -63,12 +78,23 @@ export async function runProductionPreflightChecks(
   const ipBinaryPath = options.ipBinaryPath ?? "ip"
   const iptablesBinaryPath = options.iptablesBinaryPath ?? "iptables"
   const ip6tablesBinaryPath = options.ip6tablesBinaryPath ?? "ip6tables"
-
+  const fallocateBinaryPath = options.fallocateBinaryPath ?? "fallocate"
+  const mkfsExt4BinaryPath = options.mkfsExt4BinaryPath ?? "mkfs.ext4"
+  const mountBinaryPath = options.mountBinaryPath ?? "mount"
+  const umountBinaryPath = options.umountBinaryPath ?? "umount"
+  const losetupBinaryPath = options.losetupBinaryPath ?? "losetup"
+  const findmntBinaryPath = options.findmntBinaryPath ?? "findmnt"
   return Promise.all([
     checkBinary(processRunner, "runsc", runscBinaryPath, ["--version"]),
     checkBinary(processRunner, "ip", ipBinaryPath, ["-V"]),
     checkBinary(processRunner, "iptables", iptablesBinaryPath, ["--version"]),
     checkBinary(processRunner, "ip6tables", ip6tablesBinaryPath, ["--version"]),
+    checkBinary(processRunner, "fallocate", fallocateBinaryPath, ["--version"]),
+    checkBinary(processRunner, "mkfs.ext4", mkfsExt4BinaryPath, ["-V"]),
+    checkBinary(processRunner, "mount", mountBinaryPath, ["--version"]),
+    checkBinary(processRunner, "umount", umountBinaryPath, ["--version"]),
+    checkBinary(processRunner, "losetup", losetupBinaryPath, ["--version"]),
+    checkBinary(processRunner, "findmnt", findmntBinaryPath, ["--version"]),
     checkCgroupV2(pathExists),
     checkIpForward(readFile),
     checkBaseRootfsImage(pathExists, options.baseRootfsImage),
@@ -190,6 +216,68 @@ function checkDnsConfigSource(
     name: "DNS config source",
     ok: false,
     detail: `resolveDnsConfigSource() picked ${source}, but it has no usable non-loopback IPv4 nameserver -- network: sandbox DNS lookups will fail. See services/preview-worker/gvisor/dnsConfig.ts.`,
+  }
+}
+
+/** Run only after stale disk reconciliation: otherwise orphan images that are
+ * supposed to be reclaimed can prevent the probe allocation itself. */
+export async function ensureSandboxDiskCapability(
+  manager: SandboxDiskManager,
+  probe: () => Promise<void> = () => probeDiskManager(manager),
+): Promise<void> {
+  try {
+    await probe()
+  } catch (error) {
+    throw new Error(
+      `Sandbox disk hard-quota capability probe failed: ${errorMessage(error)}`,
+      { cause: error },
+    )
+  }
+}
+
+/** The running-job artifact reservation is meaningful only when publication
+ * consumes the same filesystem whose bavail is checked by disk admission. */
+export async function ensureProductionDiskLayout(
+  options: ProductionDiskLayoutOptions,
+): Promise<void> {
+  const prepare =
+    options.prepareDirectory ??
+    (async (candidate: string) => {
+      await mkdir(candidate, { recursive: true, mode: 0o700 })
+    })
+  const deviceFor =
+    options.deviceFor ??
+    (async (candidate: string) => (await stat(candidate)).dev)
+  await prepare(options.bundlesRootDir)
+  await prepare(options.artifactStorageDir)
+  const [bundlesDevice, artifactsDevice] = await Promise.all([
+    deviceFor(options.bundlesRootDir),
+    deviceFor(options.artifactStorageDir),
+  ])
+  if (bundlesDevice !== artifactsDevice) {
+    throw new Error(
+      "PEEPHOLE_GVISOR_BUNDLES_DIR and PEEPHOLE_ARTIFACT_STORAGE_DIR must share a filesystem so artifact publication is covered by sandbox disk admission.",
+    )
+  }
+}
+
+async function probeDiskManager(manager: SandboxDiskManager): Promise<void> {
+  const allocation = await manager.createAllocation({ expectedOutsideBytes: 0 })
+  try {
+    await manager.updateReservedOutsideBytes(allocation, 0)
+    await manager.mountWorkspace(allocation, { remainingOutsideBytes: 0 })
+    await manager.destroyAllocation(allocation)
+  } catch (error) {
+    try {
+      await manager.destroyAllocation(allocation)
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Disk capability probe failed and cleanup was incomplete.",
+        { cause: cleanupError },
+      )
+    }
+    throw error
   }
 }
 

@@ -32,7 +32,11 @@ export class ExtractionState {
 
     signal?.throwIfAborted()
     const data = byteStore.take(commitSha)
-    await this.extract(data, { destinationDir: workspace.rootDir, signal })
+    await this.extract(data, {
+      destinationDir: workspace.rootDir,
+      stagingRoot: workspace.archiveStagingRoot,
+      signal,
+    })
     signal?.throwIfAborted()
     this.extracted.add(workspace.id)
   }

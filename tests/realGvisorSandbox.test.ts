@@ -19,6 +19,11 @@ import { GVisorOrphanReaper } from "../services/preview-worker/gvisor/gvisorOrph
 import { GVisorSandboxProvisioner } from "../services/preview-worker/gvisor/gvisorSandboxProvisioner"
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
 import { RunscCommandRunner } from "../services/preview-worker/gvisor/runscCommandRunner"
+import {
+  LoopbackSandboxDiskManager,
+  MIN_SANDBOX_DISK_LIMIT_BYTES,
+} from "../services/preview-worker/gvisor/sandboxDisk"
+import { RunnerDiskLimitError } from "../services/preview-worker/local/commandRunner"
 
 // Requires a real Linux host with runsc, ip, iptables, and ip6tables on PATH and root
 // (or equivalent) privilege, plus a prepared base rootfs image (see
@@ -28,8 +33,8 @@ import { RunscCommandRunner } from "../services/preview-worker/gvisor/runscComma
 //
 // This exercises GVisorSandboxProvisioner/RunscCommandRunner directly
 // rather than through the full PreviewJobWorker pipeline: real non-root
-// execution, real writes landing on host disk across two containers
-// sharing one on-disk rootfs (the exact pattern NpmDependencyInstaller +
+// execution, real writes landing on the quota-backed ext4 filesystem across
+// two containers sharing one workspace (the exact pattern NpmDependencyInstaller +
 // NpmBuildExecutor rely on), real PID-limit enforcement, and -- since
 // VethNatNetworkProvisioner replicates runsc do's veth/NAT setup -- real
 // outbound network access and real metadata/link-local blocking.
@@ -73,12 +78,16 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
 
       const uidFile = path.join(ws.rootDir, "uid.txt")
       expect((await readFile(uidFile, "utf8")).trim()).toBe("65534")
+      const workspaceStats = await stat(ws.rootDir)
+      expect(workspaceStats.uid).toBe(65534)
+      expect(workspaceStats.gid).toBe(65534)
+      expect(workspaceStats.mode & 0o777).toBe(0o700)
       const stats = await stat(uidFile)
       expect(stats.uid).toBe(65534)
       expect(stats.gid).toBe(65534)
     }, 30_000)
 
-    it("persists writes to host disk, visible to a second container sharing the same rootfs", async () => {
+    it("persists workspace writes across separate install/build-style containers", async () => {
       const ws = await allocate("real-gvisor-persist")
       const runner = new RunscCommandRunner({ network: "none" })
 
@@ -112,6 +121,98 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
         "utf8",
       )
       expect(finalContent).toBe("from-host\n")
+    }, 30_000)
+
+    it("enforces read-only rootfs, writable workspace, and bounded /tmp and /dev tmpfs", async () => {
+      const ws = await allocate("real-gvisor-filesystems")
+      const runner = new RunscCommandRunner({ network: "none" })
+      const script = String.raw`
+        const fs = require('fs');
+        const canWrite = (file) => { try { fs.writeFileSync(file, 'x'); return true } catch { return false } };
+        const capacity = (dir) => { const s=fs.statfsSync(dir); return { bytes:s.blocks*s.bsize, inodes:s.files } };
+        let tmpBytes=0, tmpError='';
+        try { for(let i=0;i<80;i++){ fs.appendFileSync('/tmp/capacity.bin', Buffer.alloc(1024*1024)); tmpBytes+=1024*1024 } }
+        catch(e){ tmpError=e.code || String(e) }
+        try { fs.unlinkSync('/tmp/capacity.bin') } catch {}
+        let tmpInodesCreated=0, tmpInodeError='';
+        try { fs.mkdirSync('/tmp/inodes'); for(;tmpInodesCreated<20000;tmpInodesCreated++) fs.writeFileSync('/tmp/inodes/'+tmpInodesCreated,'') }
+        catch(e){ tmpInodeError=e.code || String(e) }
+        fs.writeFileSync('/workspace/filesystems.json', JSON.stringify({
+          etcWritable:canWrite('/etc/peephole-test'),
+          homeWritable:canWrite('/home/sandbox/escape'),
+          varTmpWritable:canWrite('/var/tmp/escape'),
+          workspaceWritable:canWrite('/workspace/allowed'),
+          devWritable:canWrite('/dev/peephole-test'),
+          home:process.env.HOME, npmCache:process.env.npm_config_cache,
+          tmp:capacity('/tmp'), dev:capacity('/dev'), tmpBytes, tmpError,
+          tmpInodesCreated, tmpInodeError
+        }));
+      `
+
+      await runner.run(ws, "node", ["-e", script], {
+        timeoutMs: 60_000,
+        env: { PATH: process.env.PATH ?? "" },
+      })
+      const result = JSON.parse(
+        await readFile(path.join(ws.rootDir, "filesystems.json"), "utf8"),
+      )
+      expect(result.etcWritable).toBe(false)
+      expect(result.homeWritable).toBe(false)
+      expect(result.varTmpWritable).toBe(false)
+      expect(result.workspaceWritable).toBe(true)
+      expect(result.devWritable).toBe(false)
+      expect(result.home).toBe("/workspace/.home")
+      expect(result.npmCache).toBe("/workspace/.home/.npm")
+      expect(result.tmp.bytes).toBeLessThanOrEqual(64 * 1024 * 1024)
+      expect(result.dev.bytes).toBeLessThanOrEqual(16 * 1024 * 1024)
+      expect(result.tmp.inodes).toBeLessThanOrEqual(16_384)
+      expect(result.dev.inodes).toBeLessThanOrEqual(4_096)
+      expect(result.tmpBytes).toBeLessThan(80 * 1024 * 1024)
+      expect(result.tmpError).toBeTruthy()
+      expect(result.tmpInodesCreated).toBeLessThan(20_000)
+      expect(result.tmpInodeError).toBeTruthy()
+    }, 90_000)
+
+    it("stops an untrusted writer at the ext4 workspace hard capacity", async () => {
+      bundlesRootDir = await mkdtemp(
+        path.join(os.tmpdir(), "peephole-real-gvisor-disk-cap-"),
+      )
+      const diskManager = new LoopbackSandboxDiskManager({
+        bundlesRootDir,
+        hardLimitBytes: 2 * MIN_SANDBOX_DISK_LIMIT_BYTES,
+        minimumHostReserveBytes: 0,
+      })
+      const provisioner = new GVisorSandboxProvisioner({
+        baseRootfsImage,
+        diskManager,
+      })
+      workspace = await provisioner.allocate("fixture-id-format-is-irrelevant")
+      const runner = new RunscCommandRunner({ network: "none" })
+      const imagePath = path.join(workspace.bundleDir, "workspace.img")
+      expect((await stat(imagePath)).size).toBe(
+        2 * MIN_SANDBOX_DISK_LIMIT_BYTES,
+      )
+      const fill =
+        "const fs=require('fs');try{for(let i=0;i<600;i++)fs.appendFileSync('/workspace/fill',Buffer.alloc(1024*1024))}catch(e){console.error(e.code);process.exit(1)}"
+
+      await expect(
+        runner.run(workspace, "node", ["-e", fill], {
+          timeoutMs: 60_000,
+          env: { PATH: process.env.PATH ?? "" },
+        }),
+      ).rejects.toBeInstanceOf(RunnerDiskLimitError)
+      expect((await stat(imagePath)).size).toBe(
+        2 * MIN_SANDBOX_DISK_LIMIT_BYTES,
+      )
+    }, 90_000)
+
+    it("removes the verified mount, loop, image, and bundle on normal destroy", async () => {
+      const ws = await allocate("real-gvisor-cleanup")
+      const bundleDir = ws.bundleDir
+      await ws.destroy()
+      workspace = undefined
+
+      await expect(stat(bundleDir)).rejects.toThrow()
     }, 30_000)
 
     it("reaps a container abandoned mid-run by a crashed worker", async () => {

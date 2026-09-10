@@ -19,6 +19,7 @@ import {
 } from "../services/preview-api/inMemoryAdapters"
 import type { BuildPlan, PreviewRequester } from "../types/preview"
 import type { ResolvedOutput } from "../types/runner"
+import { RunnerDiskLimitError } from "../services/preview-worker/local/commandRunner"
 
 const repository = {
   repositoryId: 1,
@@ -250,6 +251,43 @@ describe("PreviewJobWorker", () => {
     expect(job).toMatchObject({ status: "failed", errorCode: "BUILD_FAILED" })
     expect(publisher.calls).toHaveLength(0)
     expect(sandbox.activeCount).toBe(0)
+  })
+
+  it("maps only a directly observed disk exhaustion to RUNNER_DISK_LIMIT", async () => {
+    const harness = createHarness()
+    const created = await harness.control.create(
+      { repository, contractVersion: "static-v1" },
+      "request-0000000001",
+      requester,
+    )
+    const queued = harness.queue.dequeue()
+    if (!queued) throw new Error("expected a queued job")
+    const fetcher = new FakeSourceArchiveFetcher()
+    fetcher.setArchive(repository.commitSha, {
+      compressedBytes: 10,
+      entries: [{ path: "package.json", bytes: 10, isSymlink: false }],
+    })
+    const worker = new PreviewJobWorker(
+      harness.control,
+      fetcher,
+      new FakeSandboxProvisioner(),
+      new FakeDependencyInstaller(
+        new RunnerDiskLimitError("hard cap", "", "ENOSPC"),
+      ),
+      new FakeBuildExecutor(),
+      new FakeOutputResolver(okOutput),
+      new FakeArtifactPublisher(),
+    )
+
+    await worker.run(queued)
+
+    await expect(
+      harness.control.get(created.job.id, requester),
+    ).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "RUNNER_DISK_LIMIT",
+      errorMessage: "The preview job exceeded its sandbox disk limit.",
+    })
   })
 
   it("maps unsafe or oversized output and publisher failures to PUBLISH_FAILED", async () => {

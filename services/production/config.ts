@@ -1,4 +1,10 @@
 import { validateTrustedAppOrigin } from "./trustedOrigin"
+import {
+  DEFAULT_HOST_DISK_RESERVE_BYTES,
+  DEFAULT_SANDBOX_DISK_LIMIT_BYTES,
+  MAX_SANDBOX_DISK_LIMIT_BYTES,
+  MIN_SANDBOX_DISK_LIMIT_BYTES,
+} from "../preview-worker/gvisor/sandboxDisk"
 
 export interface ProductionConfig {
   /** How many jobs this host runs at once -- each PreviewWorkerLoop
@@ -14,6 +20,10 @@ export interface ProductionConfig {
   artifactStorageDir: string
   orphanReaperMaxAgeMs: number
   maintenanceIntervalMs: number
+  /** Proposed defaults are 1 GiB and 2 GiB. Operators must validate them
+   * against the production EC2 volume before treating them as final. */
+  sandboxDiskBytes: number
+  hostDiskReserveBytes: number
   /** ProductionArtifactHost's fixed listener port. Always bound to
    * 127.0.0.1 -- there is deliberately no host/bind-address setting here
    * (see services/production/artifactHost.ts), so this is the only thing
@@ -40,6 +50,8 @@ const DEFAULTS = {
   artifactStorageDir: "/var/lib/peephole/artifacts",
   orphanReaperMaxAgeMs: 30 * 60_000,
   maintenanceIntervalMs: 60_000,
+  sandboxDiskBytes: DEFAULT_SANDBOX_DISK_LIMIT_BYTES,
+  hostDiskReserveBytes: DEFAULT_HOST_DISK_RESERVE_BYTES,
   artifactPort: 8_788,
   artifactTlsAskPort: 8_790,
   artifactBaseDomain: "peepholeusercontent.dev",
@@ -97,6 +109,20 @@ export function readProductionConfig(
       DEFAULTS.maintenanceIntervalMs,
       5_000,
       10 * 60_000,
+    ),
+    sandboxDiskBytes: readInteger(
+      "PEEPHOLE_SANDBOX_DISK_BYTES",
+      environment.PEEPHOLE_SANDBOX_DISK_BYTES,
+      DEFAULTS.sandboxDiskBytes,
+      MIN_SANDBOX_DISK_LIMIT_BYTES,
+      MAX_SANDBOX_DISK_LIMIT_BYTES,
+    ),
+    hostDiskReserveBytes: readInteger(
+      "PEEPHOLE_HOST_DISK_RESERVE_BYTES",
+      environment.PEEPHOLE_HOST_DISK_RESERVE_BYTES,
+      DEFAULTS.hostDiskReserveBytes,
+      0,
+      Number.MAX_SAFE_INTEGER,
     ),
     artifactPort: readInteger(
       "PEEPHOLE_ARTIFACT_PORT",

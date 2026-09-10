@@ -61,12 +61,9 @@ echo "Verifying node/npm inside the rootfs"
 chroot "$OUT_DIR" /usr/local/bin/node --version
 chroot "$OUT_DIR" /usr/local/bin/npm --version
 
-# The sandbox process runs as uid/gid 65534 (nobody/nogroup), never root
-# (see SANDBOX_UID/SANDBOX_GID in runscCommandRunner.ts). npm needs a
-# writable HOME and cache directory owned by that uid.
-mkdir -p "$OUT_DIR/home/sandbox"
-chown 65534:65534 "$OUT_DIR/home/sandbox"
-chmod 700 "$OUT_DIR/home/sandbox"
+# The sandbox process runs as uid/gid 65534 (nobody/nogroup), never root.
+# Its HOME and npm cache are created on the quota-backed /workspace mount;
+# nothing in this copied base rootfs is intentionally writable at runtime.
 
 # debootstrap's base-files postinst reads the ambient hostname of the
 # machine running this script (it doesn't get its own UTS namespace) and

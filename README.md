@@ -160,6 +160,15 @@ remote provider's trusted CA. Remote database connections require verified TLS.
 The initial schema is in
 `services/preview-api/postgres/migrations/001_initial.sql`.
 
+The production gVisor worker uses a loop-backed ext4 hard cap for each
+workspace. `PEEPHOLE_SANDBOX_DISK_BYTES` and
+`PEEPHOLE_HOST_DISK_RESERVE_BYTES` configure its proposed 1 GiB/2 GiB
+defaults; those values must be validated on the target EC2 volume. See
+[Sandbox disk security](docs/SANDBOX_DISK_SECURITY.md) for admission,
+cleanup/recovery, concurrency sizing, and the mandatory Linux test gate.
+The configured bundles and artifact directories must be on the same filesystem
+so publication headroom is covered by that admission check.
+
 After pointing `PEEPHOLE_POSTGRES_TEST_URL` at a disposable test database, run
 `npm test -- --run tests/postgresIntegration.test.ts` to apply the idempotent
 schema and verify concurrent leasing plus expired-lease recovery. The test
@@ -261,8 +270,9 @@ golden paths, and Milestone 6 is now in progress:
 - exact-commit GitHub revalidation and server-owned build-plan resolution,
 - real local-development adapters for static HTML and root Vite + React/npm
   golden paths,
-- gVisor adapter code with limits and cleanup wiring, pending verification on
-  a real Linux/gVisor host,
+- gVisor adapter code with CPU, memory, PID, network, and loop-backed ext4
+  disk limits; the new disk boundary has portable unit coverage and an opt-in
+  real Linux/gVisor deployment gate,
 - a loopback-only local artifact host (`LocalArtifactHost`) serving each
   build from its own origin with restrictive headers and expiry,
 - a single-process local development launcher

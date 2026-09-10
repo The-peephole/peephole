@@ -9,6 +9,7 @@ import {
 } from "../../../core/runner/runnerLimits"
 import {
   CommandExecutionError,
+  RunnerDiskLimitError,
   type CommandRunner,
   type CommandRunOptions,
 } from "../local/commandRunner"
@@ -25,7 +26,12 @@ import {
   runscRunArgs,
   type RunscNetworkMode,
 } from "./runscCli"
-import { SANDBOX_GID, SANDBOX_HOME, SANDBOX_UID } from "./sandboxIdentity"
+import {
+  SANDBOX_GID,
+  SANDBOX_HOME,
+  SANDBOX_NPM_CACHE,
+  SANDBOX_UID,
+} from "./sandboxIdentity"
 
 export interface RunscCommandRunnerOptions {
   runscBinaryPath?: string
@@ -46,7 +52,7 @@ export interface RunscCommandRunnerOptions {
  * Runs a command inside a fresh `runsc` container chrooted to the
  * workspace's rootfs. runsc containers are single-process, so `npm ci` and
  * `npm run build` each get their own container sharing the same on-disk
- * rootfs; each container is deleted immediately after it exits.
+ * loop-backed workspace; each container is deleted immediately after it exits.
  *
  * `network` defaults to "none" (no network stack at all). Passing
  * "sandbox" gives the process a real, routable network namespace (via
@@ -61,27 +67,8 @@ export interface RunscCommandRunnerOptions {
  * see tests/realGvisorSandbox.test.ts. CLI/OCI argument construction also
  * has fake-`ProcessRunner` unit coverage in tests/gvisorAdapter.test.ts.
  *
- * There is no filesystem-level disk quota (root.path is a real host
- * directory, not a size-bounded mount -- a tmpfs would lose exactly the
- * cross-container persistence RunscCommandRunner depends on, and a
- * loop-mounted, quota-enforcing image is a real project of its own, not
- * attempted here yet), so without the poll below a script that just keeps
- * writing runs unthrottled until it finishes, times out, or exhausts the
- * real disk. Confirmed on a real gVisor host: writing 500MB in an
- * ordinary `npm ci`-style script hit no resistance at all.
- *
- * The poll is a real, verified improvement, but it is best-effort, not a
- * hard bound: it is a userspace directory walk on a timer, so a script
- * that writes fast enough overshoots the configured limit by however much
- * it can write in one `diskQuotaPollMs` window plus kill latency --
- * confirmed on a real gVisor host at the default settings: a 20MB limit
- * against a script writing as fast as `fs.appendFileSync` allows let
- * ~330MB through before the kill landed. It meaningfully shortens the
- * window versus no live check at all (which let the same script write
- * unbounded until it chose to stop), and NpmDependencyInstaller/
- * NpmBuildExecutor's own post-command size checks still catch anything
- * that slips through -- but a determined, fast-writing script will still
- * get well past the configured number before this stops it.
+ * The workspace is a capacity-bounded ext4 mount. The directory poll remains
+ * as an earlier soft stop, but the filesystem is the non-bypassable hard cap.
  */
 export class RunscCommandRunner implements CommandRunner {
   private readonly runscBinaryPath: string
@@ -126,13 +113,14 @@ export class RunscCommandRunner implements CommandRunner {
     const spec = buildOciRuntimeSpec({
       command: [command, ...args],
       cwd: "/workspace",
-      // SANDBOX_UID has no passwd entry in the base rootfs beyond the
-      // system-default "nobody", whose home is /nonexistent -- without an
-      // explicit HOME, npm tries to write its cache/log files there and
-      // fails. SANDBOX_HOME must be a writable directory owned by
-      // SANDBOX_UID:SANDBOX_GID baked into the base rootfs image (see
-      // scripts/gvisor/build-base-rootfs.sh).
-      env: Object.entries({ HOME: SANDBOX_HOME, ...options.env })
+      env: Object.entries({
+        ...options.env,
+        HOME: SANDBOX_HOME,
+        npm_config_cache: SANDBOX_NPM_CACHE,
+        TMPDIR: "/tmp",
+        TMP: "/tmp",
+        TEMP: "/tmp",
+      })
         .filter((entry): entry is [string, string] => entry[1] !== undefined)
         .map(([key, value]) => `${key}=${value}`),
       uid: SANDBOX_UID,
@@ -141,6 +129,7 @@ export class RunscCommandRunner implements CommandRunner {
       resourceLimits: this.resourceLimits,
       networkNamespacePath,
       dnsConfigSource: dnsConfig.source,
+      workspaceSource: sandbox.rootDir,
     })
 
     await writeFile(
@@ -157,6 +146,7 @@ export class RunscCommandRunner implements CommandRunner {
       },
     )
 
+    let executionError: unknown
     try {
       const result = await this.processRunner.run(
         this.runscBinaryPath,
@@ -172,7 +162,7 @@ export class RunscCommandRunner implements CommandRunner {
       )
 
       if (quotaExceeded) {
-        throw new CommandExecutionError(
+        throw new RunnerDiskLimitError(
           `${command} ${args.join(" ")} exceeded the ${String(this.maxWorkspaceBytes)}-byte workspace size limit and was stopped.`,
           result.stdout,
           result.stderr,
@@ -188,22 +178,51 @@ export class RunscCommandRunner implements CommandRunner {
       }
 
       if (result.exitCode !== 0) {
+        const exhausted = await sandbox.isDiskExhausted().catch(() => false)
+        if (exhausted) {
+          throw new RunnerDiskLimitError(
+            `${command} ${args.join(" ")} exhausted the hard workspace filesystem capacity.`,
+            result.stdout,
+            result.stderr,
+          )
+        }
         throw new CommandExecutionError(
           `${command} ${args.join(" ")} exited with code ${String(result.exitCode)} inside the sandbox.`,
           result.stdout,
           result.stderr,
         )
       }
-    } finally {
-      clearInterval(diskQuotaTimer)
-      await this.processRunner
-        .run(
-          this.runscBinaryPath,
-          runscDeleteArgs({ runscRootDir: this.runscRootDir }, containerId),
-          { timeoutMs: 10_000 },
-        )
-        .catch(() => undefined)
+    } catch (error) {
+      executionError = error
     }
+
+    clearInterval(diskQuotaTimer)
+    let cleanupError: unknown
+    try {
+      const deleted = await this.processRunner.run(
+        this.runscBinaryPath,
+        runscDeleteArgs({ runscRootDir: this.runscRootDir }, containerId),
+        { timeoutMs: 10_000 },
+      )
+      if (deleted.exitCode !== 0 || deleted.timedOut) {
+        cleanupError = new Error(
+          `runsc could not delete container ${containerId}.`,
+        )
+      } else {
+        sandbox.unregisterContainer(containerId)
+      }
+    } catch (error) {
+      cleanupError = error
+    }
+    if (executionError !== undefined && cleanupError !== undefined) {
+      throw new AggregateError(
+        [executionError, cleanupError],
+        "Sandbox command and container cleanup both failed.",
+        { cause: executionError },
+      )
+    }
+    if (cleanupError !== undefined) throw cleanupError
+    if (executionError !== undefined) throw executionError
   }
 
   /** Polls the workspace's on-disk size while the container runs and kills

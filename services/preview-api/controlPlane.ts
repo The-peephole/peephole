@@ -52,6 +52,7 @@ const SAFE_ERROR_MESSAGES: Record<PreviewJobErrorCode, string> = {
   BUILD_FAILED: "The static build did not complete successfully.",
   PUBLISH_FAILED: "The static output could not be published.",
   RUNNER_TIMEOUT: "The preview job exceeded its time limit.",
+  RUNNER_DISK_LIMIT: "The preview job exceeded its sandbox disk limit.",
   RUNNER_UNAVAILABLE: "No preview runner was available.",
   ARTIFACT_UNAVAILABLE: "The preview artifact is unavailable.",
 }

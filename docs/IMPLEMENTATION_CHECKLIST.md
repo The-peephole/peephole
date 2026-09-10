@@ -164,22 +164,15 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       checks the workspace tree after install and after build, independent
       of the source archive/output size checks (catches a build that
       writes far more to disk than either bound would show)
-- [x] gVisor sandbox: kill a runaway write early instead of only catching
-      it after the command finishes. Found via a real adversarial test
-      that there was previously no live bound at all -- an ordinary
-      `npm ci`-style script wrote 500MB inside `RunscCommandRunner`
-      without any resistance (`root.path` is a real host directory, not
-      a size-bounded mount). `RunscCommandRunner` now polls the
-      workspace's on-disk size (default every 1s) while a command runs
-      and kills the container the moment it's exceeded
-      (`tests/gvisorAdapter.test.ts`, "kills a container early"). **This
-      is best-effort, not a hard quota**: it's a userspace poll on a
-      timer, so a fast enough writer overshoots by whatever it can write
-      in one poll window -- confirmed on a real gVisor host, a 20MB limit
-      let ~330MB through before the kill landed. A real hard bound needs
-      a loop-mounted, quota-enforcing filesystem for `/workspace`
-      (kernel-level ENOSPC, no polling delay) instead of a plain host
-      directory -- not attempted here; tracked as a follow-up, not done.
+- [x] Add a non-bypassable workspace hard cap: each job gets a preallocated,
+      fixed-size loop-backed ext4 image mounted at `/workspace`; HOME/npm
+      cache are inside it, the copied OCI rootfs is read-only, and `/tmp` and
+      `/dev` have explicit tmpfs byte/inode bounds. The existing live directory
+      poll remains only an earlier soft stop. Allocation is serialized and
+      reserves rootfs/archive/artifact exposure; startup synchronously
+      reconciles strictly marker-owned mount/loop resources before workers.
+      Portable tests are complete; the new real enforcement cases remain an
+      explicit AWS security-branch gate. See `docs/SANDBOX_DISK_SECURITY.md`.
 - [x] Reap orphan jobs: `LocalDevSandboxReaper` (real, tested against real
       temp directories) and `GVisorOrphanReaper` (cross-references stale
       bundle directories against `runsc list --format json`) -- both now
@@ -409,7 +402,7 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       test (`tests/realGvisorGoldenPath.test.ts`, same gate): real `npm
       ci` + `npm run build` through the actual `PreviewJobWorker`
       pipeline, gVisor end to end
-- [x] job wall-clock budget and workspace disk-quota enforcement tests
+- [x] job wall-clock budget and portable workspace disk-quota enforcement tests
 - [x] orphan-sandbox reaper tests (real directories for the dev reaper;
       fake `runsc list` output for the gVisor reaper's unit tests, plus a
       real abandoned-container scenario against an actual gVisor host in

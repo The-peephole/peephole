@@ -13,12 +13,17 @@ import { readPreviewApiServerConfig } from "../preview-api/serverConfig"
 import { startNodePreviewApi } from "../preview-api/startNodeServer"
 import { composeProductionWorker } from "../preview-worker/gvisor/composeProductionWorker"
 import { GVisorOrphanReaper } from "../preview-worker/gvisor/gvisorOrphanReaper"
+import { LoopbackSandboxDiskManager } from "../preview-worker/gvisor/sandboxDisk"
 import { PreviewWorkerLoop } from "../preview-worker/workerLoop"
 import { PostgresProductionArtifactStore } from "../preview-api/postgres/productionArtifactStore"
 import { ProductionArtifactTlsAskServer } from "./artifactTlsAskServer"
 import { ProductionArtifactHost } from "./artifactHost"
 import { readProductionConfig } from "./config"
-import { ensureProductionPreflight } from "./preflight"
+import {
+  ensureProductionDiskLayout,
+  ensureProductionPreflight,
+  ensureSandboxDiskCapability,
+} from "./preflight"
 
 /**
  * Production launcher for a single untrusted-code preview host: real gVisor
@@ -49,6 +54,11 @@ import { ensureProductionPreflight } from "./preflight"
 
 async function main(): Promise<void> {
   const productionConfig = readProductionConfig(process.env)
+  const diskManager = new LoopbackSandboxDiskManager({
+    bundlesRootDir: productionConfig.bundlesRootDir,
+    hardLimitBytes: productionConfig.sandboxDiskBytes,
+    minimumHostReserveBytes: productionConfig.hostDiskReserveBytes,
+  })
 
   await ensureProductionPreflight({
     baseRootfsImage: productionConfig.baseRootfsImage,
@@ -56,6 +66,21 @@ async function main(): Promise<void> {
 
   const database = new PgPoolDatabase(readPostgresConfig(process.env).pool)
   await applyPostgresMigrations(database)
+
+  const orphanReaper = new GVisorOrphanReaper({
+    runscRootDir: productionConfig.runscRootDir,
+    maxAgeMs: productionConfig.orphanReaperMaxAgeMs,
+    diskManager,
+  })
+  // Startup safety gate: no worker can allocate a new loop device or bundle
+  // until all marker-owned resources left by an earlier process have been
+  // reconciled against authoritative runsc state.
+  await orphanReaper.reapAll()
+  await ensureSandboxDiskCapability(diskManager)
+  await ensureProductionDiskLayout({
+    bundlesRootDir: productionConfig.bundlesRootDir,
+    artifactStorageDir: productionConfig.artifactStorageDir,
+  })
 
   const artifactStore = new PostgresProductionArtifactStore(database)
   const artifactHost = new ProductionArtifactHost({
@@ -116,6 +141,7 @@ async function main(): Promise<void> {
     bundlesRootDir: productionConfig.bundlesRootDir,
     runscRootDir: productionConfig.runscRootDir,
     artifactStorageDir: productionConfig.artifactStorageDir,
+    diskManager,
   })
 
   const workerController = new AbortController()
@@ -132,17 +158,14 @@ async function main(): Promise<void> {
     workerLoops.map((loop) => loop.runUntilStopped(workerController.signal)),
   )
 
-  const orphanReaper = new GVisorOrphanReaper({
-    runscRootDir: productionConfig.runscRootDir,
-    bundlesRootDir: productionConfig.bundlesRootDir,
-    maxAgeMs: productionConfig.orphanReaperMaxAgeMs,
-  })
   let maintenanceRunning: Promise<void> | undefined
   const maintain = () => {
     if (maintenanceRunning) return
     maintenanceRunning = Promise.all([orphanReaper.reap(), artifactHost.reap()])
       .then(() => undefined)
-      .catch(() => console.error("[peephole] cleanup failed; will retry"))
+      .catch((error: unknown) =>
+        console.error("[peephole] cleanup failed; will retry", error),
+      )
       .finally(() => {
         maintenanceRunning = undefined
       })

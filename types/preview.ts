@@ -36,6 +36,7 @@ export type PreviewJobErrorCode =
   | "BUILD_FAILED"
   | "PUBLISH_FAILED"
   | "RUNNER_TIMEOUT"
+  | "RUNNER_DISK_LIMIT"
   | "RUNNER_UNAVAILABLE"
   | "ARTIFACT_UNAVAILABLE"
 

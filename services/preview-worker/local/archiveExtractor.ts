@@ -7,6 +7,7 @@ import { isSafeEntryPath } from "../../../core/runner/archivePolicy"
 
 export interface ExtractArchiveOptions {
   destinationDir: string
+  stagingRoot?: string
   maxEntryPathLength?: number
   signal?: AbortSignal
 }
@@ -24,7 +25,8 @@ export async function extractArchiveToDirectory(
   options: ExtractArchiveOptions,
 ): Promise<void> {
   options.signal?.throwIfAborted()
-  const stagingDir = await mkdtemp(path.join(os.tmpdir(), "peephole-archive-"))
+  const stagingRoot = options.stagingRoot ?? os.tmpdir()
+  const stagingDir = await mkdtemp(path.join(stagingRoot, "peephole-archive-"))
   const archiveFile = path.join(stagingDir, "source.tar.gz")
 
   try {

@@ -16,6 +16,8 @@ describe("readProductionConfig", () => {
     expect(config.artifactPort).toBe(8_788)
     expect(config.artifactTlsAskPort).toBe(8_790)
     expect(config.artifactBaseDomain).toBe("peepholeusercontent.dev")
+    expect(config.sandboxDiskBytes).toBe(1024 ** 3)
+    expect(config.hostDiskReserveBytes).toBe(2 * 1024 ** 3)
   })
 
   it("reads PEEPHOLE_WORKER_CONCURRENCY", () => {
@@ -68,6 +70,22 @@ describe("readProductionConfig", () => {
     expect(() =>
       readProductionConfig({ PEEPHOLE_MAINTENANCE_INTERVAL_MS: "1" }),
     ).toThrow(/PEEPHOLE_MAINTENANCE_INTERVAL_MS/)
+  })
+
+  it("reads and validates sandbox disk and host reserve byte limits", () => {
+    const config = readProductionConfig({
+      PEEPHOLE_SANDBOX_DISK_BYTES: String(64 * 1024 * 1024),
+      PEEPHOLE_HOST_DISK_RESERVE_BYTES: String(3 * 1024 * 1024 * 1024),
+    })
+    expect(config.sandboxDiskBytes).toBe(64 * 1024 * 1024)
+    expect(config.hostDiskReserveBytes).toBe(3 * 1024 * 1024 * 1024)
+
+    expect(() =>
+      readProductionConfig({ PEEPHOLE_SANDBOX_DISK_BYTES: "1" }),
+    ).toThrow(/PEEPHOLE_SANDBOX_DISK_BYTES/)
+    expect(() =>
+      readProductionConfig({ PEEPHOLE_HOST_DISK_RESERVE_BYTES: "-1" }),
+    ).toThrow(/PEEPHOLE_HOST_DISK_RESERVE_BYTES/)
   })
 
   it("reads the artifact listener port and base domain from the environment", () => {

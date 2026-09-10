@@ -1,16 +1,18 @@
 import type { LocalPreviewWorkspace } from "../local/localWorkspace"
 
 /**
- * `rootDir` points at `<bundleDir>/rootfs/workspace` on the host, which is
- * `/workspace` inside the sandboxed container (the OCI `root.path` is
- * `<bundleDir>/rootfs`). Extraction/build/output code shared with
+ * `rootDir` points at the allocation's loop-mounted ext4 workspace on the
+ * host, bind-mounted at `/workspace` inside the sandboxed container. The
+ * OCI root at `<bundleDir>/rootfs` is read-only. Extraction/build/output code shared with
  * `LocalDevSandboxProvisioner` only ever touches `rootDir`, so it works
  * unmodified whether or not a real sandbox is behind it.
  */
 export interface GVisorPreviewWorkspace extends LocalPreviewWorkspace {
   readonly bundleDir: string
   registerContainer(containerId: string): void
+  unregisterContainer(containerId: string): void
   listContainers(): string[]
+  isDiskExhausted(): Promise<boolean>
   /**
    * Lazily creates (on first call) a real, routable network namespace for
    * this job and returns its path, reusing it for every later call so a
