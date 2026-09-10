@@ -8,6 +8,10 @@ import {
   resolveDnsConfigSource,
 } from "../services/preview-worker/gvisor/dnsConfig"
 import { GVisorOrphanReaper } from "../services/preview-worker/gvisor/gvisorOrphanReaper"
+import {
+  SANDBOX_DEV_SHM_TMPFS_BYTES,
+  SANDBOX_DEV_SHM_TMPFS_INODES,
+} from "../services/preview-worker/gvisor/ociConfig"
 import { GVisorSandboxProvisioner } from "../services/preview-worker/gvisor/gvisorSandboxProvisioner"
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
 import { RunscCommandRunner } from "../services/preview-worker/gvisor/runscCommandRunner"
@@ -32,6 +36,7 @@ import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 // outbound network access and real metadata/link-local blocking.
 const baseRootfsImage =
   process.env.PEEPHOLE_GVISOR_BASE_ROOTFS ?? "/var/lib/peephole/base-rootfs"
+const HOST_IMAGE_ALLOCATION_TOLERANCE_BYTES = 1024 * 1024
 
 describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
   "real gVisor sandbox (Linux + runsc required)",
@@ -115,13 +120,17 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       expect(finalContent).toBe("from-host\n")
     }, 30_000)
 
-    it("enforces read-only rootfs, writable workspace, and bounded /tmp and /dev tmpfs", async () => {
+    it("enforces read-only rootfs, bounded /tmp and /dev/shm, and audits /dev writability", async () => {
       const ws = await allocate("real-gvisor-filesystems")
       const runner = new RunscCommandRunner({ network: "none" })
       const script = String.raw`
         const fs = require('fs');
         const canWrite = (file) => { try { fs.writeFileSync(file, 'x'); return true } catch { return false } };
-        const capacity = (dir) => { const s=fs.statfsSync(dir); return { bytes:s.blocks*s.bsize, inodes:s.files } };
+        const capacity = (dir) => { const s=fs.statfsSync(dir); return { blocks:s.blocks,bfree:s.bfree,bavail:s.bavail,files:s.files,ffree:s.ffree,bsize:s.bsize,bytes:s.blocks*s.bsize,inodes:s.files } };
+        const kind = (s) => s.isDirectory()?'directory':s.isCharacterDevice()?'character':s.isBlockDevice()?'block':s.isSymbolicLink()?'symlink':s.isFile()?'file':s.isFIFO()?'fifo':s.isSocket()?'socket':'other';
+        const inspect = (file) => { try { const s=fs.lstatSync(file); return { exists:true,type:kind(s),mode:s.mode&0o7777,uid:s.uid,gid:s.gid,...(s.isDirectory()?{statfs:capacity(file)}:{}) } } catch(e) { return { exists:false,error:e.code||String(e) } } };
+        const probeDirectoryWrite = (dir) => { const file=dir+'/.peephole-write-probe'; try { fs.writeFileSync(file,'x');fs.unlinkSync(file);return true } catch { return false } };
+        const auditDevDirectories = (root) => { let names=[];try{names=fs.readdirSync(root)}catch(e){return [{path:root,listError:e.code||String(e)}]};const results=[];for(const name of names){const file=root+'/'+name;const details=inspect(file);if(details.type!=='directory')continue;results.push({path:file,writable:probeDirectoryWrite(file),...details});if(file!=='/dev/shm')results.push(...auditDevDirectories(file))}return results };
         let tmpBytes=0, tmpError='';
         try { for(let i=0;i<80;i++){ fs.appendFileSync('/tmp/capacity.bin', Buffer.alloc(1024*1024)); tmpBytes+=1024*1024 } }
         catch(e){ tmpError=e.code || String(e) }
@@ -129,6 +138,13 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
         let tmpInodesCreated=0, tmpInodeError='';
         try { fs.mkdirSync('/tmp/inodes'); for(;tmpInodesCreated<20000;tmpInodesCreated++) fs.writeFileSync('/tmp/inodes/'+tmpInodesCreated,'') }
         catch(e){ tmpInodeError=e.code || String(e) }
+        const devEntries=fs.readdirSync('/dev').sort().map(name=>({name,path:'/dev/'+name,...inspect('/dev/'+name)}));
+        const devDirectoryAudit=auditDevDirectories('/dev');
+        const writableDevDirectories=devDirectoryAudit.filter(entry=>entry.writable).map(entry=>entry.path).sort();
+        let shmBytes=0, shmError='';
+        try { for(let i=0;i<32;i++){ fs.appendFileSync('/dev/shm/capacity.bin',Buffer.alloc(1024*1024));shmBytes+=1024*1024 } }
+        catch(e){ shmError=e.code || String(e) }
+        try { fs.unlinkSync('/dev/shm/capacity.bin') } catch {}
         fs.writeFileSync('/workspace/filesystems.json', JSON.stringify({
           etcWritable:canWrite('/etc/peephole-test'),
           homeWritable:canWrite('/home/sandbox/escape'),
@@ -137,7 +153,10 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
           devWritable:canWrite('/dev/peephole-test'),
           home:process.env.HOME, npmCache:process.env.npm_config_cache,
           tmp:capacity('/tmp'), dev:capacity('/dev'), tmpBytes, tmpError,
-          tmpInodesCreated, tmpInodeError
+          tmpInodesCreated, tmpInodeError,
+          devEntries,devDirectoryAudit,writableDevDirectories,
+          shm:inspect('/dev/shm'),shmBytes,shmError,
+          mqueue:inspect('/dev/mqueue'),mqueueWritable:probeDirectoryWrite('/dev/mqueue')
         }));
       `
 
@@ -148,6 +167,9 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       const result = JSON.parse(
         await readFile(path.join(ws.rootDir, "filesystems.json"), "utf8"),
       )
+      process.stdout.write(
+        `[real-gvisor-dev-audit] ${JSON.stringify({ dev: result.dev, devEntries: result.devEntries, devDirectoryAudit: result.devDirectoryAudit, writableDevDirectories: result.writableDevDirectories, shm: result.shm, shmBytes: result.shmBytes, shmError: result.shmError, mqueue: result.mqueue, mqueueWritable: result.mqueueWritable })}\n`,
+      )
       expect(result.etcWritable).toBe(false)
       expect(result.homeWritable).toBe(false)
       expect(result.varTmpWritable).toBe(false)
@@ -156,13 +178,35 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       expect(result.home).toBe("/workspace/.home")
       expect(result.npmCache).toBe("/workspace/.home/.npm")
       expect(result.tmp.bytes).toBeLessThanOrEqual(64 * 1024 * 1024)
-      expect(result.dev.bytes).toBeLessThanOrEqual(16 * 1024 * 1024)
       expect(result.tmp.inodes).toBeLessThanOrEqual(16_384)
-      expect(result.dev.inodes).toBeLessThanOrEqual(4_096)
       expect(result.tmpBytes).toBeLessThan(80 * 1024 * 1024)
       expect(result.tmpError).toBeTruthy()
       expect(result.tmpInodesCreated).toBeLessThan(20_000)
       expect(result.tmpInodeError).toBeTruthy()
+      expect(result.shm).toMatchObject({
+        exists: true,
+        type: "directory",
+        mode: 0o1777,
+        uid: 0,
+        gid: 0,
+      })
+      expect(result.shm.statfs.bytes).toBeLessThanOrEqual(
+        SANDBOX_DEV_SHM_TMPFS_BYTES,
+      )
+      expect(result.shm.statfs.inodes).toBeLessThanOrEqual(
+        SANDBOX_DEV_SHM_TMPFS_INODES,
+      )
+      expect(result.shmBytes).toBeLessThan(32 * 1024 * 1024)
+      expect(result.shmError).toBeTruthy()
+      expect(result.writableDevDirectories).toEqual(["/dev/shm"])
+      expect(result.mqueueWritable).toBe(false)
+      for (const device of ["null", "zero", "full", "random", "urandom"]) {
+        expect(
+          result.devEntries.find(
+            (entry: { name: string }) => entry.name === device,
+          ),
+        ).toMatchObject({ type: "character", uid: 0, gid: 0 })
+      }
     }, 90_000)
 
     it("stops an untrusted writer at the ext4 workspace hard capacity", async () => {
@@ -230,13 +274,13 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       expect(fillStats.size).toBeLessThan(600 * 1024 * 1024)
       expect(fillStats.size).toBeLessThanOrEqual(totalBytes)
       expect(totalBytes).toBeLessThanOrEqual(hardLimitBytes)
-      expect(totalBytes).toBeGreaterThanOrEqual(
-        hardLimitBytes - 8 * 1024 * 1024,
-      )
+      expect(totalBytes).toBeGreaterThanOrEqual(hardLimitBytes * 0.5)
       expect(usedBytes).toBeLessThanOrEqual(totalBytes)
-      expect(fillAllocatedBytes).toBeLessThanOrEqual(hardLimitBytes)
+      expect(fillAllocatedBytes).toBeLessThanOrEqual(totalBytes)
       expect(imageStats.size).toBe(hardLimitBytes)
-      expect(imageAllocatedBytes).toBeLessThanOrEqual(hardLimitBytes)
+      expect(imageAllocatedBytes).toBeLessThanOrEqual(
+        hardLimitBytes + HOST_IMAGE_ALLOCATION_TOLERANCE_BYTES,
+      )
 
       // The failed untrusted writer must not take down the worker/runsc path.
       await runner.run(workspace, "node", ["-e", "process.exit(0)"], {

@@ -69,8 +69,8 @@ export interface OciRuntimeSpec {
 const CPU_PERIOD_MICROSECONDS = 100_000
 export const SANDBOX_TMPFS_BYTES = 64 * 1024 * 1024
 export const SANDBOX_TMPFS_INODES = 16_384
-export const SANDBOX_DEV_TMPFS_BYTES = 16 * 1024 * 1024
-export const SANDBOX_DEV_TMPFS_INODES = 4_096
+export const SANDBOX_DEV_SHM_TMPFS_BYTES = 16 * 1024 * 1024
+export const SANDBOX_DEV_SHM_TMPFS_INODES = 4_096
 
 /**
  * A non-root, capability-stripped, resource-quota'd OCI bundle spec for
@@ -109,12 +109,23 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
         destination: "/dev",
         type: "tmpfs",
         source: "tmpfs",
+        options: ["nosuid", "noexec", "mode=755"],
+      },
+      {
+        // runsc treats /dev as its device filesystem and does not enforce
+        // tmpfs size options there. Keep its root non-writable to uid 65534,
+        // and isolate the one intentionally writable descendant behind a
+        // separately enforced generic tmpfs mount.
+        destination: "/dev/shm",
+        type: "tmpfs",
+        source: "tmpfs",
         options: [
           "nosuid",
+          "nodev",
           "noexec",
-          `size=${String(SANDBOX_DEV_TMPFS_BYTES)}`,
-          `nr_inodes=${String(SANDBOX_DEV_TMPFS_INODES)}`,
-          "mode=755",
+          `size=${String(SANDBOX_DEV_SHM_TMPFS_BYTES)}`,
+          `nr_inodes=${String(SANDBOX_DEV_SHM_TMPFS_INODES)}`,
+          "mode=1777",
         ],
       },
       {
@@ -185,7 +196,12 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
         },
         pids: { limit: options.resourceLimits.maxPids },
       },
-      maskedPaths: ["/proc/kcore", "/proc/keys", "/sys/firmware"],
+      maskedPaths: [
+        "/proc/kcore",
+        "/proc/keys",
+        "/sys/firmware",
+        "/dev/mqueue",
+      ],
       readonlyPaths: [],
     },
   }

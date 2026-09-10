@@ -21,7 +21,9 @@ still retained as a soft limit, but it is no longer the security boundary.
 | Source, `node_modules`, build output | per-allocation `workspace.img` | fixed-size ext4 hard capacity |
 | `HOME` and npm cache | `/workspace/.home` | same ext4 hard capacity |
 | `/tmp` | gVisor tmpfs | 64 MiB, 16,384 inodes, `nosuid,nodev,noexec` |
-| `/dev` | gVisor tmpfs | 16 MiB, 4,096 inodes, `nosuid,noexec` |
+| `/dev` | gVisor device filesystem | root-owned mode `0755`; sandbox uid cannot create regular files |
+| `/dev/shm` | separate gVisor tmpfs | 16 MiB, 4,096 inodes, `nosuid,nodev,noexec` |
+| `/dev/mqueue` | masked path | unavailable as a writable storage-like subtree |
 | Copied base rootfs | per-allocation host directory | OCI root is read-only |
 | `/etc/resolv.conf` | host bind mount | read-only |
 | `/sys` | virtual sysfs | read-only |
@@ -77,8 +79,17 @@ prove and clean.
 is released. `mkfs.ext4 -m 0` keeps no root-only reserve, and ext4 capacity
 (including its filesystem metadata and finite inode table) is the hard ceiling.
 The normal ext4 journal is retained for safer crash recovery; its space is
-inside the configured image capacity. `noatime` reduces avoidable metadata
-writes.
+inside the configured image capacity. Consequently `statfs().blocks * bsize`
+reports usable filesystem capacity below the nominal `workspace.img` size; the
+exact difference depends on mkfs.ext4 journal, inode-table, and metadata
+settings and is not a security lower-bound invariant. `noatime` reduces
+avoidable metadata writes.
+
+The host file's `stat.blocks * 512` may also exceed its exact logical size by a
+small host-filesystem metadata/allocation increment (4 KiB on the observed AWS
+host). The real test requires the logical image size to equal the configured
+cap and permits only 1 MiB of allocated-block accounting tolerance—never the
+hundreds of MiB attempted by the hostile writer.
 
 ## Admission and concurrency
 
@@ -210,7 +221,9 @@ The opt-in real suite (`PEEPHOLE_REAL_GVISOR_TESTS=1`) additionally verifies:
 - read-only `/home/sandbox` and `/var/tmp`;
 - writable `/workspace` across install/build-style containers;
 - hard ext4 ENOSPC behavior;
-- `/tmp` size and inode exhaustion and reported `/dev` capacity;
+- `/tmp` and separately mounted `/dev/shm` size/inode exhaustion;
+- `/dev` root and descendant write probes, standard device-node types, and
+  `/dev/mqueue` unavailability;
 - real `npm ci`, esbuild/Vite native execution, and `npm run build`;
 - existing PID, memory, network, and orphan-recovery behavior.
 
@@ -247,6 +260,16 @@ During the tmpfs test, separately sample the sandbox cgroup's
 normally memory-backed, but the exact gVisor/cgroup accounting observed on the
 production runsc/kernel combination must be recorded rather than inferred from
 OCI JSON alone.
+
+runsc implements `/dev` using device-filesystem semantics and, on the verified
+AWS host, reports a capacity unrelated to the OCI `size=` option. Peephole does
+not treat `/dev` statfs capacity or the removed `/dev` size/inode options as a
+security control. The enforced model is that uid 65534 cannot create arbitrary
+regular files at `/dev` or in any descendant except the explicit, separately
+bounded `/dev/shm` mount; `/dev/mqueue` is masked. The real suite emits a
+`real-gvisor-dev-audit` record containing modes, ownership, file types,
+capacities, and write-probe results so this property is rechecked for every
+runsc upgrade.
 
 After a deliberately interrupted job, verify that restart blocks until cleanup
 completes and leaves no owned resources:

@@ -52,7 +52,13 @@ describe("buildOciRuntimeSpec", () => {
     ).toEqual(expect.arrayContaining(["size=67108864", "nr_inodes=16384"]))
     expect(
       spec.mounts.find((mount) => mount.destination === "/dev")?.options,
-    ).toEqual(expect.arrayContaining(["size=16777216", "nr_inodes=4096"]))
+    ).toEqual(["nosuid", "noexec", "mode=755"])
+    expect(
+      spec.mounts.find((mount) => mount.destination === "/dev/shm")?.options,
+    ).toEqual(
+      expect.arrayContaining(["size=16777216", "nr_inodes=4096", "mode=1777"]),
+    )
+    expect(spec.linux.maskedPaths).toContain("/dev/mqueue")
     expect(spec.process.capabilities.bounding).toEqual(["CAP_NET_BIND_SERVICE"])
     expect(spec.linux.resources.cpu).toEqual({
       quota: 100_000,
