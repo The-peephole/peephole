@@ -45,7 +45,12 @@ describe("VethNatNetworkProvisioner", () => {
   beforeEach(async () => {
     leaseDir = await mkdtemp(path.join(os.tmpdir(), "peephole-net-leases-"))
     processRunner = new FakeProcessRunner()
-    allocator = new SubnetAllocator(leaseDir)
+    allocator = new SubnetAllocator({
+      leaseDir,
+      bootId: async () => "test-boot",
+      processStartTime: async () => "test-start",
+      syncDirectory: async () => undefined,
+    })
     provisioner = new VethNatNetworkProvisioner({
       processRunner,
       subnetAllocator: allocator,
@@ -57,7 +62,7 @@ describe("VethNatNetworkProvisioner", () => {
   })
 
   it("creates a /30 route and keeps public IPv4 egress through NAT", async () => {
-    const handle = await provisioner.create("job-1", [DNS_SERVER])
+    const handle = await provisioner.create("1".repeat(32), [DNS_SERVER])
     const lines = commandLines(processRunner)
 
     expect(handle.path).toMatch(/^\/var\/run\/netns\/peephole-\d+$/)
@@ -70,7 +75,7 @@ describe("VethNatNetworkProvisioner", () => {
           /^ip netns exec peephole-\d+ ip route add default via 10\.200\.\d+\.\d+$/,
         ),
         expect.stringMatching(
-          /^iptables -w 5 -t nat -A POSTROUTING -s 10\.200\.\d+\.\d+ -o eth0 -m comment --comment peephole-job-\d+-\d+ -j MASQUERADE$/,
+          /^iptables -w 5 -t nat -A POSTROUTING -s 10\.200\.\d+\.\d+\/32 -o eth0 -m comment --comment peephole-1{32}-\d+ -j MASQUERADE$/,
         ),
         expect.stringMatching(/^iptables -w 5 -A ppe\d+ -j ACCEPT$/),
       ]),
@@ -84,7 +89,7 @@ describe("VethNatNetworkProvisioner", () => {
   })
 
   it("allows only exact DNS port 53 before blocking local and non-public destinations", async () => {
-    await provisioner.create("job-2", [DNS_SERVER, "169.254.169.253"])
+    await provisioner.create("2".repeat(32), [DNS_SERVER, "169.254.169.253"])
     const lines = commandLines(processRunner)
     const egressChain = createdChain(lines, "ppe")
     const chainLines = lines.filter((line) =>
@@ -92,10 +97,10 @@ describe("VethNatNetworkProvisioner", () => {
     )
 
     expect(chainLines.slice(0, 4)).toEqual([
-      `iptables -w 5 -A ${egressChain} -d ${DNS_SERVER}/32 -p udp --dport 53 -j ACCEPT`,
-      `iptables -w 5 -A ${egressChain} -d ${DNS_SERVER}/32 -p tcp --dport 53 -j ACCEPT`,
-      `iptables -w 5 -A ${egressChain} -d 169.254.169.253/32 -p udp --dport 53 -j ACCEPT`,
-      `iptables -w 5 -A ${egressChain} -d 169.254.169.253/32 -p tcp --dport 53 -j ACCEPT`,
+      `iptables -w 5 -A ${egressChain} -d ${DNS_SERVER}/32 -p udp -m udp --dport 53 -j ACCEPT`,
+      `iptables -w 5 -A ${egressChain} -d ${DNS_SERVER}/32 -p tcp -m tcp --dport 53 -j ACCEPT`,
+      `iptables -w 5 -A ${egressChain} -d 169.254.169.253/32 -p udp -m udp --dport 53 -j ACCEPT`,
+      `iptables -w 5 -A ${egressChain} -d 169.254.169.253/32 -p tcp -m tcp --dport 53 -j ACCEPT`,
     ])
 
     for (const cidr of BLOCKED_IPV4_DESTINATIONS) {
@@ -127,15 +132,15 @@ describe("VethNatNetworkProvisioner", () => {
   })
 
   it("blocks host services, unsolicited replies, and all sandbox IPv6", async () => {
-    await provisioner.create("job-3", [DNS_SERVER])
+    await provisioner.create("3".repeat(32), [DNS_SERVER])
     const lines = commandLines(processRunner)
     const inputChain = createdChain(lines, "ppi")
     const returnChain = createdChain(lines, "ppr")
 
     expect(lines).toEqual(
       expect.arrayContaining([
-        `iptables -w 5 -A ${inputChain} -d ${DNS_SERVER}/32 -p udp --dport 53 -j ACCEPT`,
-        `iptables -w 5 -A ${inputChain} -d ${DNS_SERVER}/32 -p tcp --dport 53 -j ACCEPT`,
+        `iptables -w 5 -A ${inputChain} -d ${DNS_SERVER}/32 -p udp -m udp --dport 53 -j ACCEPT`,
+        `iptables -w 5 -A ${inputChain} -d ${DNS_SERVER}/32 -p tcp -m tcp --dport 53 -j ACCEPT`,
         `iptables -w 5 -A ${inputChain} -j DROP`,
         `iptables -w 5 -A ${returnChain} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT`,
         `iptables -w 5 -A ${returnChain} -j DROP`,
@@ -154,44 +159,34 @@ describe("VethNatNetworkProvisioner", () => {
     processRunner.failing = (command, args) =>
       command === "iptables" && args.includes("10.0.0.0/8")
 
-    await expect(provisioner.create("job-4", [DNS_SERVER])).rejects.toThrow()
+    await expect(
+      provisioner.create("4".repeat(32), [DNS_SERVER]),
+    ).rejects.toThrow()
 
     const lines = commandLines(processRunner)
     expect(lines).not.toContain(expect.stringContaining("MASQUERADE"))
-    expect(lines).toEqual(
-      expect.arrayContaining([
-        expect.stringMatching(/^iptables -w 5 -F pp[ier]\d+$/),
-        expect.stringMatching(/^iptables -w 5 -X pp[ier]\d+$/),
-        expect.stringMatching(/^ip link delete veph\d+$/),
-        expect.stringMatching(/^ip netns delete peephole-\d+$/),
-      ]),
-    )
-
-    const reallocated = await allocator.allocate()
+    const reallocated = await allocator.allocate({
+      allocationId: "a".repeat(32),
+      uplink: "eth0",
+      dnsServers: [DNS_SERVER],
+    })
     expect(reallocated.index).toBeDefined()
   })
 
   it("fails closed and cleans IPv4 state when IPv6 enforcement fails", async () => {
     processRunner.failing = (command) => command === "ip6tables"
 
-    await expect(provisioner.create("job-5", [DNS_SERVER])).rejects.toThrow()
+    await expect(
+      provisioner.create("5".repeat(32), [DNS_SERVER]),
+    ).rejects.toThrow()
 
     const lines = commandLines(processRunner)
     expect(lines).not.toContain(expect.stringContaining("MASQUERADE"))
-    expect(lines).toEqual(
-      expect.arrayContaining([
-        expect.stringMatching(/^iptables -w 5 -D INPUT -i veph\d+ -j ppi\d+$/),
-        expect.stringMatching(
-          /^iptables -w 5 -D FORWARD -i veph\d+ -j ppe\d+$/,
-        ),
-        expect.stringMatching(/^iptables -w 5 -F pp[ier]\d+$/),
-        expect.stringMatching(/^iptables -w 5 -X pp[ier]\d+$/),
-      ]),
-    )
+    expect(lines).toContain("iptables -w 5 -S")
   })
 
   it("tears down NAT, hooks, chains, IPv6 policy, interfaces, and namespace", async () => {
-    const handle = await provisioner.create("job-6", [DNS_SERVER])
+    const handle = await provisioner.create("6".repeat(32), [DNS_SERVER])
     processRunner.calls.length = 0
 
     await handle.teardown()
@@ -199,21 +194,11 @@ describe("VethNatNetworkProvisioner", () => {
     const lines = commandLines(processRunner)
     expect(lines).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("iptables -w 5 -t nat -D POSTROUTING"),
-        expect.stringMatching(/^ip6tables -w 5 -D FORWARD -o veph\d+ -j DROP$/),
-        expect.stringMatching(/^ip6tables -w 5 -D FORWARD -i veph\d+ -j DROP$/),
-        expect.stringMatching(/^ip6tables -w 5 -D INPUT -i veph\d+ -j DROP$/),
-        expect.stringMatching(/^iptables -w 5 -D INPUT -i veph\d+ -j ppi\d+$/),
-        expect.stringMatching(
-          /^iptables -w 5 -D FORWARD -o veph\d+ -j ppr\d+$/,
-        ),
-        expect.stringMatching(
-          /^iptables -w 5 -D FORWARD -i veph\d+ -j ppe\d+$/,
-        ),
-        expect.stringMatching(/^iptables -w 5 -F pp[ier]\d+$/),
-        expect.stringMatching(/^iptables -w 5 -X pp[ier]\d+$/),
-        expect.stringMatching(/^ip link delete veph\d+$/),
-        expect.stringMatching(/^ip netns delete peephole-\d+$/),
+        "ip netns list",
+        "ip -o link show",
+        "iptables -w 5 -S",
+        "iptables -w 5 -t nat -S",
+        "ip6tables -w 5 -S",
       ]),
     )
 
@@ -222,11 +207,11 @@ describe("VethNatNetworkProvisioner", () => {
   })
 
   it("rejects missing or invalid DNS policy before creating network state", async () => {
-    await expect(provisioner.create("job-7", [])).rejects.toThrow(
+    await expect(provisioner.create("7".repeat(32), [])).rejects.toThrow(
       /IPv4 DNS resolver/,
     )
     await expect(
-      provisioner.create("job-8", ["not-an-ip-address"]),
+      provisioner.create("8".repeat(32), ["not-an-ip-address"]),
     ).rejects.toThrow(/Invalid DNS server/)
     expect(processRunner.calls).toHaveLength(0)
   })
@@ -235,9 +220,9 @@ describe("VethNatNetworkProvisioner", () => {
     processRunner.failing = (command, args) =>
       command === "ip" && args[0] === "route"
 
-    await expect(provisioner.create("job-9", [DNS_SERVER])).rejects.toThrow(
-      /default network interface/,
-    )
+    await expect(
+      provisioner.create("9".repeat(32), [DNS_SERVER]),
+    ).rejects.toThrow(/default network interface/)
   })
 })
 

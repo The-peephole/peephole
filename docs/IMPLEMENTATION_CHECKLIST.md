@@ -205,7 +205,7 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       /30, NAT'd through the host's discovered default interface --
       because a bare `runsc run --network=sandbox` never brings its own
       interface up on its own (a CNI plugin normally does this under a
-      full container platform). `SubnetAllocator` gives every job a
+      full container platform). `NetworkLeaseManager` gives every job a
       non-conflicting /30 out of a dedicated `10.200.0.0/16` pool via a
       file-lease-based IPAM, so concurrent jobs don't collide -- verified
       concurrently and end to end (real `npm ci` reaching the real npm
@@ -227,6 +227,18 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       packet-flow reasoning, verification, and limitations are documented in
       `docs/SANDBOX_NETWORK_SECURITY.md` and tested in
       `tests/networkNamespace.test.ts` / `tests/realGvisorSandbox.test.ts`.
+- [x] Make network ownership and crash recovery durable. The subnet slot is
+      now published transactionally with a complete, fsynced marker before
+      any netns/veth/iptables/NAT operation. `NetworkOrphanReaper` runs as a
+      synchronous production startup gate after runsc/disk reconciliation,
+      verifies marker-derived identity and host state, rejects unowned
+      Peephole-shaped resources, and releases a lease only after a second
+      inspection proves every owned resource absent. Normal teardown shares
+      the same verified path and propagates partial-cleanup failures. Unit
+      coverage includes partial setup, corrupt/symlinked leases, live owners,
+      unowned resources, command/verification failure, temporary transaction
+      recovery, and concurrent IPAM; the opt-in real suite includes an
+      intentionally abandoned full network allocation.
 - [x] Fixed a real DNS bug found on a real AWS EC2 host (Ubuntu,
       systemd-resolved) that WSL2 never exposed: `/etc/resolv.conf` there
       points at the `127.0.0.53` stub resolver, which systemd-resolved

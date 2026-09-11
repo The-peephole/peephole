@@ -13,7 +13,11 @@ import { readPreviewApiServerConfig } from "../preview-api/serverConfig"
 import { startNodePreviewApi } from "../preview-api/startNodeServer"
 import { composeProductionWorker } from "../preview-worker/gvisor/composeProductionWorker"
 import { GVisorOrphanReaper } from "../preview-worker/gvisor/gvisorOrphanReaper"
+import { VethNatNetworkProvisioner } from "../preview-worker/gvisor/networkNamespace"
+import { NetworkOrphanReaper } from "../preview-worker/gvisor/networkOrphanReaper"
+import { NetworkAllocationRegistry } from "../preview-worker/gvisor/networkAllocationRegistry"
 import { LoopbackSandboxDiskManager } from "../preview-worker/gvisor/sandboxDisk"
+import { NetworkLeaseManager } from "../preview-worker/gvisor/subnetAllocator"
 import { PreviewWorkerLoop } from "../preview-worker/workerLoop"
 import { PostgresProductionArtifactStore } from "../preview-api/postgres/productionArtifactStore"
 import { ProductionArtifactTlsAskServer } from "./artifactTlsAskServer"
@@ -76,6 +80,15 @@ async function main(): Promise<void> {
   // until all marker-owned resources left by an earlier process have been
   // reconciled against authoritative runsc state.
   await orphanReaper.reapAll()
+  const networkLeaseManager = new NetworkLeaseManager()
+  const networkActivityRegistry = new NetworkAllocationRegistry()
+  const networkOrphanReaper = new NetworkOrphanReaper({
+    leaseManager: networkLeaseManager,
+    activityRegistry: networkActivityRegistry,
+  })
+  // Network leases are the durable ownership source for netns/veth/firewall
+  // cleanup. A failure here aborts startup before listeners or workers exist.
+  await networkOrphanReaper.reapAll()
   await ensureSandboxDiskCapability(diskManager)
   await ensureProductionDiskLayout({
     bundlesRootDir: productionConfig.bundlesRootDir,
@@ -142,6 +155,10 @@ async function main(): Promise<void> {
     runscRootDir: productionConfig.runscRootDir,
     artifactStorageDir: productionConfig.artifactStorageDir,
     diskManager,
+    networkProvisioner: new VethNatNetworkProvisioner({
+      leaseManager: networkLeaseManager,
+      activityRegistry: networkActivityRegistry,
+    }),
   })
 
   const workerController = new AbortController()
@@ -161,7 +178,11 @@ async function main(): Promise<void> {
   let maintenanceRunning: Promise<void> | undefined
   const maintain = () => {
     if (maintenanceRunning) return
-    maintenanceRunning = Promise.all([orphanReaper.reap(), artifactHost.reap()])
+    maintenanceRunning = Promise.all([
+      orphanReaper.reap(),
+      networkOrphanReaper.reap(),
+      artifactHost.reap(),
+    ])
       .then(() => undefined)
       .catch((error: unknown) =>
         console.error("[peephole] cleanup failed; will retry", error),

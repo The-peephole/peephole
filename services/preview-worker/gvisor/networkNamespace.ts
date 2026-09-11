@@ -2,28 +2,15 @@ import { isIPv4 } from "node:net"
 
 import type { ProcessRunner } from "./processRunner"
 import { NodeProcessRunner } from "./nodeProcessRunner"
-import { SubnetAllocator, type AllocatedSubnet } from "./subnetAllocator"
+import { NetworkOrphanReaper } from "./networkOrphanReaper"
+import { NetworkAllocationRegistry } from "./networkAllocationRegistry"
+import { NetworkLeaseManager, type NetworkLease } from "./subnetAllocator"
+
+export { BLOCKED_IPV4_DESTINATIONS } from "./networkOrphanReaper"
+import { BLOCKED_IPV4_DESTINATIONS } from "./networkOrphanReaper"
 
 const SETUP_TIMEOUT_MS = 10_000
 const IPTABLES_LOCK_WAIT_SECONDS = "5"
-
-export const BLOCKED_IPV4_DESTINATIONS = [
-  "0.0.0.0/8",
-  "10.0.0.0/8",
-  "100.64.0.0/10",
-  "127.0.0.0/8",
-  "169.254.0.0/16",
-  "172.16.0.0/12",
-  "192.0.0.0/24",
-  "192.0.2.0/24",
-  "192.88.99.0/24",
-  "192.168.0.0/16",
-  "198.18.0.0/15",
-  "198.51.100.0/24",
-  "203.0.113.0/24",
-  "224.0.0.0/4",
-  "240.0.0.0/4",
-] as const
 
 export interface NetworkNamespaceHandle {
   /** Pass as the OCI spec's network namespace `path` so the sandbox joins
@@ -38,7 +25,9 @@ export interface NetworkNamespaceProvisionerOptions {
   ipBinaryPath?: string
   iptablesBinaryPath?: string
   ip6tablesBinaryPath?: string
-  subnetAllocator?: SubnetAllocator
+  subnetAllocator?: NetworkLeaseManager
+  activityRegistry?: NetworkAllocationRegistry
+  leaseManager?: NetworkLeaseManager
 }
 
 /**
@@ -59,14 +48,28 @@ export class VethNatNetworkProvisioner {
   private readonly ip: string
   private readonly iptables: string
   private readonly ip6tables: string
-  private readonly subnets: SubnetAllocator
+  private readonly leases: NetworkLeaseManager
+  private readonly reaper: NetworkOrphanReaper
+  private readonly activity: NetworkAllocationRegistry
 
   constructor(options: NetworkNamespaceProvisionerOptions = {}) {
     this.processRunner = options.processRunner ?? new NodeProcessRunner()
     this.ip = options.ipBinaryPath ?? "ip"
     this.iptables = options.iptablesBinaryPath ?? "iptables"
     this.ip6tables = options.ip6tablesBinaryPath ?? "ip6tables"
-    this.subnets = options.subnetAllocator ?? new SubnetAllocator()
+    this.leases =
+      options.leaseManager ??
+      options.subnetAllocator ??
+      new NetworkLeaseManager()
+    this.activity = options.activityRegistry ?? new NetworkAllocationRegistry()
+    this.reaper = new NetworkOrphanReaper({
+      leaseManager: this.leases,
+      processRunner: this.processRunner,
+      ipBinaryPath: this.ip,
+      iptablesBinaryPath: this.iptables,
+      ip6tablesBinaryPath: this.ip6tables,
+      activityRegistry: this.activity,
+    })
   }
 
   async create(
@@ -75,56 +78,61 @@ export class VethNatNetworkProvisioner {
   ): Promise<NetworkNamespaceHandle> {
     const dnsServers = normalizeDnsServers(configuredDnsServers)
     const uplink = await this.defaultUplinkInterface()
-    const subnet = await this.subnets.allocate()
-    const names = deriveNames(id, subnet.index)
+    this.activity.activate(id)
+    let lease: NetworkLease | undefined
 
     try {
+      lease = await this.leases.allocate({
+        allocationId: id,
+        uplink,
+        dnsServers,
+      })
       await this.run([
         "link",
         "add",
-        names.hostVeth,
+        lease.hostVeth,
         "mtu",
         "1500",
         "type",
         "veth",
         "peer",
         "name",
-        names.peerVeth,
+        lease.peerVeth,
       ])
       await this.run([
         "addr",
         "add",
-        `${subnet.hostIp}/${subnet.prefixLength}`,
+        `${lease.hostIp}/${lease.prefixLength}`,
         "dev",
-        names.hostVeth,
+        lease.hostVeth,
       ])
-      await this.run(["link", "set", names.hostVeth, "up"])
-      await this.run(["netns", "add", names.namespace])
-      await this.run(["link", "set", names.peerVeth, "netns", names.namespace])
-      await this.runInNamespace(names.namespace, [
+      await this.run(["link", "set", lease.hostVeth, "up"])
+      await this.run(["netns", "add", lease.namespace])
+      await this.run(["link", "set", lease.peerVeth, "netns", lease.namespace])
+      await this.runInNamespace(lease.namespace, [
         "addr",
         "add",
-        `${subnet.peerIp}/${subnet.prefixLength}`,
+        `${lease.peerIp}/${lease.prefixLength}`,
         "dev",
-        names.peerVeth,
+        lease.peerVeth,
       ])
-      await this.runInNamespace(names.namespace, [
+      await this.runInNamespace(lease.namespace, [
         "link",
         "set",
-        names.peerVeth,
+        lease.peerVeth,
         "up",
       ])
-      await this.runInNamespace(names.namespace, ["link", "set", "lo", "up"])
-      await this.runInNamespace(names.namespace, [
+      await this.runInNamespace(lease.namespace, ["link", "set", "lo", "up"])
+      await this.runInNamespace(lease.namespace, [
         "route",
         "add",
         "default",
         "via",
-        subnet.hostIp,
+        lease.hostIp,
       ])
 
-      await this.configureIpv4Firewall(names, dnsServers)
-      await this.configureIpv6Deny(names)
+      await this.configureIpv4Firewall(lease, dnsServers)
+      await this.configureIpv6Deny(lease)
       // NAT is deliberately last: a failure in any mandatory isolation rule
       // prevents the namespace from ever becoming usable by a sandbox.
       await this.iptablesRun([
@@ -133,115 +141,50 @@ export class VethNatNetworkProvisioner {
         "-A",
         "POSTROUTING",
         "-s",
-        subnet.peerIp,
+        `${lease.peerIp}/32`,
         "-o",
         uplink,
         "-m",
         "comment",
         "--comment",
-        names.comment,
+        lease.iptablesComment,
         "-j",
         "MASQUERADE",
       ])
     } catch (error) {
-      await this.teardown(names, uplink, subnet).catch(() => undefined)
+      try {
+        if (lease) {
+          await this.reaper.cleanupLease(lease, { allowLiveOwner: true })
+        }
+      } catch (cleanupError) {
+        this.activity.deactivate(id)
+        throw new AggregateError(
+          [error, cleanupError],
+          "Sandbox network setup failed and its durable cleanup also failed.",
+          { cause: cleanupError },
+        )
+      }
+      this.activity.deactivate(id)
       throw error
     }
 
+    let tornDown = false
     return {
-      path: `/var/run/netns/${names.namespace}`,
-      teardown: () => this.teardown(names, uplink, subnet),
+      path: `/var/run/netns/${lease.namespace}`,
+      teardown: async () => {
+        if (tornDown) return
+        try {
+          await this.reaper.cleanupLease(lease, { allowLiveOwner: true })
+          tornDown = true
+        } finally {
+          this.activity.deactivate(id)
+        }
+      },
     }
-  }
-
-  private async teardown(
-    names: ReturnType<typeof deriveNames>,
-    uplink: string,
-    subnet: AllocatedSubnet,
-  ): Promise<void> {
-    // Best-effort and idempotent: deleting the host-side veth also deletes its peer, so
-    // the namespace's own interface is already gone by the time we get to
-    // it, and each step tolerates the previous one never having
-    // succeeded (partial setup on the throw path above).
-    await this.iptablesRun([
-      "-t",
-      "nat",
-      "-D",
-      "POSTROUTING",
-      "-s",
-      subnet.peerIp,
-      "-o",
-      uplink,
-      "-m",
-      "comment",
-      "--comment",
-      names.comment,
-      "-j",
-      "MASQUERADE",
-    ]).catch(() => undefined)
-    await this.ip6tablesRun([
-      "-D",
-      "FORWARD",
-      "-o",
-      names.hostVeth,
-      "-j",
-      "DROP",
-    ]).catch(() => undefined)
-    await this.ip6tablesRun([
-      "-D",
-      "FORWARD",
-      "-i",
-      names.hostVeth,
-      "-j",
-      "DROP",
-    ]).catch(() => undefined)
-    await this.ip6tablesRun([
-      "-D",
-      "INPUT",
-      "-i",
-      names.hostVeth,
-      "-j",
-      "DROP",
-    ]).catch(() => undefined)
-    await this.iptablesRun([
-      "-D",
-      "INPUT",
-      "-i",
-      names.hostVeth,
-      "-j",
-      names.inputChain,
-    ]).catch(() => undefined)
-    await this.iptablesRun([
-      "-D",
-      "FORWARD",
-      "-o",
-      names.hostVeth,
-      "-j",
-      names.returnChain,
-    ]).catch(() => undefined)
-    await this.iptablesRun([
-      "-D",
-      "FORWARD",
-      "-i",
-      names.hostVeth,
-      "-j",
-      names.egressChain,
-    ]).catch(() => undefined)
-    for (const chain of [
-      names.inputChain,
-      names.returnChain,
-      names.egressChain,
-    ]) {
-      await this.iptablesRun(["-F", chain]).catch(() => undefined)
-      await this.iptablesRun(["-X", chain]).catch(() => undefined)
-    }
-    await this.run(["link", "delete", names.hostVeth]).catch(() => undefined)
-    await this.run(["netns", "delete", names.namespace]).catch(() => undefined)
-    await this.subnets.release(subnet.index)
   }
 
   private async configureIpv4Firewall(
-    names: ReturnType<typeof deriveNames>,
+    names: NetworkLease,
     dnsServers: readonly string[],
   ): Promise<void> {
     for (const chain of [
@@ -258,6 +201,8 @@ export class VethNatNetworkProvisioner {
           "-d",
           `${dnsServer}/32`,
           "-p",
+          protocol,
+          "-m",
           protocol,
           "--dport",
           "53",
@@ -327,9 +272,7 @@ export class VethNatNetworkProvisioner {
     ])
   }
 
-  private async configureIpv6Deny(
-    names: ReturnType<typeof deriveNames>,
-  ): Promise<void> {
+  private async configureIpv6Deny(names: NetworkLease): Promise<void> {
     // No IPv6 address/default route/NAT is configured. These mandatory rules
     // also suppress any kernel-generated link-local forwarding path.
     await this.ip6tablesRun([
@@ -419,22 +362,6 @@ export class VethNatNetworkProvisioner {
 }
 
 type ProcessRunResultOrThrow = Awaited<ReturnType<ProcessRunner["run"]>>
-
-function deriveNames(id: string, subnetIndex: number) {
-  // Interface names are capped at 15 characters (IFNAMSIZ - 1); the
-  // subnet index (unique per lease) is what actually needs to be
-  // collision-free, `id` is only for human debugging in the comment.
-  const suffix = String(subnetIndex)
-  return {
-    hostVeth: `veph${suffix}`,
-    peerVeth: `vpph${suffix}`,
-    namespace: `peephole-${suffix}`,
-    comment: `peephole-${id}-${suffix}`.slice(0, 255),
-    egressChain: `ppe${suffix}`,
-    inputChain: `ppi${suffix}`,
-    returnChain: `ppr${suffix}`,
-  }
-}
 
 function normalizeDnsServers(values: readonly string[]): string[] {
   const normalized = Array.from(new Set(values))

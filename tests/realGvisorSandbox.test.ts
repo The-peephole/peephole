@@ -16,6 +16,9 @@ import {
   resolveDnsConfigSource,
 } from "../services/preview-worker/gvisor/dnsConfig"
 import { GVisorOrphanReaper } from "../services/preview-worker/gvisor/gvisorOrphanReaper"
+import { VethNatNetworkProvisioner } from "../services/preview-worker/gvisor/networkNamespace"
+import { NetworkOrphanReaper } from "../services/preview-worker/gvisor/networkOrphanReaper"
+import { NodeProcessRunner } from "../services/preview-worker/gvisor/nodeProcessRunner"
 import { SANDBOX_DEV_SHM_TMPFS_BYTES } from "../services/preview-worker/gvisor/ociConfig"
 import { GVisorSandboxProvisioner } from "../services/preview-worker/gvisor/gvisorSandboxProvisioner"
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
@@ -24,6 +27,10 @@ import {
   LoopbackSandboxDiskManager,
   MIN_SANDBOX_DISK_LIMIT_BYTES,
 } from "../services/preview-worker/gvisor/sandboxDisk"
+import {
+  NetworkLeaseManager,
+  type NetworkLease,
+} from "../services/preview-worker/gvisor/subnetAllocator"
 import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 
 // Requires a real Linux host with runsc, ip, iptables, and ip6tables on PATH and root
@@ -508,6 +515,70 @@ describe.skipIf(!process.env.PEEPHOLE_REAL_GVISOR_TESTS)(
       expect(JSON.parse(body)).toMatchObject({ name: "yallist" })
     }, 30_000)
 
+    it("reconciles a real abandoned network lease and every owned host resource", async () => {
+      const testRoot = await createRealGvisorTestDirectory(
+        "peephole-real-network-reaper-",
+      )
+      const leaseDir = path.join(testRoot, "leases")
+      const leaseManager = new NetworkLeaseManager({
+        leaseDir,
+        // This fixture deliberately represents a dead worker after setup.
+        processExists: () => false,
+      })
+      const processRunner = new NodeProcessRunner()
+      const provisioner = new VethNatNetworkProvisioner({
+        leaseManager,
+        processRunner,
+      })
+      let created = false
+      try {
+        created = true
+        await provisioner.create("e".repeat(32), resolveDnsConfig().nameservers)
+        const [lease] = await leaseManager.listOwnedLeases()
+        if (!lease) throw new Error("expected a durable network lease")
+
+        const before = await inspectRealNetworkResources(processRunner, lease)
+        expect(before.namespace).toBe(true)
+        expect(before.hostVeth).toBe(true)
+        expect(before.ipv4).toBe(true)
+        expect(before.nat).toBe(true)
+        expect(before.ipv6).toBe(true)
+
+        await new NetworkOrphanReaper({
+          leaseManager,
+          processRunner,
+        }).reapAll()
+
+        const after = await inspectRealNetworkResources(processRunner, lease)
+        expect(after).toEqual({
+          namespace: false,
+          hostVeth: false,
+          ipv4: false,
+          nat: false,
+          ipv6: false,
+        })
+        expect(await leaseManager.listOwnedLeases()).toEqual([])
+        created = false
+      } finally {
+        // If the assertion/reaper failed, retry the same marker-verified path;
+        // never issue wildcard host cleanup from the test harness.
+        if (created) {
+          try {
+            await new NetworkOrphanReaper({
+              leaseManager,
+              processRunner,
+            }).reapAll()
+            created = false
+          } catch (error) {
+            process.stderr.write(
+              `Real network fixture cleanup failed; ownership lease was preserved at ${leaseDir}: ${String(error)}\n`,
+            )
+          }
+        }
+        if (!created) await rm(testRoot, { recursive: true, force: true })
+      }
+    }, 30_000)
+
     it("blocks the cloud metadata address even with network: sandbox", async () => {
       const ws = await allocate("real-gvisor-metadata")
       const runner = new RunscCommandRunner({ network: "sandbox" })
@@ -616,4 +687,33 @@ const metadataProbeScript =
 
 function rejectedFetchScript(url: string): string {
   return `fetch(${JSON.stringify(url)},{signal:AbortSignal.timeout(5000)}).then(()=>{console.log('REACHED');process.exit(0)}).catch(e=>{console.error('BLOCKED',String(e));process.exit(1)})`
+}
+
+async function inspectRealNetworkResources(
+  runner: NodeProcessRunner,
+  lease: NetworkLease,
+) {
+  const [namespaces, links, ipv4, nat, ipv6] = await Promise.all([
+    runner.run("ip", ["netns", "list"], { timeoutMs: 10_000 }),
+    runner.run("ip", ["-o", "link", "show"], { timeoutMs: 10_000 }),
+    runner.run("iptables", ["-w", "5", "-S"], { timeoutMs: 10_000 }),
+    runner.run("iptables", ["-w", "5", "-t", "nat", "-S"], {
+      timeoutMs: 10_000,
+    }),
+    runner.run("ip6tables", ["-w", "5", "-S"], { timeoutMs: 10_000 }),
+  ])
+  for (const command of [namespaces, links, ipv4, nat, ipv6]) {
+    expect(command.exitCode).toBe(0)
+    expect(command.timedOut).toBe(false)
+  }
+  return {
+    namespace: namespaces.stdout.includes(lease.namespace),
+    hostVeth: links.stdout.includes(lease.hostVeth),
+    ipv4:
+      ipv4.stdout.includes(lease.egressChain) &&
+      ipv4.stdout.includes(lease.inputChain) &&
+      ipv4.stdout.includes(lease.returnChain),
+    nat: nat.stdout.includes(lease.iptablesComment),
+    ipv6: ipv6.stdout.includes(lease.hostVeth),
+  }
 }

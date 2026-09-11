@@ -138,7 +138,12 @@ describe("composeProductionWorker", () => {
     const processRunner = new RecordingProcessRunner()
     const networkProvisioner = new VethNatNetworkProvisioner({
       processRunner,
-      subnetAllocator: new SubnetAllocator(leaseDir),
+      subnetAllocator: new SubnetAllocator({
+        leaseDir,
+        bootId: async () => "test-boot",
+        processStartTime: async () => "test-start",
+        syncDirectory: async () => undefined,
+      }),
     })
 
     const worker = composeProductionWorker(control, {

@@ -119,11 +119,50 @@ public by design.
 
 ## Setup, teardown, and verification
 
+Before creating any host resource, `NetworkLeaseManager` takes a serialized
+allocation lock and writes a complete `lease.json` in an exact
+`.peephole-net-allocating-<index>-<random>` directory. It fsyncs the marker and
+directory, atomically renames the directory to `<index>`, and fsyncs the lease
+root. Only then may veth, namespace, firewall, or NAT creation begin. A crash
+before publication leaves no network resource; strict temporary recovery removes
+only direct-child, ordinary directories with the exact transaction name and
+marker-only contents.
+
+The version 1 marker records the subnet index, cryptographic disk allocation ID,
+all derived namespace/veth/chain names, host/peer addresses and prefix, exact
+uplink, NAT comment, DNS policy, creator PID, Linux boot ID, process start time,
+and creation timestamp. Reconciliation derives names and addresses again and
+requires an exact match. Process start time supplements PID and boot ID so PID
+reuse is not mistaken for the original live allocator.
+
 Chains are fully populated before their INPUT/FORWARD hooks are inserted, IPv6
 deny rules follow, and MASQUERADE is last. The gVisor process is launched only
-after setup returns successfully. On setup failure or normal teardown, Peephole
-removes NAT, IPv6 hooks, IPv4 hooks, custom chains, the veth, the namespace, and
-the subnet lease. Each cleanup action tolerates partial prior setup.
+after setup returns successfully. Startup runs disk/runsc reconciliation and then
+`NetworkOrphanReaper` synchronously, before disk probes, listeners, or workers.
+Network reconciliation failure aborts startup.
+
+Cleanup removes the exact NAT rule, exact IPv6 hooks, exact IPv4 hooks, owned
+custom chains, host veth, and namespace, in that order. A second complete host
+inspection must prove that the namespace, both veth names, chains/hooks, NAT
+comment, and IPv6 hooks are absent before the lease is atomically released.
+Missing resources are valid partial-creation state. Unexpected properties or
+rules on an expected name fail closed. Cleanup command or verification failure
+is propagated and leaves the lease for inspection/retry; normal teardown no
+longer hides errors.
+
+At startup, Peephole-shaped namespaces (`peephole-<index>`), veths
+(`veph<index>`/`vpph<index>`), chains (`ppe`/`ppi`/`ppr` plus index), and NAT
+comments without a matching valid lease are preserved and cause startup to fail.
+They are never guessed and deleted from a broad `grep` result. A same-boot live
+PID with the recorded process start time is likewise preserved and rejected by
+the startup gate, protecting an accidental second production process using the
+same root.
+
+This is intentionally not an automatic migration for legacy empty slot
+directories. Before the first rollout, an operator must inspect and remove any
+network orphan created by the old markerless allocator. If a numeric lease or
+Peephole-shaped host resource has no valid version 1 marker, the new startup
+gate stops and preserves it instead of inferring ownership.
 
 Unit tests validate exact commands and ordering. The opt-in real suite requires
 a Linux host, root-equivalent networking privileges, `runsc`, `ip`, `iptables`,
@@ -156,6 +195,13 @@ work; TCP connections to the veth gateway, EC2 VPC addresses, another active
 job's peer address, and `169.254.169.254` time out or fail; and the same probes
 during the build phase fail because it still uses `network: "none"`.
 
+The real suite also creates a complete network without calling normal teardown,
+runs `NetworkOrphanReaper`, and proves namespace, veth, IPv4 chains/hooks, NAT,
+IPv6 hooks, and the lease are all gone. Production SIGKILL acceptance should
+repeat the same check after `systemctl kill --signal=SIGKILL peephole.service`
+and the automatic restart. Health/readiness must return 200 only after both disk
+and network startup reconciliation have completed.
+
 ## Remaining limitations
 
 - Install scripts retain broad public IPv4 Internet access. Registry-only
@@ -169,5 +215,9 @@ during the build phase fail because it still uses `network: "none"`.
   necessary.
 - Host firewall policy and resolver configuration are privileged deployment
   inputs. Compromise of the worker host is outside this sandbox boundary.
-- File-based subnet leases survive ordinary teardown but still need stale-lease
-  reconciliation after a host/process crash.
+- The lease root is a single-host coordination mechanism. Production assumes one
+  systemd service per root; live-owner checks make accidental double-start fail
+  closed, but it is not a distributed lock for multiple machines.
+- A host administrator can mutate networking after validation. Host root and
+  firewall integrity remain trusted; cleanup deliberately preserves ambiguous
+  state rather than deleting a merely similar resource.
