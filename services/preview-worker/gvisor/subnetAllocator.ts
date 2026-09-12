@@ -110,6 +110,11 @@ export interface NetworkLeaseManagerOptions {
   /** Compatibility seam for older tests. Prefer processState. */
   processExists?: (pid: number) => boolean
   syncDirectory?: (candidate: string) => Promise<void>
+  /** Test seam for the atomic temporary-to-final lock publication only. */
+  publishLockDirectory?: (
+    temporaryDir: string,
+    lockDir: string,
+  ) => Promise<void>
   lockTimeoutMs?: number
 }
 
@@ -123,6 +128,10 @@ export class NetworkLeaseManager {
   private readonly readProcessStartTime: (pid: number) => Promise<string | null>
   private readonly readProcessState: (pid: number) => ProcessState
   private readonly syncDirectory: (candidate: string) => Promise<void>
+  private readonly publishLockDirectory: (
+    temporaryDir: string,
+    lockDir: string,
+  ) => Promise<void>
   private readonly lockTimeoutMs: number
 
   constructor(options: NetworkLeaseManagerOptions | string = {}) {
@@ -140,6 +149,7 @@ export class NetworkLeaseManager {
         ? (pid) => (normalized.processExists?.(pid) ? "EXISTS" : "MISSING")
         : defaultProcessState)
     this.syncDirectory = normalized.syncDirectory ?? fsyncDirectory
+    this.publishLockDirectory = normalized.publishLockDirectory ?? rename
     this.lockTimeoutMs = normalized.lockTimeoutMs ?? LOCK_TIMEOUT_MS
   }
 
@@ -530,15 +540,40 @@ export class NetworkLeaseManager {
     let actionError: unknown
     try {
       for (;;) {
+        // Inspect a lock that was already present at the start of this
+        // attempt before creating or publishing a candidate. The second
+        // check below closes the normal contender race while the candidate
+        // is being made durable.
+        if (await pathExists(lockDir)) {
+          await this.waitForOrRecoverPublishedLock(root, lockDir, deadline)
+          continue
+        }
+
         const temporaryDir = path.join(
           root,
           `.peephole-network-lock-allocating-${this.random(16).toString("hex")}`,
         )
         await this.createLockCandidate(temporaryDir, owner)
+
+        // POSIX rename may replace an existing *empty* destination directory.
+        // Inspect every already-present final lock before attempting publish,
+        // so a legacy/corrupt markerless lock remains fail-closed instead of
+        // being silently replaced by this complete candidate.
+        if (await pathExists(lockDir)) {
+          await this.removeExactLockDirectory(
+            root,
+            temporaryDir,
+            owner,
+            LOCK_TEMP_PATTERN,
+          )
+          await this.waitForOrRecoverPublishedLock(root, lockDir, deadline)
+          continue
+        }
+
         try {
-          // A valid final lock is non-empty, so POSIX rename cannot replace it.
-          // Exactly one concurrent candidate can publish to the absent path.
-          await rename(temporaryDir, lockDir)
+          // With an absent destination, exactly one normal concurrent
+          // candidate can publish. A loser inspects the winner below.
+          await this.publishLockDirectory(temporaryDir, lockDir)
           acquired = true
           await this.syncDirectory(root)
           break
@@ -560,33 +595,12 @@ export class NetworkLeaseManager {
             await delay(10)
             continue
           }
-          let currentOwner: LockOwner
-          try {
-            currentOwner = await this.readFinalLockOwner(root, lockDir)
-          } catch (lockError) {
-            if ((lockError as NodeJS.ErrnoException).code === "ENOENT") {
-              continue
-            }
-            throw lockError
-          }
-          const liveness = await this.classifyOwner(currentOwner)
-          if (liveness.state === "STALE") {
-            await this.quarantineFinalLock(root, lockDir, currentOwner)
-            continue
-          }
-          if (liveness.state === "UNKNOWN") {
-            throw new Error(
-              `Cannot determine network allocation lock liveness: ${liveness.reason}`,
-              { cause: error },
-            )
-          }
-          if (this.now().getTime() >= deadline) {
-            throw new Error(
-              "Timed out waiting for live network allocation lock.",
-              { cause: error },
-            )
-          }
-          await delay(50)
+          await this.waitForOrRecoverPublishedLock(
+            root,
+            lockDir,
+            deadline,
+            error,
+          )
         }
       }
       await this.recoverLockResiduesUnlocked(root)
@@ -611,6 +625,38 @@ export class NetworkLeaseManager {
     if (cleanupError !== undefined) throw cleanupError
     if (actionError !== undefined) throw actionError
     return value
+  }
+
+  private async waitForOrRecoverPublishedLock(
+    root: string,
+    lockDir: string,
+    deadline: number,
+    cause?: unknown,
+  ): Promise<void> {
+    let currentOwner: LockOwner
+    try {
+      currentOwner = await this.readFinalLockOwner(root, lockDir)
+    } catch (lockError) {
+      if ((lockError as NodeJS.ErrnoException).code === "ENOENT") return
+      throw lockError
+    }
+    const liveness = await this.classifyOwner(currentOwner)
+    if (liveness.state === "STALE") {
+      await this.quarantineFinalLock(root, lockDir, currentOwner)
+      return
+    }
+    if (liveness.state === "UNKNOWN") {
+      throw new Error(
+        `Cannot determine network allocation lock liveness: ${liveness.reason}`,
+        { cause },
+      )
+    }
+    if (this.now().getTime() >= deadline) {
+      throw new Error("Timed out waiting for live network allocation lock.", {
+        cause,
+      })
+    }
+    await delay(50)
   }
 
   private async createLockOwner(): Promise<LockOwner> {

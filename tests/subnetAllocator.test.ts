@@ -318,6 +318,54 @@ describe("NetworkLeaseManager", () => {
       expect(await readdir(leaseDir)).toContain(lockName)
     })
 
+    it("does not attempt publication when an empty final lock already exists", async () => {
+      const directory = path.join(leaseDir, lockName)
+      await mkdir(directory)
+      let publicationAttempts = 0
+      const candidate = makeManager(leaseDir, {
+        publishLockDirectory: async () => {
+          publicationAttempts += 1
+          throw new Error("publication must not be reached")
+        },
+      })
+
+      await expect(allocate(candidate)).rejects.toThrow(
+        /exactly one owner marker/,
+      )
+      expect(publicationAttempts).toBe(0)
+      expect(await readdir(directory)).toEqual([])
+    })
+
+    it("inspects a valid winner published after the absent precheck", async () => {
+      const directory = path.join(leaseDir, lockName)
+      let publicationAttempts = 0
+      const candidate = makeManager(leaseDir, {
+        lockTimeoutMs: 0,
+        publishLockDirectory: async () => {
+          publicationAttempts += 1
+          await mkdir(directory)
+          await writeFile(
+            path.join(directory, "owner.json"),
+            JSON.stringify(
+              lockOwner({
+                pid: process.pid,
+                processStartTime: "test-start",
+              }),
+            ),
+          )
+          throw Object.assign(new Error("concurrent winner"), {
+            code: "EEXIST",
+          })
+        },
+      })
+
+      await expect(allocate(candidate)).rejects.toThrow(
+        /live network allocation lock/,
+      )
+      expect(publicationAttempts).toBe(1)
+      expect(await readdir(directory)).toEqual(["owner.json"])
+    })
+
     it("fails closed without following a final-lock symlink", async () => {
       const target = await mkdtemp(
         path.join(os.tmpdir(), "peephole-lock-target-"),
