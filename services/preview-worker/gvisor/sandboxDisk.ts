@@ -115,6 +115,10 @@ export interface LoopbackSandboxDiskManagerOptions {
   bootId?: () => Promise<string | null>
   processExists?: (pid: number) => boolean
   statFilesystem?: (candidate: string) => Promise<FilesystemCapacity>
+  /** Unit-test seam for the privileged ownership boundary. Production uses
+   * node:fs/promises chown so the mounted workspace remains owned by the
+   * sandbox UID/GID. */
+  chownPath?: (candidate: string, uid: number, gid: number) => Promise<void>
   /** Test seam for Windows, where opening a directory for fsync is not
    * supported. Production uses a real directory fsync on Linux. */
   syncDirectory?: (candidate: string) => Promise<void>
@@ -149,6 +153,11 @@ export class LoopbackSandboxDiskManager implements SandboxDiskManager {
   private readonly statFilesystem: (
     candidate: string,
   ) => Promise<FilesystemCapacity>
+  private readonly chownPath: (
+    candidate: string,
+    uid: number,
+    gid: number,
+  ) => Promise<void>
   private readonly syncDirectory: (candidate: string) => Promise<void>
 
   constructor(options: LoopbackSandboxDiskManagerOptions = {}) {
@@ -180,6 +189,7 @@ export class LoopbackSandboxDiskManager implements SandboxDiskManager {
     this.readBootId = options.bootId ?? defaultBootId
     this.processExists = options.processExists ?? defaultProcessExists
     this.statFilesystem = options.statFilesystem ?? statfs
+    this.chownPath = options.chownPath ?? chown
     this.syncDirectory = options.syncDirectory ?? fsyncDirectory
   }
 
@@ -350,13 +360,13 @@ export class LoopbackSandboxDiskManager implements SandboxDiskManager {
         )
       }
 
-      await chown(owned.mountpoint, SANDBOX_UID, SANDBOX_GID)
+      await this.chownPath(owned.mountpoint, SANDBOX_UID, SANDBOX_GID)
       await chmod(owned.mountpoint, 0o700)
       const home = path.join(owned.mountpoint, ".home")
       const npmCache = path.join(home, ".npm")
       await mkdir(npmCache, { recursive: true, mode: 0o700 })
-      await chown(home, SANDBOX_UID, SANDBOX_GID)
-      await chown(npmCache, SANDBOX_UID, SANDBOX_GID)
+      await this.chownPath(home, SANDBOX_UID, SANDBOX_GID)
+      await this.chownPath(npmCache, SANDBOX_UID, SANDBOX_GID)
       await chmod(home, 0o700)
       await chmod(npmCache, 0o700)
 

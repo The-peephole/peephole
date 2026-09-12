@@ -109,10 +109,12 @@ function failed(stderr: string): ProcessRunResult {
 describe("LoopbackSandboxDiskManager", () => {
   let bundlesRootDir: string
   let tools: LoopTools
+  let ownershipChanges: Array<{ candidate: string; uid: number; gid: number }>
 
   beforeEach(async () => {
     bundlesRootDir = await mkdtemp(path.join(os.tmpdir(), "peephole-disks-"))
     tools = new LoopTools()
+    ownershipChanges = []
   })
 
   afterEach(async () => {
@@ -135,6 +137,9 @@ describe("LoopbackSandboxDiskManager", () => {
       }),
       bootId: async () => "boot-test",
       processExists: () => false,
+      chownPath: async (candidate, uid, gid) => {
+        ownershipChanges.push({ candidate, uid, gid })
+      },
       syncDirectory: async () => undefined,
       ...overrides,
     })
@@ -218,6 +223,19 @@ describe("LoopbackSandboxDiskManager", () => {
     expect(
       tools.calls.find((call) => call.command === "mount")?.args.join(" "),
     ).toContain("rw,nodev,nosuid,noatime,nodiscard")
+    expect(ownershipChanges).toEqual([
+      { candidate: allocation.mountpoint, uid: 65_534, gid: 65_534 },
+      {
+        candidate: path.join(allocation.mountpoint, ".home"),
+        uid: 65_534,
+        gid: 65_534,
+      },
+      {
+        candidate: path.join(allocation.mountpoint, ".home", ".npm"),
+        uid: 65_534,
+        gid: 65_534,
+      },
+    ])
 
     await disks.destroyAllocation(allocation)
     expect(tools.calls.map((call) => call.command).slice(-8)).toEqual([

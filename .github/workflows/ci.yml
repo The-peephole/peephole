@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -13,29 +16,46 @@ jobs:
   checks:
     name: Format, lint, typecheck, test, build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
 
-      - run: npm ci
+      - name: Install dependencies
+        run: npm ci
 
-      - run: npm run format:check
+      - name: Check formatting
+        run: npm run format:check
 
-      - run: npm run lint
+      - name: Check patch whitespace
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: git diff --check "$BASE_SHA...$HEAD_SHA"
 
-      - run: npm run typecheck
+      - name: Lint
+        run: npm run lint
 
-      - run: npm test
+      - name: Typecheck
+        run: npm run typecheck
 
-      - run: npm run build
+      - name: Run portable unit tests
+        run: npm test
+
+      - name: Build extension
+        run: npm run build
 
   postgres-integration:
     name: PostgreSQL integration tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -60,6 +80,8 @@ jobs:
           node-version: 24
           cache: npm
 
-      - run: npm ci
+      - name: Install dependencies
+        run: npm ci
 
-      - run: npm run test:postgres
+      - name: Run PostgreSQL integration tests
+        run: npm run test:postgres
