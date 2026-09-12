@@ -5,6 +5,7 @@ import {
   readdir,
   rename,
   rm,
+  rmdir,
   symlink,
   writeFile,
 } from "node:fs/promises"
@@ -88,6 +89,50 @@ describe("NetworkLeaseManager", () => {
     )
     expect(new Set(results.map((lease) => lease.index)).size).toBe(20)
   }, 20_000)
+
+  it("accepts only a verified candidate disappearing during its final rmdir", async () => {
+    let publicationAttempts = 0
+    let simulatedCleanupRace = false
+    const candidate = makeManager(leaseDir, {
+      publishLockDirectory: async (temporaryDir, lockDir) => {
+        publicationAttempts += 1
+        if (publicationAttempts === 1) {
+          throw Object.assign(new Error("transient publication race"), {
+            code: "EEXIST",
+          })
+        }
+        await rename(temporaryDir, lockDir)
+      },
+      removeLockDirectory: async (directory) => {
+        if (
+          !simulatedCleanupRace &&
+          path
+            .basename(directory)
+            .startsWith(".peephole-network-lock-allocating-")
+        ) {
+          simulatedCleanupRace = true
+          // A concurrent residue scan wins the rmdir after this owner has
+          // already verified the marker and removed it.
+          await rmdir(directory)
+        }
+        await rmdir(directory)
+      },
+    })
+
+    await expect(allocate(candidate)).resolves.toBeDefined()
+    expect(simulatedCleanupRace).toBe(true)
+    expect(publicationAttempts).toBe(2)
+  })
+
+  it("still fails closed when final lock cleanup sees a replacement", async () => {
+    const candidate = makeManager(leaseDir, {
+      removeLockDirectory: async () => {
+        throw Object.assign(new Error("path was replaced"), { code: "ENOTDIR" })
+      },
+    })
+
+    await expect(allocate(candidate)).rejects.toThrow(/path was replaced/)
+  })
 
   it("recovers exact pre-publication crash directories and leaves unrelated hidden directories", async () => {
     const empty = path.join(

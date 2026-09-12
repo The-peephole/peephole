@@ -115,6 +115,9 @@ export interface NetworkLeaseManagerOptions {
     temporaryDir: string,
     lockDir: string,
   ) => Promise<void>
+  /** Test seam for the final rmdir in an already ownership-verified lock
+   * cleanup. Production uses node:fs/promises rmdir. */
+  removeLockDirectory?: (candidate: string) => Promise<void>
   lockTimeoutMs?: number
 }
 
@@ -132,6 +135,7 @@ export class NetworkLeaseManager {
     temporaryDir: string,
     lockDir: string,
   ) => Promise<void>
+  private readonly removeLockDirectory: (candidate: string) => Promise<void>
   private readonly lockTimeoutMs: number
 
   constructor(options: NetworkLeaseManagerOptions | string = {}) {
@@ -150,6 +154,7 @@ export class NetworkLeaseManager {
         : defaultProcessState)
     this.syncDirectory = normalized.syncDirectory ?? fsyncDirectory
     this.publishLockDirectory = normalized.publishLockDirectory ?? rename
+    this.removeLockDirectory = normalized.removeLockDirectory ?? rmdir
     this.lockTimeoutMs = normalized.lockTimeoutMs ?? LOCK_TIMEOUT_MS
   }
 
@@ -916,7 +921,16 @@ export class NetworkLeaseManager {
     )
     assertSameLockOwner(observed, expectedOwner)
     await rm(path.join(candidate, LOCK_OWNER_NAME), { force: false })
-    await rmdir(candidate)
+    try {
+      await this.removeLockDirectory(candidate)
+    } catch (error) {
+      // Once this exact direct child and owner have been strictly verified and
+      // this cleanup removed owner.json, a residue scanner may observe the
+      // now-empty directory and remove it first. Only that final rmdir's
+      // ENOENT is benign; all earlier shape/owner checks and every other
+      // filesystem error remain fail-closed.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
     await this.syncDirectory(root)
   }
 
