@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
   NetworkOrphanReaper,
   expectedRules,
+  sameRule,
 } from "../services/preview-worker/gvisor/networkOrphanReaper"
 import { NetworkAllocationRegistry } from "../services/preview-worker/gvisor/networkAllocationRegistry"
 import { VethNatNetworkProvisioner } from "../services/preview-worker/gvisor/networkNamespace"
@@ -292,6 +293,29 @@ describe("NetworkOrphanReaper", () => {
     expect(await readdir(lease.leaseDir)).toEqual(["lease.json"])
   })
 
+  it("accepts iptables' reordered conntrack state output and cleans it", async () => {
+    const lease = await allocate(manager)
+    host.install(lease, "full")
+    const conntrackRule = host.ipv4.find((rule) => rule.includes("--ctstate"))
+    expect(conntrackRule).toBeDefined()
+    const stateIndex = conntrackRule?.indexOf("--ctstate") ?? -1
+    if (conntrackRule) conntrackRule[stateIndex + 1] = "RELATED,ESTABLISHED"
+
+    await reaper.reapAll()
+
+    expect(await manager.listOwnedLeases()).toEqual([])
+    expect(host.ipv4).toEqual([])
+  })
+
+  it("still fails closed for an unexpected extra IPv4 rule", async () => {
+    const lease = await allocate(manager)
+    host.install(lease, "full")
+    host.ipv4.push(["-A", lease.egressChain, "-p", "tcp", "-j", "ACCEPT"])
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected IPv4 rule/)
+    expect(await manager.listOwnedLeases()).toHaveLength(1)
+  })
+
   it("preserves a valid lease when its owner is still live", async () => {
     manager = managerFor(root, true)
     reaper = new NetworkOrphanReaper({
@@ -456,6 +480,47 @@ describe("NetworkOrphanReaper", () => {
   })
 })
 
+describe("sameRule", () => {
+  const rule = (states: string) => [
+    "-A",
+    "ppr1",
+    "-m",
+    "conntrack",
+    "--ctstate",
+    states,
+    "-j",
+    "ACCEPT",
+  ]
+
+  it("treats only reordered equivalent conntrack state sets as equal", () => {
+    expect(
+      sameRule(rule("ESTABLISHED,RELATED"), rule("RELATED,ESTABLISHED")),
+    ).toBe(true)
+    expect(sameRule(rule("ESTABLISHED,RELATED"), rule("ESTABLISHED"))).toBe(
+      false,
+    )
+    expect(sameRule(rule("ESTABLISHED,RELATED"), rule("NEW,ESTABLISHED"))).toBe(
+      false,
+    )
+  })
+
+  it("keeps every non-ctstate token position exact", () => {
+    const reordered = rule("ESTABLISHED,RELATED")
+    reordered[2] = "conntrack"
+    reordered[3] = "-m"
+    expect(sameRule(rule("ESTABLISHED,RELATED"), reordered)).toBe(false)
+  })
+
+  it.each([
+    "ESTABLISHED,,RELATED",
+    "ESTABLISHED,ESTABLISHED",
+    "ESTABLISHED,ARBITRARY",
+    "ESTABLISHED, RELATED",
+  ])("rejects invalid conntrack state token %s", (states) => {
+    expect(sameRule(rule(states), rule(states))).toBe(false)
+  })
+})
+
 function managerFor(root: string, live: boolean): NetworkLeaseManager {
   return new NetworkLeaseManager({
     leaseDir: root,
@@ -496,6 +561,6 @@ function render(rule: readonly string[]): string {
 }
 
 function removeRule(rules: string[][], expected: string[]): void {
-  const index = rules.findIndex((rule) => same(rule, expected))
+  const index = rules.findIndex((rule) => sameRule(rule, expected))
   if (index >= 0) rules.splice(index, 1)
 }

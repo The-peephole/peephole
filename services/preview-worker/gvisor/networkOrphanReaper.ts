@@ -721,10 +721,61 @@ function ipv4Addresses(
   return addresses
 }
 
-function sameRule(left: readonly string[], right: readonly string[]): boolean {
+const CONNTRACK_STATES = new Set([
+  "DNAT",
+  "ESTABLISHED",
+  "INVALID",
+  "NEW",
+  "RELATED",
+  "SNAT",
+  "UNTRACKED",
+])
+
+/** Exact rule comparison except for iptables' non-semantic reordering of the
+ * comma-separated value immediately following --ctstate. */
+export function sameRule(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index++) {
+    const leftValue = left[index]
+    const rightValue = right[index]
+    const isCtstateValue =
+      index > 0 &&
+      left[index - 1] === "--ctstate" &&
+      right[index - 1] === "--ctstate"
+    if (isCtstateValue) {
+      if (!sameConntrackStateSet(leftValue, rightValue)) return false
+    } else if (leftValue !== rightValue) {
+      return false
+    }
+  }
+  return true
+}
+
+function sameConntrackStateSet(
+  left: string | undefined,
+  right: string | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return false
+  const leftStates = left.split(",")
+  const rightStates = right.split(",")
+  if (
+    leftStates.length === 0 ||
+    rightStates.length === 0 ||
+    leftStates.some((state) => !CONNTRACK_STATES.has(state)) ||
+    rightStates.some((state) => !CONNTRACK_STATES.has(state)) ||
+    new Set(leftStates).size !== leftStates.length ||
+    new Set(rightStates).size !== rightStates.length
+  ) {
+    return false
+  }
+  const sortedLeft = [...leftStates].sort()
+  const sortedRight = [...rightStates].sort()
   return (
-    left.length === right.length &&
-    left.every((value, index) => value === right[index])
+    sortedLeft.length === sortedRight.length &&
+    sortedLeft.every((state, index) => state === sortedRight[index])
   )
 }
 
