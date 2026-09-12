@@ -125,7 +125,7 @@ async function main(): Promise<void> {
     database,
     planResolver,
     artifactSigner: artifactHost,
-    controlPlane: { runnerVersion: "production-1" },
+    controlPlane: { runnerVersion: "production-2" },
   })
 
   const sessionIssuer = new PreviewSessionIssuer(
