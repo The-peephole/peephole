@@ -80,22 +80,19 @@ Acceptance: fixtures resolve deterministically to `existing-deployment`, `native
       liveness/readiness probes, safe errors, and graceful shutdown
 - [x] provider-neutral PostgreSQL job/cache/quota persistence and leased queue
 - [x] server-side exact-commit revalidation and build-plan resolution
-- [ ] production composition with persistent storage, durable queue, requester
-      authentication, and deployed service configuration (a local-dev-only
-      composition without authentication now exists:
-      `services/local-preview/devServer.ts`, see D-023)
+- [x] production composition with PostgreSQL persistence and durable queue,
+      GitHub App requester authentication, and deployed service configuration
+      (`services/production/server.ts`), verified end to end on AWS EC2
 
 This milestone is API- and storage-only: no build command is ever executed by
 this process. Execution is deferred to the isolated runner in Milestone 5.
 
 ## Milestone 5 - Isolated Static Runner
 
-**Status:** Real adapters proven for both golden paths in an unsandboxed
-development runner, with active timeout/disk-quota enforcement and orphan
-reaping; gVisor adapter and its reaper are written but unverified on real
-gVisor. Remaining work needs a real Linux/gVisor host and infra decisions
-this environment cannot provide (see D-018..D-021 and PREVIEW_RUNTIME.md
-§15).
+**Status:** Core production runner path complete and verified. The real gVisor
+worker and golden path are verified on AWS EC2 Linux (`realGvisorSandbox`:
+15/15; `realGvisorGoldenPath`: 1/1). Broader supported-fixture coverage and
+authenticated package-proxy egress remain.
 
 **Goal:** Build the first supported repositories without third-party IDEs.
 
@@ -117,31 +114,30 @@ this environment cannot provide (see D-018..D-021 and PREVIEW_RUNTIME.md
       `PEEPHOLE_REAL_NETWORK_TESTS=1`)
 - [x] `GVisorSandboxProvisioner`/`RunscCommandRunner`: real OCI-bundle +
       `runsc` CLI code, CPU/memory/PID quotas, non-root, cancellation-safe
-      cleanup -- written against documented `runsc`/OCI behavior and tested
-      via a fake process runner, but **never run against a real gVisor
-      host** (this repo's environment has no Linux kernel)
+      cleanup, verified against real runsc/gVisor on AWS EC2
 - [x] real, active job wall-clock timeout: every install/build command's
       timeout is clamped to the job's remaining budget
       (`jobDeadline.ts`), so exceeding it kills the actual running process
       instead of only flipping the job's status after the fact
 - [x] real workspace disk-usage quota, checked after install and after
       build independent of archive/output size checks
+- [x] fixed-size loop-backed ext4 workspace hard quota, read-only rootfs,
+      bounded `/tmp` and `/dev/shm`, host-reserve admission, and fail-closed
+      mount/loop/image/bundle recovery, verified on the real AWS host
 - [x] orphan-sandbox reaping: `LocalDevSandboxReaper` (real, tested) and
-      `GVisorOrphanReaper` (written against `runsc list --format json`,
-      unverified against a real binary)
+      `GVisorOrphanReaper`, including real abandoned-container and production
+      `SIGKILL` recovery verification
 - [x] durable queue consumer loop with lease acknowledgement, delayed retry,
       and graceful polling shutdown
-- [ ] fresh non-root sandbox per job on a **real** gVisor host (unverified)
+- [x] fresh non-root sandbox per job on a real gVisor host (uid/gid 65534)
 - [x] deterministic install with public IPv4 egress while host, private,
       link-local, metadata, and inter-job destinations are denied
 - [ ] replace broad public install egress with an authenticated package proxy
-- [ ] CPU/memory/PID limits actually enforced on a **real** gVisor host (unverified)
-- [x] static artifact publication with restrictive headers, development-only
-      (`services/local-preview/artifactHost.ts`: a fresh loopback HTTP
-      origin per artifact, `no-store`, `nosniff`, a locked-down
-      `permissions-policy`, and 410 once expired) -- not the production
-      artifact store/CDN, see D-023
-- [ ] prepared base rootfs image for `GVisorSandboxProvisioner`
+- [x] CPU throttling and memory/PID limits enforced on a real gVisor host
+- [x] static artifact publication with restrictive headers and expiry through
+      both the local development host and the production artifact host
+- [x] prepared base rootfs image for `GVisorSandboxProvisioner`, exercised by
+      real `npm ci` and Vite/esbuild builds
 
 The dev proof (`LocalDevSandboxProvisioner` + `HostCommandRunner`) runs
 install/build directly on the host with **no isolation at all** and must
@@ -159,14 +155,10 @@ Add Vue and Svelte only after the same contract and security tests pass.
 
 ## Milestone 6 - Native Side-Panel Preview
 
-**Status:** In progress. Repository context, analysis, eligibility, errors,
-and the build/status/cancel client flow all live in Chrome Side Panel against
-a build-time configured Preview API. Trusted-origin preview embedding is
-connected end to end for local development
-(`services/local-preview/devServer.ts`, D-023) and has been driven from a
-real unpacked Chrome extension against a real GitHub repository. A deployed
-production service (a real preview domain, requester authentication, a real
-gVisor host) is not connected.
+**Status:** Complete for the v0.1 production preview path. A real Chrome
+Extension has completed GitHub App authentication, requested a preview from
+the deployed API, and embedded the resulting HTTPS production artifact after a
+real gVisor build.
 
 **Goal:** Complete the user-facing Peephole flow.
 
@@ -175,23 +167,35 @@ gVisor host) is not connected.
 - [x] synchronize repository context across GitHub client-side navigation
 - [x] show preview job progress and errors
 - [x] start and cancel preview jobs through the configured HTTP API
-- [x] embed only trusted Peephole preview-origin URLs (loopback-only for now:
-      `core/preview/config.ts#isTrustedPreviewArtifactUrl` plus a manifest
-      `frame-src` CSP restricted to `http://127.0.0.1:*`; no production
-      preview domain exists yet, see D-023)
+- [x] embed only trusted Peephole preview-origin URLs: local loopback during
+      development or an exact artifact-id subdomain under the configured
+      production artifact base domain
 - [x] detach stale preview requests on GitHub navigation
+- [x] connect GitHub App authentication and expiring Peephole sessions without
+      storing GitHub credentials in the extension
+- [x] verify Chrome Extension -> production Preview API -> real gVisor worker
+      -> HTTPS artifact -> Side Panel end to end
 
 ## Milestone 7 - Security and Reliability Gate
 
+**Status:** In progress. The core sandbox, resource-limit, network-isolation,
+cache-rollout, and crash-recovery gates are verified; operational and release
+polish remains.
+
 **Goal:** Make the public build service safe enough for v0.1.
 
-- malicious dependency-script fixtures
-- CPU, memory, process, disk, output, and time-limit tests
-- private-network and metadata endpoint blocking tests
-- cross-job and cross-origin isolation tests
-- abuse throttling and budget controls
-- cache invalidation and runner-version rollout
-- operational metrics, logs, cancellation, and cleanup alerts
+- [x] malicious dependency-script and hostile sandbox tests on real gVisor
+- [x] CPU, memory, PID, disk hard-cap, output, and wall-clock limits
+- [x] metadata, private-network, host-service, and inter-job blocking
+- [x] cross-job network and artifact-origin isolation
+- [x] API quotas, abuse throttling, and bounded job budgets
+- [x] cache invalidation through `runnerVersion: "production-2"` rollout
+- [x] cancellation, cleanup, startup reconciliation, and production `SIGKILL`
+      recovery core paths
+- [ ] production-grade operational metrics, log aggregation, and alerts
+- [ ] automated production deployment smoke and release checks
+- [ ] replace broad public install egress with an authenticated package proxy
+- [ ] keyboard/focus/contrast/screen-reader review and release polish
 
 ## v0.1 Definition of Done
 

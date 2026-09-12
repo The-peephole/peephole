@@ -99,9 +99,11 @@ Analysis and preview service:
 - isolated, disposable build workers
 - static artifact storage and a dedicated preview domain
 
-The exact worker isolation technology is an infrastructure decision, but it must satisfy the security requirements in the architecture and runtime documents.
+The production worker isolation technology is gVisor on Linux, with a
+loop-backed ext4 workspace and per-job network namespace. The local development
+launcher remains explicitly unsandboxed.
 
-## Planned UX
+## User Flow
 
 1. Open a GitHub repository.
 2. Click the single `Peephole` action.
@@ -124,8 +126,9 @@ to the generated Chrome host permissions; never place credentials or secrets
 in a `WXT_` variable.
 
 If the variable is absent, repository analysis still works and `Build preview`
-is shown disabled with a configuration explanation. This repository defines the
-HTTP contract but does not yet bundle or deploy a public control-plane server.
+is shown disabled with a configuration explanation. The production deployment
+uses this setting to connect the extension to the public HTTPS Preview API; the
+repository also retains a separate local-development launcher.
 
 ## Preview API Service Boundary
 
@@ -174,11 +177,13 @@ After pointing `PEEPHOLE_POSTGRES_TEST_URL` at a disposable test database, run
 schema and verify concurrent leasing plus expired-lease recovery. The test
 removes the jobs it creates but intentionally leaves the schema in place.
 
-This is still infrastructure code, not a deployed public service. The database
-schema, concurrent worker claiming, and expired-lease recovery have been
-verified against local PostgreSQL 18.4. Requester authentication, hosted
-artifact storage/delivery, and a prepared gVisor host remain required. The
-in-memory adapters and local host runner remain test/development-only.
+The production composition is deployed on AWS EC2 Ubuntu as the `peephole`
+systemd service. Caddy terminates public HTTPS while the Preview API,
+`ProductionArtifactHost`, and artifact TLS ask listener bind to loopback. The
+API uses PostgreSQL for jobs, queue leases, cache metadata, quotas, and artifact
+metadata; GitHub App authentication supplies requester identity. The production
+worker runs supported builds in real gVisor sandboxes. In-memory adapters and
+the local host runner remain test/development-only.
 
 ## Local Development Preview Path
 
@@ -245,54 +250,54 @@ Preview API's HTTP contract.
 
 ## Current Status
 
-Milestones 0-4 are complete. The local development runner has proven both
-golden paths, and Milestone 6 is now in progress:
+Milestones 0-6 are complete for the current public static-preview path;
+Milestone 7 release and operations work remains. The deployed path is:
 
-- repository URL detection,
-- GitHub action insertion,
-- a compact GitHub action that opens Chrome Side Panel,
-- tab-specific repository context synchronization across GitHub navigation,
-- idempotent client-side navigation handling,
-- typed GitHub REST metadata client,
-- background service-worker API broker,
-- default branch and commit SHA resolution,
-- bounded known-file inspection for the root manifest, recognized lockfiles, environment templates, and Vite configuration,
-- framework, TypeScript, package-manager, build-plan, environment, deployment, and workspace detection,
-- versioned native-preview eligibility with evidence, warnings, and blockers,
-- lazy loading, request cancellation, rate-limit errors, and commit-aware analysis caching,
-- analysis and eligibility rendered in the native side panel,
-- a typed Preview API client with bounded response validation,
-- commit-pinned build creation, status polling, cancellation, retry, and stale-request cleanup in the side panel,
-- preview control-plane and worker contracts,
-- a tested Node HTTP ingress with liveness/readiness and bounded request handling,
-- PostgreSQL job/cache/quota persistence and a leased durable queue,
-- a queue-driven worker loop with acknowledgement and delayed retry,
-- exact-commit GitHub revalidation and server-owned build-plan resolution,
-- real local-development adapters for static HTML and root Vite + React/npm
-  golden paths,
-- gVisor adapter code with CPU, memory, PID, network, and loop-backed ext4
-  disk limits; the new disk boundary has portable unit coverage and an opt-in
-  real Linux/gVisor deployment gate,
-- a loopback-only local artifact host (`LocalArtifactHost`) serving each
-  build from its own origin with restrictive headers and expiry,
-- a single-process local development launcher
-  (`services/local-preview/devServer.ts`, `npm run dev:preview-server`)
-  composing the real Postgres-backed API and worker loop together,
-- trusted-origin validation and sandboxed iframe embedding of a `ready`
-  job's artifact in the Chrome side panel.
+```text
+GitHub repository
+-> Chrome Extension
+-> GitHub App authentication
+-> Production Preview API
+-> PostgreSQL queue/control plane
+-> real gVisor worker on AWS EC2
+-> isolated install and build
+-> production artifact host and Caddy reverse proxy
+-> HTTPS preview
+-> sandboxed Side Panel embedding
+```
 
-The extension never installs dependencies or executes repository code. The
-Preview API connection is configurable but no public service is deployed yet.
-Requester authentication (each caller's own verified GitHub identity) and
-real gVisor infrastructure verification are both done; hosted artifacts and
-a registrable preview domain remain unfinished. Local preview
-embedding depends on the development-only, unsandboxed launcher above, so it
-must not be pointed at repositories you don't already trust.
+Production has been exercised end to end from the unpacked Chrome extension.
+The GitHub App OAuth/PKCE/signed-state flow, authenticated requester identity,
+real gVisor build, HTTPS artifact publication, and Side Panel embedding are
+verified. `tests/realGvisorSandbox.test.ts` passes 15/15 and
+`tests/realGvisorGoldenPath.test.ts` passes 1/1 on the AWS Linux/gVisor host.
+Those runs cover non-root execution, read-only rootfs, CPU/memory/PID/time
+limits, bounded temporary filesystems, loop-backed ext4 workspace capacity,
+network isolation, real `npm ci` and Vite/esbuild, cross-container workspace
+persistence, artifact publication, and cleanup.
 
-This full path has now been driven from a real unpacked Chrome extension
-against a real GitHub repository, end to end: `Build preview` in the actual
-side panel through to a real Vite + React build rendered in the embedded
-iframe.
+Disk and network resources have durable marker ownership, fail-closed startup
+reconciliation, and periodic cleanup. A production fault test killed the
+service with `SIGKILL` during install and verified systemd restart,
+health/readiness recovery, safe `failed / RUNNER_UNAVAILABLE` terminalization
+after queue-lease recovery, and removal of runsc, namespace, veth, iptables,
+mount, loop, lease, and job-file residue. The production cache namespace is
+`runnerVersion: "production-2"`; replaying a commit cached under
+`production-1` produced a cache miss and a successful fresh preview.
+
+The extension never installs dependencies or executes repository code. v0.1
+remains intentionally limited to supported public frontend-oriented
+JavaScript/TypeScript and static HTML projects, including root Vite
+React/Vue/Svelte contracts. Private repositories, backend provisioning,
+secrets, arbitrary Docker/language execution, and persistent SSR servers remain
+out of scope. Remaining release work includes accessibility review,
+production-grade metrics/log aggregation/alerts, automated production smoke
+checks, tighter package egress through an authenticated proxy, and Chrome Web
+Store/v0.1 release preparation.
+
+The current non-destructive repository validation is green: `npm test` reports
+583 passed and 31 environment-gated skips, and typecheck, lint, build,
+format-check, and `git diff --check` pass.
 
 ## Local Development Setup
 

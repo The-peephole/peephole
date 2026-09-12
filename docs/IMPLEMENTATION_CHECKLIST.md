@@ -1,6 +1,7 @@
 # Implementation Checklist
 
-This checklist tracks the native Peephole v0.1 path. Checked items reflect the current extension-shell implementation.
+This checklist tracks the native Peephole v0.1 path. Checked items reflect the
+current implementation or a recorded real production verification.
 
 ## Bootstrap
 
@@ -33,10 +34,10 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Display preview eligibility
 - [x] Display queued/fetching/installing/building/publishing states
 - [x] Add build, cancel, retry, and expiry controls
-- [x] Embed only approved Peephole preview-origin URLs (loopback-only
-      allowlist: `isTrustedPreviewArtifactUrl` plus a manifest
-      `frame-src` CSP restricted to `http://127.0.0.1:*`/`http://[::1]:*`;
-      no production preview domain exists yet, so nothing else is approved)
+- [x] Embed only approved Peephole preview-origin URLs: loopback HTTP for local
+      development or HTTPS on one valid artifact-id subdomain of the configured
+      production artifact base domain; the manifest `frame-src` and runtime URL
+      validator enforce the same boundary
 - [x] Remove the transitional StackBlitz action and URL generator
 - [ ] Add keyboard, focus, contrast, and screen-reader checks
 
@@ -84,9 +85,8 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Add a PostgreSQL leased queue with expired-lease recovery
 - [x] Revalidate repository identity, commit, and build plan server-side
 - [x] Compose the API with production-persistent job, queue, cache, quota,
-      and authentication adapters (`services/local-preview/devServer.ts`
-      composes the persistent Postgres job/queue/cache/quota adapters),
-      replacing the previous fixed dev identity with GitHub App identity:
+      and authentication adapters in `services/production/server.ts`, replacing
+      the previous fixed dev identity with GitHub App identity:
       1. `GET /v1/auth/github/start` validates a server-side allowlisted
          Chrome Extension callback and creates HMAC-signed state binding the
          callback, extension nonce, and PKCE challenge.
@@ -139,7 +139,7 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       both golden paths against real GitHub archives
 - [x] `GVisorSandboxProvisioner`/`RunscCommandRunner` written (OCI bundle,
       non-root uid/gid, CPU/memory/PID quotas, cancellation-safe cleanup)
-      and now run against a real gVisor host (`runsc`, WSL2 Ubuntu; see
+      and now run against real gVisor hosts, including AWS EC2 Ubuntu (see
       `tests/realGvisorSandbox.test.ts`). This surfaced and fixed five real
       bugs invisible to the fake-process-runner unit tests: `fs.cp`
       couldn't copy the base image's `/dev` (ENODEV); `fs.cp` silently
@@ -166,13 +166,14 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       writes far more to disk than either bound would show)
 - [x] Add a non-bypassable workspace hard cap: each job gets a preallocated,
       fixed-size loop-backed ext4 image mounted at `/workspace`; HOME/npm
-      cache are inside it, the copied OCI rootfs is read-only, and `/tmp` and
-      `/dev` have explicit tmpfs byte/inode bounds. The existing live directory
-      poll remains only an earlier soft stop. Allocation is serialized and
-      reserves rootfs/archive/artifact exposure; startup synchronously
-      reconciles strictly marker-owned mount/loop resources before workers.
-      Portable tests are complete; the new real enforcement cases remain an
-      explicit AWS security-branch gate. See `docs/SANDBOX_DISK_SECURITY.md`.
+      cache are inside it, and the copied OCI rootfs is read-only. gVisor
+      enforces byte capacities for `/tmp` (64 MiB) and the separate `/dev/shm`
+      mount (16 MiB); `/dev` root is not writable by uid 65534. The verified
+      gVisor version ignores tmpfs inode hints, so memory-cgroup and wall-clock
+      limits bound metadata pressure instead. Allocation reserves
+      rootfs/archive/artifact exposure, and startup synchronously reconciles
+      strictly marker-owned mount/loop resources before workers. The complete
+      real AWS suite passes 15/15; see `docs/SANDBOX_DISK_SECURITY.md`.
 - [x] Reap orphan jobs: `LocalDevSandboxReaper` (real, tested against real
       temp directories) and `GVisorOrphanReaper` (cross-references stale
       bundle directories against `runsc list --format json`) -- both now
@@ -291,12 +292,10 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       headroom; a 200MB allocation against a 64MB limit now gets killed
       (`tests/realGvisorSandbox.test.ts`, "enforces the configured memory
       limit").
-- [x] Publish static artifacts with restrictive headers via
-      `LocalArtifactHost` (`services/local-preview/artifactHost.ts`): a
-      dedicated loopback HTTP origin per artifact, `cache-control: no-store`,
-      `x-content-type-options: nosniff`, a locked-down `permissions-policy`,
-      path-traversal/symlink rejection, and 410 once expired -- development-
-      only, not the production artifact store
+- [x] Publish static artifacts with restrictive headers via both
+      `LocalArtifactHost` for development and `ProductionArtifactHost` for the
+      deployed path. Production authorization/expiry is persisted in
+      PostgreSQL and each artifact is routed by its isolated HTTPS hostname.
 - [x] Prepare the base rootfs image gVisor copies per job:
       `scripts/gvisor/build-base-rootfs.sh` (debootstrap minbase + the
       official Node 24 linux-x64 tarball + ca-certificates); run and
@@ -305,29 +304,23 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 
 ## Preview Delivery
 
-- [ ] Provision a registrable preview domain separate from control UI
-      (dev-only substitute: a distinct loopback origin/port per artifact)
-- [x] Use per-job or equivalent isolated origins (`LocalArtifactHost` binds
-      a fresh TCP port -- and therefore a fresh origin -- per artifact;
-      loopback-only, not a registrable per-job subdomain)
+- [x] Provision and verify a public HTTPS artifact domain separate from the
+      Preview API/control plane, routed through Caddy to the loopback production
+      artifact host
+- [x] Use isolated artifact-id hostnames in production and a distinct loopback
+      origin/port per artifact in local development
 - [x] Ensure preview requests receive no control-plane cookies or tokens
       (the control plane sets no cookies at all; the extension's API client
-      always sends `credentials: "omit"`; the artifact origin's port differs
-      from the control-plane API's, so no cookie would be shared even if one
-      existed)
-- [x] Set restrictive CSP, permissions, MIME, and framing headers
-      (`permissions-policy`, `x-content-type-options: nosniff`, MIME types,
-      and now a per-response `Content-Security-Policy` -- including
-      `frame-ancestors chrome-extension:` -- are set on every artifact
-      response in `services/local-preview/artifactHost.ts`)
-- [x] Expire artifacts and return a clear expired state (`LocalArtifactHost`
-      returns HTTP 410 once `expiresAt` passes; verified in
-      `tests/localArtifactHost.test.ts`)
-- [x] Delete expired artifact files from disk, not just the in-memory
-      origin: `LocalArtifactHost` removes an artifact's directory shortly
-      after its tombstone window closes, and a periodic `reap()` (wired
-      into `services/local-preview/devServer.ts`'s 60s maintenance loop)
-      sweeps any artifact directory left behind by a crash
+      always sends `credentials: "omit"`; production artifacts use a separate
+      registrable domain, while the local artifact origin uses a different
+      port)
+- [x] Set restrictive CSP, permissions, MIME, and framing headers in both local
+      and production artifact hosts, including extension-only/trusted-origin
+      framing and no cross-origin readable CORS response
+- [x] Expire artifacts and return HTTP 410 for persisted expired production
+      metadata as well as local-development expiry
+- [x] Delete expired artifact metadata and files through serialized production
+      reaping; retain local crash/expiry reaping for development
 - [ ] Prevent preview content from reaching privileged extension messaging
 
 ## Production Deployment
@@ -364,11 +357,9 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       `resolveDnsConfigSource()`/`hasUsableNameserver()` from
       `dnsConfig.ts`). All failures are collected and thrown as one clear
       error rather than failing one at a time inside a job hours later.
-      Verified with injected fakes (`tests/productionPreflight.test.ts`)
-      and against the real WSL2 host with no fakes at all, where it
-      correctly reported every check healthy except `net.ipv4.ip_forward`
-      (which the VM had reset to 0 since the DNS-fix session, exactly the
-      failure mode this check exists to catch).
+      Verified with injected fakes (`tests/productionPreflight.test.ts`), on
+      WSL2 where it correctly detected a reset `net.ipv4.ip_forward=0`, and in
+      the successful AWS EC2 production startup path.
 - [x] Worker concurrency is configurable
       (`PEEPHOLE_WORKER_CONCURRENCY`, `services/production/config.ts`),
       defaulting to 1 -- the current AWS EC2 deployment target is 2 vCPU /
@@ -381,16 +372,25 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       fallback, an unset or per-process-random secret in production would
       either sign every user out on every restart or, worse, differ across
       a multi-process deployment.
-- [ ] Publicly-reachable, origin-isolated artifact hosting. The production
-      launcher still uses `LocalArtifactHost`, which only ever binds
-      loopback -- a preview's build now runs for real under gVisor on a
-      real host, but its published output is not yet reachable off that
-      host. Domain separation (`peephole.dev` trusted /
-      `peepholeusercontent.dev` untrusted, wildcard DNS/TLS) is the next,
-      separately-scoped production-hosting step, not part of this wiring.
+- [x] Run the production launcher as the `peephole` systemd service on AWS EC2
+      Ubuntu with worker concurrency 1; Caddy fronts the loopback Preview API
+      and production artifact host and consults the loopback TLS ask listener
+- [x] Verify the public Chrome Extension -> GitHub App -> production API ->
+      PostgreSQL queue -> real gVisor worker -> HTTPS artifact -> Side Panel
+      path end to end
+- [x] Roll the cache namespace to `runnerVersion: "production-2"`; replaying a
+      commit cached by `production-1` produced `cache_status=miss`, then a
+      successful ready preview
+- [x] Kill `peephole.service` with `SIGKILL` during install and verify systemd
+      restart, health/readiness recovery, queue-lease recovery, safe
+      `failed / RUNNER_UNAVAILABLE` terminalization, and zero final runsc,
+      network, mount, loop, lease, or job-file residue
 
 ## Tests
 
+- [x] Current non-destructive validation: 583 tests passed, 31
+      environment-gated tests skipped; typecheck, lint, build, format-check,
+      and `git diff --check` passed
 - [x] GitHub URL parser unit tests
 - [x] GitHub action insertion and reconciliation tests
 - [x] client-side navigation tests
@@ -413,7 +413,8 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       all against an actual gVisor host -- plus a full sandboxed golden-path
       test (`tests/realGvisorGoldenPath.test.ts`, same gate): real `npm
       ci` + `npm run build` through the actual `PreviewJobWorker`
-      pipeline, gVisor end to end
+      pipeline, gVisor end to end. The latest AWS verification passed 15/15
+      sandbox tests and 1/1 golden-path test
 - [x] job wall-clock budget and portable workspace disk-quota enforcement tests
 - [x] orphan-sandbox reaper tests (real directories for the dev reaper;
       fake `runsc list` output for the gVisor reaper's unit tests, plus a
@@ -424,8 +425,9 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
       concurrent claiming and expired-lease recovery
 - [x] local artifact host tests: per-artifact loopback origin, traversal
       rejection, and expiry (410) (`tests/localArtifactHost.test.ts`)
-- [x] side-panel trusted-origin embedding tests: sandboxed iframe for a
-      loopback artifact, refusal for a non-loopback origin
+- [x] side-panel trusted-origin embedding tests: sandboxed iframe for local
+      loopback and exact production artifact origins, refusal for unapproved
+      origins
       (`tests/PreviewJobPanel.test.tsx`, `tests/previewConfig.test.ts`)
 - [x] malicious install/build fixture tests, against a real gVisor host
       (`tests/realGvisorMaliciousScript.test.ts`): can't escape
@@ -480,8 +482,24 @@ This checklist tracks the native Peephole v0.1 path. Checked items reflect the c
 - [x] Remove all StackBlitz product paths
 - [ ] Pass supported and unsupported fixture matrix
 - [ ] Complete external isolation/security review
-- [ ] Verify cleanup, cancellation, expiry, and cost limits
-- [ ] Verify no stale state across GitHub repository navigation
+- [x] Verify cleanup, cancellation, expiry, and cost/resource limits
+- [x] Verify no stale state across GitHub repository navigation
 - [ ] Test unpacked extension from a clean Chrome profile
 - [ ] Document supported matrix and known limitations
 - [ ] Complete release smoke test
+
+## Remaining Work
+
+- [ ] Complete keyboard, focus, contrast, and screen-reader accessibility checks
+- [ ] Add production-grade metrics, centralized log aggregation, and alerts
+- [ ] Automate production deployment smoke and release checks
+- [ ] Replace broad public install egress with an authenticated package proxy
+      or equivalently constrained package-egress service
+- [ ] Prepare the Chrome Web Store submission and v0.1 release
+
+Refreshable Peephole sessions and private-repository Installation Access Tokens
+remain post-v0.1 scopes; private repository support is not a v0.1 completion
+condition. On Linux, `tests/sandboxDisk.test.ts` performs real `chown` calls and
+must run with sufficient privilege: the recorded root run passed 18/18. An
+unprivileged EPERM result is a test-execution prerequisite failure, not a product
+regression.
