@@ -429,12 +429,14 @@ current implementation or a recorded real production verification.
       loopback and exact production artifact origins, refusal for unapproved
       origins
       (`tests/PreviewJobPanel.test.tsx`, `tests/previewConfig.test.ts`)
-- [x] malicious install/build fixture tests, against a real gVisor host
-      (`tests/realGvisorMaliciousScript.test.ts`): can't escape
+- [ ] Run the dedicated malicious install/build fixture suite on the
+      production-like AWS gVisor host
+      (`tests/realGvisorMaliciousScript.test.ts`): it checks that scripts can't escape
       `/workspace` through a symlink to `/etc`, can't read `/etc/shadow`,
       can't escalate to root via `su`/`sudo`, gets no default route (and
       can't reach the NAT gateway or another job's network) under
-      `network: "none"`. Also directly led to a real fix: an adversarial
+      `network: "none"`. Earlier development of this suite directly led to a
+      real fix: an adversarial
       disk-fill script found there was no live disk-usage bound at all
       (see "Enforce a real workspace disk-usage quota" above) --
       confirming this kind of testing is worth doing, not just a

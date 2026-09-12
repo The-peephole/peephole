@@ -285,15 +285,17 @@ mount, loop, lease, and job-file residue. The production cache namespace is
 `runnerVersion: "production-2"`; replaying a commit cached under
 `production-1` produced a cache miss and a successful fresh preview.
 
-The extension never installs dependencies or executes repository code. v0.1
-remains intentionally limited to supported public frontend-oriented
-JavaScript/TypeScript and static HTML projects, including root Vite
-React/Vue/Svelte contracts. Private repositories, backend provisioning,
-secrets, arbitrary Docker/language execution, and persistent SSR servers remain
-out of scope. Remaining release work includes accessibility review,
-production-grade metrics/log aggregation/alerts, automated production smoke
-checks, tighter package egress through an authenticated proxy, and Chrome Web
-Store/v0.1 release preparation.
+The extension never installs dependencies or executes repository code. The
+intended v0.1 eligibility scope remains public frontend-oriented
+JavaScript/TypeScript and static HTML, including root Vite React/Vue/Svelte
+contracts. Production execution is currently verified for static HTML and
+root-level Vite + React/npm; Vue and Svelte still require the same golden-path
+and security validation before being described as production-verified. Private
+repositories, backend provisioning, secrets, arbitrary Docker/language
+execution, and persistent SSR servers remain out of scope. Remaining release
+work includes accessibility review, production-grade metrics/log
+aggregation/alerts, automated production smoke checks, tighter package egress
+through an authenticated proxy, and Chrome Web Store/v0.1 release preparation.
 
 The current non-destructive repository validation is green: `npm test` reports
 583 passed and 31 environment-gated skips, and typecheck, lint, build,

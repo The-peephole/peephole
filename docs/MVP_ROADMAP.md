@@ -184,7 +184,11 @@ polish remains.
 
 **Goal:** Make the public build service safe enough for v0.1.
 
-- [x] malicious dependency-script and hostile sandbox tests on real gVisor
+- [x] hostile resource, filesystem, and network-isolation cases covered by the
+      15/15 real gVisor sandbox regression on AWS
+- [ ] run the dedicated malicious dependency-script suite
+      (`tests/realGvisorMaliciousScript.test.ts`) on the production-like AWS
+      gVisor host
 - [x] CPU, memory, PID, disk hard-cap, output, and wall-clock limits
 - [x] metadata, private-network, host-service, and inter-job blocking
 - [x] cross-job network and artifact-origin isolation
