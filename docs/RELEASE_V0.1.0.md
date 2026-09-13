@@ -58,13 +58,13 @@ not expose extension privileges to a local page.
 | Item | Status | Evidence/action |
 | --- | --- | --- |
 | Privacy policy content | PASS | User-facing policy exists at root `PRIVACY.md` |
-| Public privacy-policy URL | BLOCKED | Publish the policy at a stable public HTTPS URL and enter it in the Dashboard |
+| Public privacy-policy URL | PASS | `https://github.com/The-peephole/peephole/blob/main/PRIVACY.md` verified via unauthenticated HTTPS GET, HTTP 200, actual policy content rendered |
 | English listing copy | PASS | Copy-ready canonical text in `docs/CHROME_WEB_STORE.md` |
 | Privacy-tab disclosure | MANUAL | Apply the documented answers and verify current Dashboard checkbox names |
 | Remote-code answer | MANUAL | Recommended **No**; disclose isolated cross-origin preview iframe architecture and verify against the live Dashboard |
-| 128×128 store icon | PASS | Valid RGBA PNG is packaged; manually verify visual padding/readability |
-| Required screenshot | BLOCKED | Existing 1905×911 PNG is not 1280×800 or 640×400 |
-| Required 440×280 promo tile | BLOCKED | Not present |
+| 128×128 store icon | PASS | Valid RGBA PNG packaged; composited onto white/dark-gray/black in this task and stays readable on all three |
+| Required screenshot | MANUAL | Existing 1905×911 PNG cannot be honestly cropped to 1280×800/640×400 without cutting file names or the Peephole panel's stat cards (measured, see `docs/CHROME_WEB_STORE.md`); needs a fresh capture per the instructions there |
+| Required 440×280 promo tile | PASS | `store-assets/peephole-promo-440x280.png`, generated from the audited icon in this task; see `docs/CHROME_WEB_STORE.md` for dimensions/hash |
 | CWS developer account and 2FA | MANUAL | Verify in the owner account; not inspected by this task |
 | Draft upload | PENDING | Upload ZIP only after reviewing this PR; do not submit for review yet |
 | Stable Web Store extension ID | BLOCKED | Unknown until draft item/upload exists |
@@ -78,8 +78,10 @@ not expose extension privileges to a local page.
 
 ## Final controlled sequence
 
-1. Merge the reviewed release-preparation PR through repository rules.
-2. Supply the compliant screenshot, small promo tile, and public privacy URL.
+1. Merge the reviewed release-preparation PRs through repository rules.
+2. Capture the compliant 1280×800 (or 640×400) screenshot per the
+   instructions in `docs/CHROME_WEB_STORE.md` (the public privacy URL and the
+   440×280 promo tile are already done).
 3. Rebuild and re-check the ZIP if any extension source or packaged asset
    changes; never reuse a hash after such a change.
 4. Verify the Developer Dashboard account, 2FA, listing, permissions, privacy
@@ -90,6 +92,6 @@ not expose extension privileges to a local page.
 7. Pass trusted-tester GitHub OAuth and production smoke.
 8. Create the approved tag/Release, then submit for review.
 
-Release readiness: **BLOCKED** until the privacy URL, compliant store assets,
-stable Web Store ID, production OAuth allowlist, store-build OAuth test, and
-production smoke gates are complete.
+Release readiness: **BLOCKED** until the compliant screenshot, stable Web
+Store ID, production OAuth allowlist, store-build OAuth test, and production
+smoke gates are complete.
