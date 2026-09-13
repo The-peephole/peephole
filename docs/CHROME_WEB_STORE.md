@@ -150,7 +150,7 @@ published `PRIVACY.md` remain accurate:
 | Data | Where it goes | Storage and expiry proved by code |
 | --- | --- | --- |
 | GitHub repository URL/owner/name | Page to content script/background; public requests to GitHub | Background memory caches only; current-ref cache is 60 seconds and commit analysis lasts for the background process. |
-| Public repository ID, branch, commit, homepage, root entries, and selected text files | GitHub API to extension; the exact repository/commit and build plan go to Peephole for requested previews | Repository and build plan are stored in the preview job row. No automated deletion schedule for the row is implemented. |
+| Public repository ID, branch, commit, homepage, root entries, and selected text files | GitHub API to extension; for requested previews, only the repository ID/owner/name/commit SHA and preview contract version go to Peephole — the server independently resolves and validates the build plan from GitHub, it is not sent by the extension | Repository and the server-resolved build plan are stored in the preview job row. No automated deletion schedule for the row is implemented. |
 | OAuth code, signed state, PKCE verifier | Extension, Peephole API, GitHub | Signed state expires in 10 minutes. No server database persistence was found for these values. |
 | GitHub OAuth access token | GitHub to Peephole API and back to GitHub `/user` | Held transiently in `GitHubAppOAuth.issueSession()`; no persistence path was found and it is never returned to the extension. |
 | Numeric GitHub user ID | GitHub to Peephole API | Encoded as the signed session subject and persisted as `requester_id` in preview jobs; hashed forms participate in quotas. Historical job-row deletion is not implemented. |

@@ -54,10 +54,11 @@ key used by older builds.
 ## Preview and build data
 
 When you request a preview, the extension sends the public repository ID,
-owner, name, exact commit SHA, and the analyzed static build plan to the
-Peephole API. The server verifies the repository and plan against GitHub. The
-worker then downloads the selected public commit and runs the supported build
-inside a resource-limited gVisor sandbox.
+owner, name, exact commit SHA, and preview contract version to the Peephole
+API. The server independently resolves and validates the build plan from the
+referenced public repository before creating the job. The worker then
+downloads the selected public commit and runs the supported build inside a
+resource-limited gVisor sandbox.
 
 Preview processing creates job and build records that can include:
 
