@@ -70,10 +70,13 @@ Category names can change. **NEEDS DASHBOARD VERIFICATION** before submission.
 
 **Privacy policy URL**
 
-> `<PUBLIC_HTTPS_PRIVACY_POLICY_URL>`
+> https://github.com/The-peephole/peephole/blob/main/PRIVACY.md
 
-This is a release blocker. Host `PRIVACY.md` at a stable, publicly accessible
-HTTPS URL and verify the rendered policy before entering it in the Dashboard.
+Verified as an unauthenticated HTTPS GET returning `200` and rendering the
+actual Peephole Privacy Policy content (checked after PR #4 merged
+`PRIVACY.md` to `main`). This GitHub-hosted URL is acceptable as the initial
+v0.1.0 Chrome Web Store privacy-policy URL; a dedicated GitHub Pages site was
+not set up for this task.
 
 **Source URL**
 
@@ -176,12 +179,45 @@ Official CWS guidance requires a PNG 128×128 icon, at least one full-bleed
 | `public/icons/peephole-16.png` | Valid RGBA PNG, 16×16 | PASS for manifest use |
 | `public/icons/peephole-32.png` | Valid RGBA PNG, 32×32 | PASS for manifest/content UI use |
 | `public/icons/peephole-48.png` | Valid RGBA PNG, 48×48 | PASS for manifest use |
-| `public/icons/peephole-128.png` | Valid RGBA PNG, 128×128 | PASS for ZIP requirement; MANUAL visual check on light/dark store backgrounds and recommended visual padding |
-| `image/peephole_demo_img.png` | Valid opaque PNG, 1905×911 | BLOCKED: not a permitted CWS screenshot dimension. Capture/export actual UI at 1280×800 (preferred) or 640×400 without distortion. |
+| `public/icons/peephole-128.png` | Valid RGBA PNG, 128×128; artwork fills the full canvas (alpha never drops below 222/255, so there is no dedicated transparent margin) | PASS. Composited onto white, dark-gray (#202020), and black test backgrounds: readable on all three, because the photo's own dark vignette ring supplies its contrast rather than the page background. No redesign made in this task; a slightly larger transparent margin is an optional future nicety, not a blocker. |
+| `store-assets/peephole-promo-440x280.png` | Generated in this task: exactly 440×280 RGB PNG, 70,565 bytes, SHA-256 `cd54a96fced9af48daf53852d76435904d230eeceeb038e7f5d9716d68717a55` | PASS. Built deterministically from `public/icons/peephole-128.png` only (Pillow, no new npm dependency): the icon is centered at 224×224 on a solid background sampled from the icon's own corner/vignette color (~RGB 5,4,3), so the fill is derived from the real asset rather than an invented brand color. No text, no fake browser/GitHub/Chrome UI, not a stretched screenshot. Verified to open, verify as a valid PNG, and stay legible when downscaled to 220×140. |
+| `image/peephole_demo_img.png` | Valid opaque PNG, 1905×911 (aspect 2.091) | BLOCKED as a direct screenshot source. Measured pixel-for-pixel: the Peephole side panel occupies x=1231–1905 (674px) and GitHub's own breadcrumb/file-listing content occupies roughly x=0–447 of every row. Reaching the required 1.6 aspect (1280×800 or 640×400) from 1905×911 needs a 447px-narrower crop; taking it from the left truncates file/folder names and the repository breadcrumb on every row, and taking it from the right cuts through the Peephole panel's stat-card grid and chart. Either direction materially misrepresents the UI, so no crop of this file is used. See "Screenshot" below for the required fresh capture. |
 | `image/peephole-demo.gif` | Valid 960×510 animated GIF, 296 frames | README demo only; not a compliant store screenshot or promo tile. |
-| Small promotional tile | Not present | BLOCKED: create a truthful 440×280 PNG/JPEG brand asset; do not use a stretched screenshot. |
 | Marquee tile | Not present | OPTIONAL: 1400×560 PNG/JPEG. |
-| Additional screenshots | Not present | MANUAL: up to five actual-product screenshots are allowed; at least one compliant screenshot is required. |
+| `store-assets/peephole-screenshot-01-1280x800.png` | Real user-supplied capture in this task: exactly 1280×800 RGB PNG, 287,076 bytes, SHA-256 `1085d62ff0d5c5cbb10067a3a6e69cafdf1e91f3e58eac0ee21e6908f3423119` | PASS. See "Screenshot" below. |
+
+### Screenshot
+
+`SCREENSHOT = PASS`. The file was captured fresh by the user directly from a
+real Chrome window running the extension against the `peephole-complex-fixture`
+GitHub repository — it was supplied natively at 1280×800, so no crop, resize,
+or other transformation was applied; the bytes committed are exactly the
+bytes supplied.
+
+Verified before use:
+
+- Format/dimensions: PNG, RGB, exactly 1280×800 (`PIL.Image.open(...).size`).
+- No letterboxing: sampled every edge row/column and found real, non-uniform
+  content reaching all four edges of the frame — full-bleed, no padding bars.
+- Actual product capture, not a mockup: shows the real GitHub file listing
+  (`peephole-complex-fixture`, commit `50af2a2`, "8 Commits", Languages bar,
+  Contributors, Suggested workflows) alongside the real Peephole Side Panel
+  (`Peephole` header, `Commit 50af2a2`, `Native preview compatible`,
+  `Preview ready`, and an actual rendered preview result). The GitHub side is
+  recognizable via the file table, Code button, About/Releases/Packages/
+  Languages/Contributors sidebar, and Suggested workflows widget; the specific
+  top breadcrumb/repo title happened to be scrolled above the captured
+  viewport, which is an honest consequence of the real window's scroll
+  position, not a crop.
+- No DevTools panel, no visible browser chrome/address bar/bookmarks, no
+  session token, no OAuth callback URL, no API key or secret string visible
+  anywhere in the frame.
+- Avatars in frame are generic placeholder icons from the fixture repository,
+  not a real person's photo or other personal information.
+
+This replaces the earlier `image/peephole_demo_img.png` (1905×911) candidate
+audited above, which was rejected because no truthful 1.6:1 crop of it existed
+without cutting file-list text or the Peephole panel.
 
 The duplicate PNG icons under `image/` have the same dimensions and byte sizes
 as the packaged icons. Store upload should use the audited 128×128 PNG; the ZIP
