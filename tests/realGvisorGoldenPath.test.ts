@@ -21,7 +21,11 @@ import { LocalOutputResolver } from "../services/preview-worker/local/localOutpu
 import { NpmBuildExecutor } from "../services/preview-worker/local/npmBuildExecutor"
 import { NpmDependencyInstaller } from "../services/preview-worker/local/npmDependencyInstaller"
 import { PreviewJobWorker } from "../services/preview-worker/worker"
-import type { BuildPlan, PreviewRequester } from "../types/preview"
+import {
+  PRODUCTION_SMOKE_BUILD_PLAN,
+  PRODUCTION_SMOKE_REPOSITORY,
+} from "../scripts/production-smoke/fixture"
+import type { PreviewRequester } from "../types/preview"
 import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 
 // Same trusted, pinned, first-party fixture as
@@ -32,22 +36,8 @@ import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 // end-to-end proof that the production isolation path actually produces a
 // working preview, not just that its individual pieces work in isolation
 // (see tests/realGvisorSandbox.test.ts for those).
-const repository = {
-  repositoryId: 1_354_475_085,
-  owner: "ppsssj",
-  name: "peephole-fixture-vite-react",
-  commitSha: "d1ac2e71550484b5072de243b4dbf754367ed045",
-}
-
-const vitePlan: BuildPlan = {
-  contractVersion: "static-v1",
-  repository,
-  sourceRoot: ".",
-  packageManager: "npm",
-  installCommand: "npm ci",
-  buildCommand: "npm run build",
-  outputDirectory: "dist",
-}
+const repository = PRODUCTION_SMOKE_REPOSITORY
+const vitePlan = PRODUCTION_SMOKE_BUILD_PLAN
 
 const requester: PreviewRequester = { subject: "user-1", ip: "203.0.113.10" }
 
