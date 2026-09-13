@@ -175,6 +175,13 @@ It reports only Peephole-shaped resources under configured or dedicated roots:
 - known production worker, cleanup, and startup error messages in the selected
   journal window.
 
+The journal check retrieves the bounded `peephole` unit window without
+`journalctl --grep` and matches the known error patterns in the verifier. Zero
+matching lines is a clean result. Journal retrieval failures, non-zero exits,
+timeouts, and output that reaches the capture bound remain fail-closed. The
+result covers only the configured `--since` window; use the exact smoke start
+time for a release record.
+
 Unrelated directories, interfaces, and firewall rules are ignored. Malformed
 command output, missing privileges, failed commands, unreadable roots, or an
 unavailable database fail closed instead of being interpreted as an empty

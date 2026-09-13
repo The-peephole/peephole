@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { QueryResultRow } from "pg"
 
 import type { PreviewApi } from "../core/preview/apiClient"
+import { MAX_CAPTURED_LOG_BYTES } from "../core/runner/runnerLimits"
 import {
   ProductionSmokeError,
   assertReadyJob,
@@ -14,6 +15,7 @@ import {
 } from "../scripts/production-smoke/api"
 import { PRODUCTION_SMOKE_BUILD_PLAN } from "../scripts/production-smoke/fixture"
 import {
+  assertNoKnownServiceErrors,
   assertNoHostResidue,
   findHostResidue,
   readDatabaseCounts,
@@ -24,6 +26,10 @@ import type {
   SqlExecutor,
   SqlResult,
 } from "../services/preview-api/postgres/database"
+import type {
+  ProcessRunner,
+  ProcessRunResult,
+} from "../services/preview-worker/gvisor/processRunner"
 import type { PreviewJob } from "../types/preview"
 
 const ARTIFACT_ID = "artifact-12345678-1234-1234-1234-123456789abc"
@@ -328,6 +334,80 @@ describe("production host residue", () => {
   })
 })
 
+describe("production journal inspection", () => {
+  it("accepts an empty successful journal and does not use --grep", async () => {
+    const { runner, run } = journalRunner()
+
+    await expect(
+      assertNoKnownServiceErrors(runner, "2026-09-13T09:10:46+00:00"),
+    ).resolves.toBeUndefined()
+    expect(run).toHaveBeenCalledWith(
+      "journalctl",
+      [
+        "--unit",
+        "peephole",
+        "--since",
+        "2026-09-13T09:10:46+00:00",
+        "--no-pager",
+        "--output",
+        "cat",
+      ],
+      { timeoutMs: 10_000 },
+    )
+    expect(run.mock.calls[0]?.[1]).not.toContain("--grep")
+  })
+
+  it("accepts unrelated journal lines", async () => {
+    const { runner } = journalRunner({
+      stdout: "production server listening\npreview job ready\n",
+    })
+
+    await expect(
+      assertNoKnownServiceErrors(runner, "now"),
+    ).resolves.toBeUndefined()
+  })
+
+  it.each([
+    "worker loop error",
+    "cleanup failed; will retry",
+    "production server failed to start",
+    "Container cleanup failed",
+    "network cleanup failed",
+  ])("rejects a known service error line: %s", async (line) => {
+    const { runner } = journalRunner({ stdout: `${line}\n` })
+
+    await expect(
+      assertNoKnownServiceErrors(runner, "now"),
+    ).rejects.toMatchObject({ check: "service errors" })
+  })
+
+  it("fails closed on a non-zero journal exit", async () => {
+    const { runner } = journalRunner({ exitCode: 1 })
+
+    await expect(
+      assertNoKnownServiceErrors(runner, "now"),
+    ).rejects.toMatchObject({ check: "host inspection" })
+  })
+
+  it("fails closed when journal retrieval times out", async () => {
+    const { runner } = journalRunner({ exitCode: null, timedOut: true })
+
+    await expect(
+      assertNoKnownServiceErrors(runner, "now"),
+    ).rejects.toMatchObject({ check: "host inspection" })
+  })
+
+  it("fails closed when journal output reaches the capture limit", async () => {
+    const { runner } = journalRunner({
+      stdout: "x".repeat(MAX_CAPTURED_LOG_BYTES),
+    })
+
+    await expect(
+      assertNoKnownServiceErrors(runner, "now"),
+    ).rejects.toMatchObject({ check: "host inspection" })
+  })
+})
+
 function job(
   options: {
     id?: string
@@ -442,6 +522,21 @@ function databaseWithQueueState(
     ping: async () => true,
     close: async () => undefined,
   }
+}
+
+function journalRunner(overrides: Partial<ProcessRunResult> = {}): {
+  runner: ProcessRunner
+  run: ReturnType<typeof vi.fn<ProcessRunner["run"]>>
+} {
+  const result: ProcessRunResult = {
+    exitCode: 0,
+    timedOut: false,
+    stdout: "",
+    stderr: "",
+    ...overrides,
+  }
+  const run = vi.fn<ProcessRunner["run"]>().mockResolvedValue(result)
+  return { runner: { run }, run }
 }
 
 function countResult<Row extends QueryResultRow = QueryResultRow>(

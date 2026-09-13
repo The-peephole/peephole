@@ -24,7 +24,7 @@ const NETWORK_LEASE_ROOT = "/var/run/peephole/net-leases"
 const COMMAND_TIMEOUT_MS = 10_000
 const MAX_MOUNTINFO_BYTES = 4 * 1024 * 1024
 const SERVICE_ERROR_PATTERN =
-  "worker loop error|cleanup failed; will retry|production server failed to start|Container cleanup failed|network cleanup failed"
+  /worker loop error|cleanup failed; will retry|production server failed to start|Container cleanup failed|network cleanup failed/
 
 const BUNDLE_PATTERNS = [
   /^peephole-[a-f\d]{32}$/,
@@ -259,29 +259,34 @@ export async function runProductionHostSmoke(
       await sleep(Math.min(config.pollIntervalMs, remaining))
     }
 
-    const journal = await runReadOnlyCommand(runner, "journalctl", [
-      "--unit",
-      "peephole",
-      "--since",
-      config.journalSince,
-      "--no-pager",
-      "--output",
-      "cat",
-      "--grep",
-      SERVICE_ERROR_PATTERN,
-    ])
-    const errorCount = journal.stdout
-      .split(/\r?\n/u)
-      .filter((line) => line.trim().length > 0).length
-    if (errorCount > 0) {
-      throw new ProductionSmokeError(
-        "service errors",
-        `${String(errorCount)} known worker or cleanup error log line(s) were found since ${config.journalSince}.`,
-      )
-    }
+    await assertNoKnownServiceErrors(runner, config.journalSince)
     report("service errors", `0 since ${config.journalSince}`)
   } finally {
     if (ownsDatabase) await database.close().catch(() => undefined)
+  }
+}
+
+export async function assertNoKnownServiceErrors(
+  runner: ProcessRunner,
+  journalSince: string,
+): Promise<void> {
+  const journal = await runReadOnlyCommand(runner, "journalctl", [
+    "--unit",
+    "peephole",
+    "--since",
+    journalSince,
+    "--no-pager",
+    "--output",
+    "cat",
+  ])
+  const errorCount = journal.stdout
+    .split(/\r?\n/u)
+    .filter((line) => SERVICE_ERROR_PATTERN.test(line)).length
+  if (errorCount > 0) {
+    throw new ProductionSmokeError(
+      "service errors",
+      `${String(errorCount)} known worker or cleanup error log line(s) were found since ${journalSince}.`,
+    )
   }
 }
 
