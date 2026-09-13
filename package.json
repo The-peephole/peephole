@@ -12,6 +12,8 @@
     "typecheck": "wxt prepare && tsc --noEmit",
     "test": "vitest run",
     "test:postgres": "tsx scripts/testPostgres.ts",
+    "smoke:production": "tsx scripts/production-smoke/index.ts api",
+    "smoke:production:host": "tsx scripts/production-smoke/index.ts host",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

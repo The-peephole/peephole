@@ -22,7 +22,11 @@ import { LocalOutputResolver } from "../services/preview-worker/local/localOutpu
 import { NpmBuildExecutor } from "../services/preview-worker/local/npmBuildExecutor"
 import { NpmDependencyInstaller } from "../services/preview-worker/local/npmDependencyInstaller"
 import { PreviewJobWorker } from "../services/preview-worker/worker"
-import type { BuildPlan, PreviewRequester } from "../types/preview"
+import {
+  PRODUCTION_SMOKE_BUILD_PLAN,
+  PRODUCTION_SMOKE_REPOSITORY,
+} from "../scripts/production-smoke/fixture"
+import type { PreviewRequester } from "../types/preview"
 
 // A minimal, trusted fixture authored for this project and pushed to a
 // dedicated public repo (see services/preview-worker README notes below):
@@ -33,22 +37,8 @@ import type { BuildPlan, PreviewRequester } from "../types/preview"
 // with no gVisor sandbox, no resource limits, and no network restriction.
 // This is only safe here because the fixture's content is our own and
 // small. Never point this wiring at arbitrary third-party repositories.
-const repository = {
-  repositoryId: 1_354_475_085,
-  owner: "ppsssj",
-  name: "peephole-fixture-vite-react",
-  commitSha: "d1ac2e71550484b5072de243b4dbf754367ed045",
-}
-
-const vitePlan: BuildPlan = {
-  contractVersion: "static-v1",
-  repository,
-  sourceRoot: ".",
-  packageManager: "npm",
-  installCommand: "npm ci",
-  buildCommand: "npm run build",
-  outputDirectory: "dist",
-}
+const repository = PRODUCTION_SMOKE_REPOSITORY
+const vitePlan = PRODUCTION_SMOKE_BUILD_PLAN
 
 const requester: PreviewRequester = { subject: "user-1", ip: "203.0.113.10" }
 
