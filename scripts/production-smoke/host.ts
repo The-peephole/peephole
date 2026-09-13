@@ -101,9 +101,9 @@ interface CountRow extends QueryResultRow {
   count: string
 }
 
-interface DatabaseCounts {
+export interface DatabaseCounts {
   activeJobs: number
-  queueRows: number
+  actionableQueueRows: number
 }
 
 export function readHostSmokeConfig(
@@ -218,7 +218,10 @@ export async function runProductionHostSmoke(
 
   try {
     const deadline = now() + config.pollTimeoutMs
-    let lastCounts: DatabaseCounts = { activeJobs: -1, queueRows: -1 }
+    let lastCounts: DatabaseCounts = {
+      activeJobs: -1,
+      actionableQueueRows: -1,
+    }
     let lastResidue = emptyResidueReport()
 
     for (;;) {
@@ -232,11 +235,11 @@ export async function runProductionHostSmoke(
 
       if (
         lastCounts.activeJobs === 0 &&
-        lastCounts.queueRows === 0 &&
+        lastCounts.actionableQueueRows === 0 &&
         isResidueEmpty(lastResidue)
       ) {
         report("active jobs", "0")
-        report("queue rows", "0")
+        report("actionable queue rows", "0")
         report("runsc residue", "0")
         report("network lease residue", "0")
         report("netns/veth residue", "0")
@@ -408,7 +411,7 @@ export function assertNoHostResidue(report: HostResidueReport): void {
   if (!isResidueEmpty(report)) {
     throw new ProductionSmokeError(
       "post-run cleanup",
-      describeOutstanding({ activeJobs: 0, queueRows: 0 }, report),
+      describeOutstanding({ activeJobs: 0, actionableQueueRows: 0 }, report),
     )
   }
 }
@@ -455,7 +458,7 @@ async function assertServiceActive(
   }
 }
 
-async function readDatabaseCounts(
+export async function readDatabaseCounts(
   database: PostgresDatabase,
 ): Promise<DatabaseCounts> {
   try {
@@ -469,11 +472,18 @@ async function readDatabaseCounts(
         `,
       )
       const queue = await client.query<CountRow>(
-        "SELECT count(*)::text AS count FROM peephole_preview_queue",
+        `
+          SELECT count(*)::text AS count
+          FROM peephole_preview_queue
+          WHERE status IN ('queued', 'leased')
+        `,
       )
       return {
         activeJobs: parseCount(active.rows[0]?.count, "active jobs"),
-        queueRows: parseCount(queue.rows[0]?.count, "queue rows"),
+        actionableQueueRows: parseCount(
+          queue.rows[0]?.count,
+          "actionable queue rows",
+        ),
       }
     })
   } catch (error) {
@@ -685,7 +695,9 @@ function describeOutstanding(
     ...(counts.activeJobs > 0
       ? [`active jobs=${String(counts.activeJobs)}`]
       : []),
-    ...(counts.queueRows > 0 ? [`queue rows=${String(counts.queueRows)}`] : []),
+    ...(counts.actionableQueueRows > 0
+      ? [`actionable queue rows=${String(counts.actionableQueueRows)}`]
+      : []),
     ...Object.entries(residue).flatMap(([kind, entries]) =>
       entries.map((entry: string) => `${kind}=${entry}`),
     ),

@@ -18,6 +18,18 @@ visibility make this an operator-run post-deployment gate; a future
 `workflow_dispatch` release workflow can invoke the same commands without
 changing their security model.
 
+### Revision precheck
+
+Record both the production checkout revision and the intended repository
+revision before running the gate. A different exact SHA is not by itself a
+runtime failure when every intervening path is documentation or static project
+media and the deployed runtime files are identical. Review the commit metadata
+and path diff and record the deployment as runtime-equivalent in that case.
+Any missing change to runtime code, dependencies, lockfiles, build or production
+configuration remains a failed precheck and requires deployment before smoke
+verification. Do not update or restart production merely to align a
+documentation-only revision.
+
 ## Pinned fixture
 
 The gate uses the first-party public golden fixture already exercised by the
@@ -141,7 +153,12 @@ loopback health/readiness endpoints. It then uses a PostgreSQL transaction with
 `SET TRANSACTION READ ONLY` and fixed `SELECT` statements to require:
 
 - zero active build jobs;
-- zero rows in the preview queue.
+- zero actionable queue rows in `queued` or `leased` state.
+
+Cancelled queue rows are durable cancellation records and are not eligible for
+worker leasing. They do not represent runnable or in-flight work and therefore
+do not prevent host quiescence. Both unexpired and expired `leased` rows remain
+non-quiescent because an expired lease is eligible for worker recovery.
 
 It reports only Peephole-shaped resources under configured or dedicated roots:
 

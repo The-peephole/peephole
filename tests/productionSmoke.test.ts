@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import type { QueryResultRow } from "pg"
 
 import type { PreviewApi } from "../core/preview/apiClient"
 import {
@@ -15,8 +16,14 @@ import { PRODUCTION_SMOKE_BUILD_PLAN } from "../scripts/production-smoke/fixture
 import {
   assertNoHostResidue,
   findHostResidue,
+  readDatabaseCounts,
   type HostResidueSnapshot,
 } from "../scripts/production-smoke/host"
+import type {
+  PostgresDatabase,
+  SqlExecutor,
+  SqlResult,
+} from "../services/preview-api/postgres/database"
 import type { PreviewJob } from "../types/preview"
 
 const ARTIFACT_ID = "artifact-12345678-1234-1234-1234-123456789abc"
@@ -234,6 +241,51 @@ describe("production API smoke", () => {
 })
 
 describe("production host residue", () => {
+  it.each([
+    {
+      name: "zero queue rows",
+      jobStatuses: [],
+      queueRows: [],
+      expected: { activeJobs: 0, actionableQueueRows: 0 },
+    },
+    {
+      name: "a cancelled queue row only",
+      jobStatuses: ["cancelled"],
+      queueRows: [{ status: "cancelled" }],
+      expected: { activeJobs: 0, actionableQueueRows: 0 },
+    },
+    {
+      name: "a queued row",
+      jobStatuses: ["queued"],
+      queueRows: [{ status: "queued" }],
+      expected: { activeJobs: 1, actionableQueueRows: 1 },
+    },
+    {
+      name: "a leased row with a valid lease",
+      jobStatuses: ["building"],
+      queueRows: [{ status: "leased", leaseExpiresAt: "2100-01-01" }],
+      expected: { activeJobs: 1, actionableQueueRows: 1 },
+    },
+    {
+      name: "a leased row with an expired lease",
+      jobStatuses: ["queued"],
+      queueRows: [{ status: "leased", leaseExpiresAt: "2000-01-01" }],
+      expected: { activeJobs: 1, actionableQueueRows: 1 },
+    },
+    {
+      name: "an active job without a queue row",
+      jobStatuses: ["publishing"],
+      queueRows: [],
+      expected: { activeJobs: 1, actionableQueueRows: 0 },
+    },
+  ])("counts $name according to worker lease semantics", async (fixture) => {
+    await expect(
+      readDatabaseCounts(
+        databaseWithQueueState(fixture.jobStatuses, fixture.queueRows),
+      ),
+    ).resolves.toEqual(fixture.expected)
+  })
+
   it("returns a failure for Peephole-owned residue", () => {
     const snapshot = emptyHostSnapshot()
     snapshot.runscContainers.push("container@/var/lib/peephole/jobs/bundle")
@@ -344,6 +396,60 @@ function emptyHostSnapshot(): HostResidueSnapshot {
     ipv6Rules: [],
     mounts: [],
     loopDevices: [],
+  }
+}
+
+function databaseWithQueueState(
+  jobStatuses: string[],
+  queueRows: Array<{ status: string; leaseExpiresAt?: string }>,
+): PostgresDatabase {
+  const client: SqlExecutor = {
+    query: async <Row extends QueryResultRow = QueryResultRow>(
+      text: string,
+    ): Promise<SqlResult<Row>> => {
+      const normalized = text.replace(/\s+/gu, " ").trim()
+      if (normalized === "SET TRANSACTION READ ONLY") {
+        return { rows: [], rowCount: 0 }
+      }
+      if (normalized.includes("FROM peephole_preview_jobs")) {
+        const active = new Set([
+          "queued",
+          "fetching",
+          "installing",
+          "building",
+          "publishing",
+        ])
+        return countResult(
+          jobStatuses.filter((status) => active.has(status)).length,
+        )
+      }
+      if (normalized.includes("FROM peephole_preview_queue")) {
+        expect(normalized).toContain("WHERE status IN ('queued', 'leased')")
+        return countResult(
+          queueRows.filter(({ status }) =>
+            ["queued", "leased"].includes(status),
+          ).length,
+        )
+      }
+      throw new Error(`Unexpected SQL in test: ${normalized}`)
+    },
+  }
+
+  return {
+    query: client.query,
+    transaction: async <T>(operation: (executor: SqlExecutor) => Promise<T>) =>
+      operation(client),
+    ping: async () => true,
+    close: async () => undefined,
+  }
+}
+
+function countResult<Row extends QueryResultRow = QueryResultRow>(
+  count: number,
+): SqlResult<Row> {
+  return {
+    rows: [{ count: String(count) } as unknown as Row],
+    rowCount: 1,
   }
 }
 
