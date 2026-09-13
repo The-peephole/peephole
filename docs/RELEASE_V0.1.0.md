@@ -63,7 +63,7 @@ not expose extension privileges to a local page.
 | Privacy-tab disclosure | MANUAL | Apply the documented answers and verify current Dashboard checkbox names |
 | Remote-code answer | MANUAL | Recommended **No**; disclose isolated cross-origin preview iframe architecture and verify against the live Dashboard |
 | 128×128 store icon | PASS | Valid RGBA PNG packaged; composited onto white/dark-gray/black in this task and stays readable on all three |
-| Required screenshot | MANUAL | Existing 1905×911 PNG cannot be honestly cropped to 1280×800/640×400 without cutting file names or the Peephole panel's stat cards (measured, see `docs/CHROME_WEB_STORE.md`); needs a fresh capture per the instructions there |
+| Required screenshot | PASS | `store-assets/peephole-screenshot-01-1280x800.png`, a real user-captured 1280×800 PNG (no crop/resize applied); see `docs/CHROME_WEB_STORE.md` for the full verification |
 | Required 440×280 promo tile | PASS | `store-assets/peephole-promo-440x280.png`, generated from the audited icon in this task; see `docs/CHROME_WEB_STORE.md` for dimensions/hash |
 | CWS developer account and 2FA | MANUAL | Verify in the owner account; not inspected by this task |
 | Draft upload | PENDING | Upload ZIP only after reviewing this PR; do not submit for review yet |
@@ -78,20 +78,18 @@ not expose extension privileges to a local page.
 
 ## Final controlled sequence
 
-1. Merge the reviewed release-preparation PRs through repository rules.
-2. Capture the compliant 1280×800 (or 640×400) screenshot per the
-   instructions in `docs/CHROME_WEB_STORE.md` (the public privacy URL and the
-   440×280 promo tile are already done).
-3. Rebuild and re-check the ZIP if any extension source or packaged asset
+1. Merge the reviewed release-preparation PRs through repository rules (the
+   privacy URL, promo tile, and screenshot are all done).
+2. Rebuild and re-check the ZIP if any extension source or packaged asset
    changes; never reuse a hash after such a change.
-4. Verify the Developer Dashboard account, 2FA, listing, permissions, privacy
+3. Verify the Developer Dashboard account, 2FA, listing, permissions, privacy
    answers, distribution, and current policy prompts.
-5. Upload as a draft and record the stable extension ID.
-6. Follow the production OAuth allowlist sequence in
+4. Upload as a draft and record the stable extension ID.
+5. Follow the production OAuth allowlist sequence in
    `docs/CHROME_WEB_STORE.md`.
-7. Pass trusted-tester GitHub OAuth and production smoke.
-8. Create the approved tag/Release, then submit for review.
+6. Pass trusted-tester GitHub OAuth and production smoke.
+7. Create the approved tag/Release, then submit for review.
 
-Release readiness: **BLOCKED** until the compliant screenshot, stable Web
-Store ID, production OAuth allowlist, store-build OAuth test, and production
-smoke gates are complete.
+Release readiness: **BLOCKED** until the stable Web Store ID, production
+OAuth allowlist, store-build OAuth test, and production smoke gates are
+complete.

@@ -184,36 +184,40 @@ Official CWS guidance requires a PNG 128×128 icon, at least one full-bleed
 | `image/peephole_demo_img.png` | Valid opaque PNG, 1905×911 (aspect 2.091) | BLOCKED as a direct screenshot source. Measured pixel-for-pixel: the Peephole side panel occupies x=1231–1905 (674px) and GitHub's own breadcrumb/file-listing content occupies roughly x=0–447 of every row. Reaching the required 1.6 aspect (1280×800 or 640×400) from 1905×911 needs a 447px-narrower crop; taking it from the left truncates file/folder names and the repository breadcrumb on every row, and taking it from the right cuts through the Peephole panel's stat-card grid and chart. Either direction materially misrepresents the UI, so no crop of this file is used. See "Screenshot" below for the required fresh capture. |
 | `image/peephole-demo.gif` | Valid 960×510 animated GIF, 296 frames | README demo only; not a compliant store screenshot or promo tile. |
 | Marquee tile | Not present | OPTIONAL: 1400×560 PNG/JPEG. |
-| Required screenshot (1280×800 or 640×400) | Not present | MANUAL — see "Screenshot" below. Up to five screenshots are allowed; at least one compliant screenshot is required before submission. |
+| `store-assets/peephole-screenshot-01-1280x800.png` | Real user-supplied capture in this task: exactly 1280×800 RGB PNG, 287,076 bytes, SHA-256 `1085d62ff0d5c5cbb10067a3a6e69cafdf1e91f3e58eac0ee21e6908f3423119` | PASS. See "Screenshot" below. |
 
 ### Screenshot
 
-`SCREENSHOT = MANUAL`. Claude Code has no reliable, already-present way to load
-the unpacked extension into a real Chrome window, drive GitHub navigation, and
-capture pixel-accurate output in this environment, and the repository has no
-Playwright/Puppeteer dependency to build that on top of (and none was added,
-per task scope). Fabricating or force-cropping a screenshot was rejected for
-the reason in the table above. A human should capture a real one:
+`SCREENSHOT = PASS`. The file was captured fresh by the user directly from a
+real Chrome window running the extension against the `peephole-complex-fixture`
+GitHub repository — it was supplied natively at 1280×800, so no crop, resize,
+or other transformation was applied; the bytes committed are exactly the
+bytes supplied.
 
-1. Load the unpacked build at `.output/chrome-mv3` (or the built ZIP) in
-   Chrome.
-2. Resize the browser content area to exactly 1280×800 (or 640×400) before
-   capturing — for example with Chrome DevTools' device-toolbar custom size,
-   or an OS window-snap tool that reports exact pixel dimensions — so the
-   capture needs no aspect-changing crop afterward.
-3. Open a real public GitHub repository page with the Peephole control
-   visible, open the Side Panel, and either show a completed repository
-   analysis or a successful preview (the existing
-   `image/peephole_demo_img.png` capture of the `peephole-complex-fixture`
-   fixture repository with the panel in its "Preview ready" state is a good
-   reference scene to re-shoot at the correct window size).
-4. Do not open DevTools, and avoid other visible tabs, bookmarks bar entries,
-   or signed-in account UI beyond what's necessary.
-5. Save as PNG at `store-assets/peephole-screenshot-01-1280x800.png` (or the
-   640×400 equivalent). After capture, only exact crop, aspect-preserving
-   resize, or removal of OS/browser chrome that doesn't touch extension UI
-   may be applied — no generated UI elements, replacement text, or fabricated
-   preview results.
+Verified before use:
+
+- Format/dimensions: PNG, RGB, exactly 1280×800 (`PIL.Image.open(...).size`).
+- No letterboxing: sampled every edge row/column and found real, non-uniform
+  content reaching all four edges of the frame — full-bleed, no padding bars.
+- Actual product capture, not a mockup: shows the real GitHub file listing
+  (`peephole-complex-fixture`, commit `50af2a2`, "8 Commits", Languages bar,
+  Contributors, Suggested workflows) alongside the real Peephole Side Panel
+  (`Peephole` header, `Commit 50af2a2`, `Native preview compatible`,
+  `Preview ready`, and an actual rendered preview result). The GitHub side is
+  recognizable via the file table, Code button, About/Releases/Packages/
+  Languages/Contributors sidebar, and Suggested workflows widget; the specific
+  top breadcrumb/repo title happened to be scrolled above the captured
+  viewport, which is an honest consequence of the real window's scroll
+  position, not a crop.
+- No DevTools panel, no visible browser chrome/address bar/bookmarks, no
+  session token, no OAuth callback URL, no API key or secret string visible
+  anywhere in the frame.
+- Avatars in frame are generic placeholder icons from the fixture repository,
+  not a real person's photo or other personal information.
+
+This replaces the earlier `image/peephole_demo_img.png` (1905×911) candidate
+audited above, which was rejected because no truthful 1.6:1 crop of it existed
+without cutting file-list text or the Peephole panel.
 
 The duplicate PNG icons under `image/` have the same dimensions and byte sizes
 as the packaged icons. Store upload should use the audited 128×128 PNG; the ZIP
