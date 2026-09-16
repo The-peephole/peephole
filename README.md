@@ -45,6 +45,7 @@ Peephole performs bounded repository analysis first. It identifies the framework
 | Capability | What Peephole does |
 | --- | --- |
 | Repository analysis | Detects framework, package manager, build plan, blockers, and warnings from known repository files. |
+| Branch selection | Lets you pick any branch from a bounded list; the selection is resolved to its exact commit SHA before analysis. |
 | Commit-pinned previews | Resolves and builds an exact Git commit instead of trusting a mutable branch tip. |
 | Clear eligibility | Distinguishes previewable repositories from unsupported projects before execution. |
 | GitHub identity | Uses GitHub App OAuth; the extension stores only a short-lived Peephole session. |
@@ -146,7 +147,8 @@ smoke described in [Production smoke verification](docs/PRODUCTION_SMOKE.md).
 | Production execution | Static HTML; root-level Vite + React using npm and a root `package-lock.json` |
 | Analysis recognition only | Vue/Svelte Vite, other package managers, backend hints, and monorepo ambiguity; these do not produce runnable plans |
 | Existing deployment handling | Displays a normalized GitHub repository-homepage link in a new tab; embedded deployed-site Live Preview is not implemented |
-| Not implemented | Branch selection, frontend target selection, full-stack execution/routing, secret injection, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
+| Branch selection | Any branch from a bounded (up to 100) list can be selected; it is resolved to an exact commit SHA before analysis, build plan, and preview job creation |
+| Not implemented | Frontend target selection, full-stack execution/routing, secret injection, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
 
 Analysis support is broader than production execution support. The official
 Vite + React golden path is
@@ -180,10 +182,9 @@ The local preview worker is deliberately unsandboxed and must only build source 
 
 ## Project status
 
-The production static-preview foundation and GitHub theme synchronization are
-implemented. Product expansion continues in this order:
+The production static-preview foundation, GitHub theme synchronization, and
+Branch Preview are implemented. Product expansion continues in this order:
 
-2. Branch Preview
 3. Repository / application structure detection
 4. Build Adapter generalization
 5. frontend target selection / frontend monorepo support

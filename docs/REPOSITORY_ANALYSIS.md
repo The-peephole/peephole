@@ -22,8 +22,27 @@ interface RepositoryRef {
 ```
 
 All analysis is pinned to `commitSha`. Owner, repository, or branch alone is not
-an immutable input. The current UI resolves the default-branch head; Branch
-Preview and user-selected branch resolution are not implemented yet.
+an immutable input.
+
+Analysis is requested with a `RepositoryRevisionTarget`, which keeps three
+concepts distinct:
+
+```ts
+interface RepositoryRevisionTarget {
+  repository: { owner: string; repo: string }
+  ref: { kind: "default" } | { kind: "branch"; name: string }
+}
+```
+
+The Side Panel lets the user pick any branch from a bounded list; the analysis
+loader resolves the selected `ref` to a full 40-character commit SHA
+(`GitHubClient.getRepositoryMetadataAtBranch` for a branch, or
+`getRepositoryMetadata` for the repository's default branch) before any
+analysis runs. `defaultBranch` on the resulting `RepositoryRef` always names
+the repository's actual default branch; it is never overwritten by the
+selected branch. The analysis cache key remains
+`repositoryId + commitSha + analyzerVersion`, so two different branches that
+resolve to the same commit share one cached analysis.
 
 Additional inputs:
 

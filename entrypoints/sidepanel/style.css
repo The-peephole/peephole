@@ -92,6 +92,46 @@ a {
   margin: 0 0 14px;
   padding: 8px 0;
 }
+.peephole__branch {
+  border-bottom: 1px solid var(--peephole-border-muted);
+  display: grid;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 0 0 14px;
+}
+.peephole__branch-label {
+  color: var(--peephole-fg);
+  font-size: 12px;
+  font-weight: 600;
+}
+.peephole__branch-select {
+  background: var(--peephole-button-bg);
+  border: 1px solid var(--peephole-button-border);
+  border-radius: 6px;
+  color: var(--peephole-button-fg);
+  font: inherit;
+  min-height: 34px;
+  padding: 5px 8px;
+  width: 100%;
+}
+.peephole__branch-select:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+.peephole__branch-help {
+  color: var(--peephole-fg-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.peephole__inline-retry {
+  background: transparent;
+  border: 0;
+  color: var(--peephole-accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
 .peephole__detail {
   display: grid;
   gap: 12px;
@@ -126,6 +166,8 @@ a {
 }
 .peephole__link:focus-visible,
 .peephole__retry:focus-visible,
+.peephole__inline-retry:focus-visible,
+.peephole__branch-select:focus-visible,
 .peephole__evidence summary:focus-visible {
   outline: 2px solid var(--peephole-focus);
   outline-offset: 2px;

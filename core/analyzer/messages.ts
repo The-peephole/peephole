@@ -2,8 +2,12 @@ import type {
   RepositoryAnalysis,
   RepositoryAnalysisLoader,
 } from "../../types/analysis"
-import type { RepositoryIdentity } from "../../types/repository"
+import type { RepositoryRevisionTarget } from "../../types/repository"
 import { GitHubApiError, type GitHubApiErrorCode } from "../github/client"
+import {
+  isRepositoryIdentity,
+  isRepositoryRevisionTarget,
+} from "../github/repositoryRef"
 
 export const LOAD_REPOSITORY_ANALYSIS =
   "peephole:github:load-repository-analysis"
@@ -13,7 +17,7 @@ export const CANCEL_REPOSITORY_ANALYSIS =
 interface LoadRepositoryAnalysisMessage {
   type: typeof LOAD_REPOSITORY_ANALYSIS
   requestId: string
-  repository: RepositoryIdentity
+  target: RepositoryRevisionTarget
 }
 
 interface CancelRepositoryAnalysisMessage {
@@ -63,24 +67,12 @@ export function createRepositoryAnalysisMessageHandler(
     const abortController = new AbortController()
     activeRequests.set(message.requestId, abortController)
 
-    return loadRepositoryAnalysis(message.repository, {
-      signal: abortController.signal,
-    })
-      .then<RepositoryAnalysisResponse>((analysis) => ({
-        ok: true,
-        requestId: message.requestId,
-        analysis,
-      }))
-      .catch<RepositoryAnalysisResponse>((error: unknown) => ({
-        ok: false,
-        requestId: message.requestId,
-        error: serializeError(error),
-      }))
-      .finally(() => {
-        if (activeRequests.get(message.requestId) === abortController) {
-          activeRequests.delete(message.requestId)
-        }
-      })
+    return handleLoadRequest(
+      loadRepositoryAnalysis,
+      message,
+      abortController,
+      activeRequests,
+    )
   }
 }
 
@@ -91,89 +83,114 @@ export interface RepositoryAnalysisMessageTransport {
 export function createRepositoryAnalysisMessageLoader(
   transport: RepositoryAnalysisMessageTransport,
 ): RepositoryAnalysisLoader {
-  return (repository, options = {}) => {
+  return async (target, options = {}) => {
     const requestId = crypto.randomUUID()
     const signal = options.signal
 
     if (signal?.aborted) {
-      return Promise.reject(createAbortError())
+      throw createAbortError()
     }
 
-    return new Promise<RepositoryAnalysis>((resolve, reject) => {
-      let settled = false
+    const handleAbort = () => {
+      void cancelAnalysisRequest(transport, requestId)
+    }
+    signal?.addEventListener("abort", handleAbort, { once: true })
 
-      const cleanup = () => signal?.removeEventListener("abort", handleAbort)
-      const settle = (callback: () => void) => {
-        if (settled) {
-          return
-        }
+    try {
+      const response = await raceWithAbort(
+        transport.send({
+          type: LOAD_REPOSITORY_ANALYSIS,
+          requestId,
+          target,
+        }),
+        signal,
+      )
 
-        settled = true
-        cleanup()
-        callback()
-      }
-      const handleAbort = () => {
-        void transport
-          .send({ type: CANCEL_REPOSITORY_ANALYSIS, requestId })
-          .catch(() => undefined)
-        settle(() => reject(createAbortError()))
-      }
-
-      signal?.addEventListener("abort", handleAbort, { once: true })
-
-      void transport
-        .send({ type: LOAD_REPOSITORY_ANALYSIS, requestId, repository })
-        .then(
-          (response) => {
-            settle(() => {
-              if (
-                !isRepositoryAnalysisResponse(response) ||
-                response.requestId !== requestId
-              ) {
-                reject(
-                  new GitHubApiError(
-                    "invalid-response",
-                    "The extension returned an invalid analysis response.",
-                  ),
-                )
-                return
-              }
-
-              if (response.ok) {
-                resolve(response.analysis)
-                return
-              }
-
-              if (response.error.code === "aborted") {
-                reject(createAbortError())
-                return
-              }
-
-              reject(
-                new GitHubApiError(
-                  response.error.code,
-                  response.error.message,
-                  response.error.status,
-                  response.error.retryAt
-                    ? new Date(response.error.retryAt)
-                    : null,
-                ),
-              )
-            })
-          },
-          () => {
-            settle(() =>
-              reject(
-                new GitHubApiError(
-                  "network",
-                  "The Peephole background service could not be reached.",
-                ),
-              ),
-            )
-          },
+      if (
+        !isRepositoryAnalysisResponse(response) ||
+        response.requestId !== requestId
+      ) {
+        throw new GitHubApiError(
+          "invalid-response",
+          "The extension returned an invalid analysis response.",
         )
-    })
+      }
+
+      if (response.ok) {
+        return response.analysis
+      }
+
+      if (response.error.code === "aborted") {
+        throw createAbortError()
+      }
+
+      throw new GitHubApiError(
+        response.error.code,
+        response.error.message,
+        response.error.status,
+        response.error.retryAt ? new Date(response.error.retryAt) : null,
+      )
+    } catch (error) {
+      if (isAbortError(error) || error instanceof GitHubApiError) throw error
+      throw new GitHubApiError(
+        "network",
+        "The Peephole background service could not be reached.",
+      )
+    } finally {
+      signal?.removeEventListener("abort", handleAbort)
+    }
   }
+}
+
+async function handleLoadRequest(
+  loadRepositoryAnalysis: RepositoryAnalysisLoader,
+  message: LoadRepositoryAnalysisMessage,
+  abortController: AbortController,
+  activeRequests: Map<string, AbortController>,
+): Promise<RepositoryAnalysisResponse> {
+  try {
+    const analysis = await loadRepositoryAnalysis(message.target, {
+      signal: abortController.signal,
+    })
+    return { ok: true, requestId: message.requestId, analysis }
+  } catch (error) {
+    return {
+      ok: false,
+      requestId: message.requestId,
+      error: serializeError(error),
+    }
+  } finally {
+    if (activeRequests.get(message.requestId) === abortController) {
+      activeRequests.delete(message.requestId)
+    }
+  }
+}
+
+async function cancelAnalysisRequest(
+  transport: RepositoryAnalysisMessageTransport,
+  requestId: string,
+): Promise<void> {
+  try {
+    await transport.send({ type: CANCEL_REPOSITORY_ANALYSIS, requestId })
+  } catch {
+    // Local cancellation remains authoritative when the background is gone.
+  }
+}
+
+async function raceWithAbort<T>(
+  operation: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return operation
+
+  return Promise.race([
+    operation,
+    new Promise<never>((_, reject) => {
+      signal.addEventListener("abort", () => reject(createAbortError()), {
+        once: true,
+      })
+    }),
+  ])
 }
 
 function isLoadMessage(value: unknown): value is LoadRepositoryAnalysisMessage {
@@ -181,7 +198,7 @@ function isLoadMessage(value: unknown): value is LoadRepositoryAnalysisMessage {
     isObject(value) &&
     value.type === LOAD_REPOSITORY_ANALYSIS &&
     isRequestId(value.requestId) &&
-    isRepositoryIdentity(value.repository)
+    isRepositoryRevisionTarget(value.target)
   )
 }
 
@@ -247,16 +264,6 @@ function isRepositoryMetadata(value: unknown): boolean {
     typeof value.defaultBranch === "string" &&
     /^[a-f\d]{40}$/i.test(String(value.commitSha)) &&
     (typeof value.homepage === "string" || value.homepage === null)
-  )
-}
-
-function isRepositoryIdentity(value: unknown): value is RepositoryIdentity {
-  return (
-    isObject(value) &&
-    typeof value.owner === "string" &&
-    /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(value.owner) &&
-    typeof value.repo === "string" &&
-    /^[a-z\d_.-]+$/i.test(value.repo)
   )
 }
 

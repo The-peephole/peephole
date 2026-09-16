@@ -1,4 +1,4 @@
-import type { RepositoryIdentity, RepositoryMetadata } from "./repository"
+import type { RepositoryMetadata, RepositoryRevisionTarget } from "./repository"
 
 export const ANALYZER_VERSION = "0.1.1"
 export const PREVIEW_CONTRACT_VERSION = "static-v1"
@@ -89,6 +89,6 @@ export interface RepositoryAnalysisLoadOptions {
 }
 
 export type RepositoryAnalysisLoader = (
-  repository: RepositoryIdentity,
+  target: RepositoryRevisionTarget,
   options?: RepositoryAnalysisLoadOptions,
 ) => Promise<RepositoryAnalysis>

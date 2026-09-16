@@ -1,6 +1,7 @@
 import { createRepositoryAnalysisMessageHandler } from "../core/analyzer/messages"
 import { RepositoryAnalysisService } from "../core/analyzer/repositoryAnalysisService"
 import { GitHubClient } from "../core/github/client"
+import { createRepositoryBranchesMessageHandler } from "../core/github/branchMessages"
 import { KnownRepositoryFilesLoader } from "../core/github/knownFiles"
 import { RepositoryMetadataCache } from "../core/github/repositoryMetadataCache"
 import { clearLegacyStoredGitHubToken } from "../core/github/tokenStorage"
@@ -19,6 +20,10 @@ export default defineBackground(() => {
   const handleMessage = createRepositoryAnalysisMessageHandler(
     analysisService.load,
   )
+  const handleRepositoryBranchesMessage =
+    createRepositoryBranchesMessageHandler((repository, options = {}) =>
+      githubClient.listRepositoryBranches(repository, options.signal),
+    )
   const handleSidePanelMessage = createSidePanelMessageHandler(
     browser.sidePanel,
   )
@@ -31,6 +36,7 @@ export default defineBackground(() => {
     (message, sender) =>
       handleGitHubThemeMessage(message, sender) ??
       handleSidePanelMessage(message, sender) ??
+      handleRepositoryBranchesMessage(message) ??
       handleMessage(message),
   )
 })

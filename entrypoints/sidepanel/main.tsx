@@ -2,6 +2,7 @@ import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 
 import { createRepositoryAnalysisMessageLoader } from "../../core/analyzer/messages"
+import { createRepositoryBranchesMessageLoader } from "../../core/github/branchMessages"
 import { PreviewApiClient } from "../../core/preview/apiClient"
 import {
   parsePreviewApiBaseUrl,
@@ -27,6 +28,9 @@ import "./style.css"
 const repository = parseSidePanelRepository(window.location.href)
 const sourceTabId = parseSidePanelTabId(window.location.href)
 const loadRepositoryAnalysis = createRepositoryAnalysisMessageLoader({
+  send: (message) => browser.runtime.sendMessage(message),
+})
+const loadRepositoryBranches = createRepositoryBranchesMessageLoader({
   send: (message) => browser.runtime.sendMessage(message),
 })
 let previewApi: PreviewApiClient | null = null
@@ -91,6 +95,7 @@ createRoot(root).render(
   <StrictMode>
     <SidePanelApp
       loadRepositoryAnalysis={loadRepositoryAnalysis}
+      loadRepositoryBranches={loadRepositoryBranches}
       connectGitHub={reconnectGitHub}
       previewApi={previewApi}
       previewArtifactBaseDomain={previewArtifactBaseDomain}

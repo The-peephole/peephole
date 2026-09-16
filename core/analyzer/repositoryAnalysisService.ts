@@ -4,7 +4,6 @@ import {
   type RepositoryAnalysisLoader,
 } from "../../types/analysis"
 import type {
-  RepositoryIdentity,
   RepositoryMetadata,
   RepositoryMetadataLoader,
 } from "../../types/repository"
@@ -29,12 +28,9 @@ export class RepositoryAnalysisService {
     private readonly knownFiles: KnownFilesSource | KnownRepositoryFilesLoader,
   ) {}
 
-  readonly load: RepositoryAnalysisLoader = async (
-    repository: RepositoryIdentity,
-    options = {},
-  ) => {
-    const metadata = await this.loadRepositoryMetadata(repository, options)
-    const cacheKey = `${metadata.repositoryId}:${metadata.commitSha}:${ANALYZER_VERSION}`
+  readonly load: RepositoryAnalysisLoader = async (target, options = {}) => {
+    const metadata = await this.loadRepositoryMetadata(target, options)
+    const cacheKey = `${metadata.repositoryId}:${metadata.commitSha.toLowerCase()}:${ANALYZER_VERSION}`
     const cached = this.cache.get(cacheKey)
 
     if (cached) {
