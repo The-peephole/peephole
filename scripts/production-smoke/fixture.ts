@@ -6,12 +6,12 @@ import type {
 
 /** First-party public fixture shared by the real golden paths and the
  * post-deployment smoke verifier. The immutable commit exists in GitHub
- * repository id 1354475085; never replace this with a branch name. */
+ * repository id 1371620276; never replace this with a branch name. */
 export const PRODUCTION_SMOKE_REPOSITORY: PreviewRepositoryRef = {
-  repositoryId: 1_354_475_085,
-  owner: "ppsssj",
+  repositoryId: 1_371_620_276,
+  owner: "The-peephole",
   name: "peephole-fixture-vite-react",
-  commitSha: "d1ac2e71550484b5072de243b4dbf754367ed045",
+  commitSha: "4a2c3b78e15d90865ed565c3d38c4045b5a5235f",
 }
 
 export const PRODUCTION_SMOKE_REQUEST: CreatePreviewJobRequest = {
