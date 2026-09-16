@@ -25,6 +25,11 @@ Dedicated preview origin --------------------+
 
 The extension integrates with GitHub and presents results. The control plane validates and schedules. The execution plane handles hostile repository code. The delivery plane serves only published artifacts.
 
+This architecture is implemented for commit-pinned static previews. The
+current execution targets are package-free static HTML and root-level Vite +
+React with npm. Full-stack execution is a future architecture extension, not a
+property of the current system.
+
 ## 2. Primary Design Rules
 
 1. GitHub DOM integration is an adapter, not business logic.
@@ -63,7 +68,10 @@ The side panel shows:
 - build progress,
 - the resulting preview or a clear unsupported/failure state.
 
-Preview content is embedded only from the dedicated Peephole preview origin. Existing third-party deployments may need to open in a new tab when framing is prohibited.
+Preview content is embedded only from the dedicated Peephole preview origin.
+Today, normalized repository-homepage metadata is displayed as an external link
+opened in a new tab. Peephole does not yet probe, proxy, or embed an existing
+deployed site.
 
 ## 4. Analysis Layer
 
@@ -92,11 +100,17 @@ type PreviewMode =
 
 An eligibility result includes evidence, blockers, a package manager, a build command, and an output directory when known. A missing or ambiguous value must not be guessed in order to force a build.
 
-Priority:
+Current behavior:
 
-1. use a confirmed existing deployment when it is safe and useful,
-2. otherwise offer a native static build when the compatibility contract is satisfied,
-3. otherwise show analysis and blockers only.
+1. normalized HTTP(S) repository-homepage metadata produces
+   `existing-deployment` and an external link;
+2. otherwise a native static build is offered only when the implemented runner
+   target and compatibility contract both match;
+3. otherwise the UI shows analysis and blockers only.
+
+The `existing-deployment` label does not currently mean that Peephole checked
+reachability or framing policy. Embedded deployed-site Live Preview is a future
+roadmap stage.
 
 StackBlitz is not a preview mode.
 
@@ -122,7 +136,7 @@ DELETE /v1/preview-jobs/{jobId}
 
 ## 7. Execution Plane
 
-The v0.1 runner performs a static build:
+The production runner performs a static build:
 
 1. create a fresh isolated job sandbox,
 2. download a public repository archive at the exact commit SHA,
@@ -137,12 +151,11 @@ The runner is described in [Preview runtime](PREVIEW_RUNTIME.md).
 
 ## 8. Delivery Plane and Origins
 
-Use different trust origins:
+The deployed path uses different trust origins:
 
 ```text
-api.peephole.dev       control API
-app.peephole.dev       optional web control UI
-{job-id}.peephole.run  untrusted preview content
+API origin                 control API
+{artifact-id}.preview.tld  untrusted preview content
 ```
 
 The preview domain should be a separate registrable domain, not merely another subdomain of the control UI. It must not receive control-plane cookies, extension tokens, or infrastructure credentials.
@@ -188,7 +201,8 @@ Required controls include:
 - disposable per-job isolation,
 - CPU, memory, process, disk, output-size, and wall-time limits,
 - read-only base image and a bounded writable workspace,
-- no host filesystem, container socket, or sibling-job access,
+- no access to arbitrary/sensitive host paths, the container socket, or sibling
+  jobs; only owned job/runtime mounts are exposed,
 - blocked private, loopback, link-local, and cloud-metadata networks,
 - public IPv4 egress only during installation, with DNS-only resolver
   exceptions and private/link-local/host/inter-job destinations denied,
@@ -199,18 +213,35 @@ Required controls include:
 
 A plain shared process or unrestricted container is not an acceptable production boundary for untrusted public builds.
 
-## 12. Suggested Layout
+## 12. Implemented Layout
 
 ```text
-entrypoints/             extension entrypoints
-components/              presentation components
-core/github-dom/         GitHub selectors and navigation adapter
-core/github/             GitHub data client
-core/analyzer/           pure evidence detectors
-core/preview/            eligibility and client contracts
-services/preview-api/    control plane
-services/preview-worker/ isolated build worker
-types/                   shared domain types
+entrypoints/github.content/    GitHub selectors, injection, and navigation
+entrypoints/background.ts      validated GitHub operations and side-panel sync
+entrypoints/sidepanel/         full analysis and preview surface
+components/                    presentation components
+core/github/                   GitHub data client and bounded known files
+core/analyzer/                 evidence detectors and eligibility inputs
+core/preview/                  runner gate, build plan, API/auth clients
+services/preview-api/          control plane and PostgreSQL adapters
+services/preview-worker/local/ unsandboxed trusted-source development adapters
+services/preview-worker/gvisor/ production sandbox/network/disk adapters
+services/production/           deployed composition and artifact host
+types/                         shared domain contracts
 ```
 
 Deployable service boundaries may live in separate repositories later. Their contracts must remain explicit here.
+
+## 13. Planned Architecture Expansion
+
+The ordered expansion is GitHub theme synchronization, Branch Preview,
+repository/application structure detection, Build Adapter generalization,
+frontend target selection and monorepo support, existing deployed-site Live
+Preview, backend detection, backend execution, frontend ↔ backend routing,
+ephemeral environment/secrets, and temporary databases.
+
+Branch Preview must still resolve to an exact commit before cache or job
+creation. Build Adapter generalization must preserve the worker ports and must
+not add fixture-specific production branches. Backend execution requires a
+separate reviewed runtime/lifecycle contract rather than keeping the static
+build sandbox alive.

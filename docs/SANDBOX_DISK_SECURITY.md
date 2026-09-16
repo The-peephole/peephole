@@ -330,8 +330,9 @@ start if any step is unavailable; it never falls back to polling-only mode.
   its own reserve, quota, and monitoring are required.
 - Loop/mount administration requires trusted host privileges. The sandbox never
   receives those devices or capabilities.
-- Linux/gVisor enforcement cannot be proven on Windows. The real suites are a
-  mandatory gate on the security branch before production deployment.
+- Linux/gVisor enforcement cannot be proven on Windows. Changes to this
+  boundary require the real suites on a suitable Linux/gVisor host before
+  deployment.
 
 ## References
 

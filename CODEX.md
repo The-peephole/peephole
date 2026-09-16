@@ -1,239 +1,198 @@
-# Codex Implementation Guide
+# Codex Engineering Guide
 
-This is the primary implementation brief for Peephole. Read all Markdown documents in the repository before changing production code.
+This repository already contains Peephole's production static-preview
+foundation. Treat it as an existing system to extend, not as a bootstrap
+exercise. Before changing behavior, inspect the relevant source, tests,
+workflows, and living documentation and describe the evidence for the current
+behavior.
 
-## Mission
+## Working Agreement
 
-Implement Peephole v0.1: a Chrome extension plus an isolated preview service that can analyze and preview a deliberately limited class of public GitHub frontend repositories without cloning locally or depending on StackBlitz.
+- Do not work directly on `main`. Create a feature branch and use a pull
+  request.
+- Keep each PR within its stated scope. Do not fold unrelated roadmap work,
+  cleanup, or product changes into it.
+- Preserve existing behavior, tests, and security boundaries unless the PR is
+  explicitly changing one of them.
+- Never mark a capability complete from a plan, fixture, type, or test name
+  alone. Confirm the production composition and, when relevant, the
+  environment-gated verification.
+- Do not generalize the product by adding repository-specific conditionals.
+  Fixtures prove contracts; they are not production dispatch tables.
+- Keep historical release and decision records intact. Update living documents
+  and append a new decision or status note when an older accepted decision needs
+  qualification.
 
-Do not imply universal repository support. A safe, evidence-based unsupported result is a valid outcome.
+## Current Production Baseline
 
-## Required Technology
-
-Extension:
-
-- WXT
-- React
-- TypeScript
-- Manifest V3
-- Chrome Side Panel for the full preview experience
-- GitHub REST API where needed
-
-Preview service:
-
-- a control API and asynchronous job model,
-- disposable isolated build workers,
-- static artifact storage,
-- a dedicated preview origin separate from extension and API origins.
-
-Prefer browser-native APIs and small dependencies. Do not select a sandbox implementation until its isolation, resource-control, and network model has been reviewed.
-
-## Architecture Constraints
-
-Keep these boundaries explicit:
+The implemented path is:
 
 ```text
-GitHub DOM adapter
-        |
-        v
-Extension application + UI
-        |
-        +--> Repository analysis client
-        |
-        +--> Preview orchestration client
-                    |
-                    v
-             Isolated build runner
-                    |
-                    v
-             Static preview origin
+GitHub repository page
+-> Chrome extension repository injection
+-> bounded repository analysis at the default-branch head commit
+-> authenticated, commit-pinned Preview API job
+-> PostgreSQL-backed queue and state
+-> real gVisor production worker
+-> static artifact publication on an isolated HTTPS origin
+-> Chrome Side Panel preview
 ```
 
-- The repository analyzer must not depend on GitHub DOM structure.
-- GitHub DOM selectors and navigation behavior belong only in the GitHub adapter.
-- Cross-origin GitHub API requests must run in the extension background service worker through a fixed, validated message contract.
-- Preview eligibility is a pure decision over analysis evidence where possible.
-- The extension must never install dependencies, evaluate source, or run build commands.
-- Runner credentials, job state, and infrastructure details must not leak into extension UI state.
-- Repository content is untrusted even when the repository is popular or public.
+The foundation includes GitHub repository injection, repository analysis,
+commit-pinned previews, the Preview Control Plane, PostgreSQL persistence,
+GitHub App authentication, sandbox resource/network/disk controls, static
+artifact publication, production deployment, and real golden-path tests.
 
-## Milestone 1: Extension Shell
+Production execution is deliberately narrower than analysis:
 
-The first milestone is intentionally limited to:
+- package-free static HTML rooted at the repository root;
+- root-level Vite + React with npm, a root `package-lock.json`, `npm ci`, the
+  `build` script, and a deterministic static output directory.
 
-1. WXT + React + TypeScript extension setup,
-2. execution on `https://github.com/*/*`,
-3. valid repository-page detection,
-4. exactly one visible `Peephole` action,
-5. a panel opened by that action,
-6. owner/repository display,
-7. correct behavior across GitHub client-side navigation.
+Vue/Svelte Vite, other package managers, selected monorepo applications,
+backends, persistent servers, secrets, and temporary databases are not current
+runner capabilities. Existing deployment evidence currently exposes a
+normalized repository-homepage link in a new tab; it is not yet an embedded
+deployed-site Live Preview.
 
-The transitional StackBlitz action has been removed. Do not reintroduce an external IDE fallback.
+## Architecture to Preserve
 
-## Implementation Order
+### Extension and GitHub adapter
 
-### Phase 1 - Extension shell
+- `entrypoints/github.content/` owns GitHub DOM discovery, idempotent action
+  insertion, and client-side navigation reconciliation.
+- `entrypoints/background.ts` performs fixed, validated cross-origin GitHub
+  operations. Content scripts must not receive an arbitrary-fetch primitive.
+- `entrypoints/sidepanel/` and `components/` present analysis, authentication,
+  job state, and approved preview artifacts.
+- Repository code must never execute in a content script, extension page,
+  background service worker, or control-plane process.
 
-Maintain the existing repository parser, GitHub action insertion, panel, and SPA navigation behavior. Injection must remain idempotent and UI state must reset when repository identity changes.
+### Analysis and build plans
 
-### Phase 2 - Repository metadata
+- `core/github/` resolves public repository metadata and bounded known files.
+- `core/analyzer/` produces evidence, warnings, and blockers without executing
+  repository code.
+- `core/preview/runnerSupport.ts` is the current execution-capability gate.
+- The client proposes a versioned build contract; the server independently
+  verifies repository identity, the exact commit, analysis, and build plan.
+- Branch names are not immutable job or cache identities. Branch Preview must
+  resolve a selected branch to a full commit SHA before analysis or execution.
 
-Fetch only the metadata and known files required by the analyzer:
+### Control and execution planes
 
-- repository id and immutable commit SHA,
-- default branch and homepage,
-- `package.json`, lock files, environment templates,
-- selected framework, deployment, and documentation files.
+- `services/preview-api/` owns authentication, validation, idempotency, quotas,
+  lifecycle transitions, cancellation, cache lookup, and queue admission.
+- `services/preview-api/postgres/` provides durable job, artifact, quota, and
+  leased-queue state.
+- `services/preview-worker/worker.ts` depends on explicit fetch, sandbox,
+  install, build, output, and publish ports.
+- `services/preview-worker/gvisor/` is the production isolation implementation.
+  `services/preview-worker/local/` is an unsandboxed development path and may
+  only run trusted source.
+- `services/production/server.ts` composes the real production API, PostgreSQL,
+  worker loops, gVisor adapters, recovery gates, and artifact host.
 
-### Phase 3 - Analysis and eligibility
+### Artifact boundary
 
-Detect framework, package manager, commands, environment requirements, deployment evidence, and monorepo blockers. Produce a separate preview-eligibility result:
+Published output is static content served from an artifact-specific hostname on
+a registrable domain separate from the API. It must not receive control-plane
+cookies, bearer tokens, extension privileges, or privileged messaging.
 
-- `existing-deployment`,
-- `native-static-build`,
-- `unsupported`.
+## Security Invariants
 
-Every result must include evidence and blockers. Do not convert uncertainty into a positive runnable decision.
+Treat repository files, dependency scripts, build tools, and generated output
+as hostile. Changes must preserve the controls already enforced by the
+production worker:
 
-### Phase 4 - Preview control plane
+- exact commit identity and server-side plan revalidation;
+- non-root gVisor execution with a read-only root filesystem;
+- bounded CPU, memory, PIDs, wall time, archive size, workspace disk, output
+  size, and file count;
+- no host/container socket or sibling-job access;
+- install-phase public egress with private, loopback, link-local, metadata,
+  host, and inter-job destinations blocked;
+- no build-phase network access;
+- durable ownership records and startup/normal-path reconciliation for runsc,
+  disk, and network resources;
+- isolated artifact origins, restrictive response headers, expiry, and
+  ownership-aware cleanup;
+- no repository or infrastructure secrets in the sandbox, client state, or
+  logs.
 
-Implement a commit-pinned asynchronous job API with idempotency, status polling, cancellation, expiry, and artifact URLs. The API schedules work; it does not execute builds in the request process.
+Do not strengthen a security claim from unit tests or configuration alone.
+Production isolation claims require the applicable real-host evidence. The
+current install network is not registry-only; package-proxy or equivalent
+egress restriction remains future work.
 
-### Phase 5 - Native static runner
+## Development Order
 
-Support only the v0.1 compatibility contract:
+Implement product expansion in this order unless a later accepted decision
+changes it:
 
-- static repositories,
-- root-level Vite React/Vue/Svelte applications,
-- deterministic installs and builds without secrets,
-- known static output directories.
+1. GitHub theme synchronization
+2. Branch Preview
+3. Repository / application structure detection
+4. Build Adapter generalization
+5. frontend target selection / frontend monorepo support
+6. existing deployed-site Live Preview
+7. backend detection
+8. backend execution
+9. frontend ↔ backend routing
+10. ephemeral env / secrets
+11. temporary database support
 
-Run each job in a fresh restricted sandbox, publish only static artifacts, and destroy the writable workspace after completion.
+Each stage must expose a reviewed contract and preserve earlier security
+boundaries. In particular, do not jump from a full-stack fixture to backend
+execution, and do not keep the static build container alive as a server.
 
-### Phase 6 - Side-panel preview
+## Fixture Registry
 
-Add native Peephole preview controls. Show analysis, eligibility, build progress, errors, and the isolated preview in a Chrome side panel.
-
-### Phase 7 - Hardening
-
-Add job quotas, controlled dependency-registry egress, abuse controls, cache invalidation, observability, malicious fixtures, and cross-origin security tests before declaring v0.1 complete.
-
-## Suggested Project Structure
+The official Vite + React golden-path fixture is:
 
 ```text
-peephole/
-  entrypoints/
-    github.content/
-    sidepanel/
-    background.ts
-  components/
-  core/
-    github-dom/
-    github/
-    analyzer/
-    preview/
-  services/
-    preview-api/
-    preview-worker/
-  types/
-  utils/
+repository: The-peephole/peephole-fixture-vite-react
+repository id: 1371620276
+commit: 4a2c3b78e15d90865ed565c3d38c4045b5a5235f
 ```
 
-The service directories may become separate deployable packages. Shared domain contracts must not import extension DOM code or runner implementation details.
+The previous personal-fork fixture identity is obsolete. The current metadata
+was merged by PR #6 at
+`dba47191bdd3600b3f451945653efab2363028c2`.
 
-## Domain Model
+The future full-stack fixture is pinned separately:
 
-```ts
-export interface RepositoryRef {
-  repositoryId: number
-  owner: string
-  name: string
-  commitSha: string
-}
-
-export interface PreviewEligibility {
-  mode: "existing-deployment" | "native-static-build" | "unsupported"
-  buildCommand: string | null
-  outputDirectory: string | null
-  evidence: string[]
-  blockers: string[]
-}
-
-export interface PreviewJob {
-  id: string
-  repository: RepositoryRef
-  status: "queued" | "fetching" | "installing" | "building" | "publishing" | "ready" | "failed" | "expired"
-  previewUrl: string | null
-  errorCode: string | null
-  expiresAt: string
-}
+```text
+repository: The-peephole/peephole-fixture-fullstack
+commit: eae411a288b212201933cebb206126dd5bb0d93e
 ```
 
-Use precise types instead of `Record<string, any>` application state. See the repository-analysis and preview-runtime documents for complete contracts.
+Its existence is test preparation only. It is not evidence of full-stack
+analysis, execution, routing, secrets, or database support.
 
-## GitHub Navigation
+## Change Procedure
 
-GitHub uses client-side navigation. The extension must handle repository-to-repository, repository-to-subpage, and repository-to-non-repository transitions without a reload, duplicate actions, stale owner/repository state, or stale preview jobs.
+1. Read the relevant implementation and its existing tests before designing a
+   change.
+2. State which current contract changes and which contracts stay unchanged.
+3. Add or update focused tests at the closest layer. Add a real fixture test
+   only when the feature needs external/toolchain proof.
+4. Keep repository support capability-driven. Generalize detectors and adapter
+   interfaces before adding a new fixture target.
+5. Run formatting, lint, typechecking, portable tests, and the extension build.
+6. Run environment-gated tests only in their required environment and report
+   them separately.
+7. Update living documentation in the same PR without rewriting historical
+   release records.
 
-## Performance Requirements
+The `Real golden-path build tests` workflow is scheduled and manually
+dispatchable CI that uses live GitHub/npm access. A successful run is not a
+production smoke. Production smoke is the separate operator-run API and
+host-residue gate in `docs/PRODUCTION_SMOKE.md`.
 
-- Fetch only known analysis files before a build is requested.
-- Pin analysis and preview jobs to a commit SHA.
-- Cache analysis by repository id plus commit SHA.
-- Cache build artifacts by repository id, commit SHA, runner version, and normalized build plan.
-- Start expensive work only after explicit user action.
-- Stream or poll meaningful job phases rather than showing indefinite loading.
+## Completion Standard for New Capabilities
 
-## Security Requirements
-
-Never:
-
-- execute repository code in an extension, content script, background worker, or control API process,
-- inject arbitrary remote scripts into privileged extension pages,
-- use `eval` for repository content,
-- expose GitHub or infrastructure credentials to a build,
-- mount host filesystems or a container socket into a runner,
-- allow access to private networks or cloud metadata endpoints,
-- store or display secret environment values.
-
-Every build must be non-root, disposable, resource-limited, time-limited, and isolated from other jobs. Dependency downloads must use an explicit allow policy. Preview content must be served from a separate registrable domain with restrictive response headers.
-
-## UX Requirements
-
-Clearly distinguish confirmed facts, configuration evidence, warnings, build phases, and unsupported states. Show actionable blockers such as `secret environment variables required` or `workspace selection is ambiguous` rather than a generic failure.
-
-## Error Handling
-
-The panel must remain usable after GitHub rate limits, missing files, malformed JSON, network errors, job timeouts, install failures, build failures, unavailable artifacts, and repository navigation during a job. Stale job results must never attach to a newly visited repository.
-
-## Testing
-
-At minimum, cover:
-
-- GitHub URL parsing and DOM integration,
-- framework/package manager/environment detectors,
-- preview eligibility,
-- preview API state transitions and idempotency,
-- runner timeout/resource/network policy,
-- preview-origin isolation,
-- GitHub SPA navigation while jobs are active.
-
-Unit tests must not depend on live GitHub APIs. Use fixtures and a fake runner for integration tests.
-
-## Explicit Non-goals for v0.1
-
-- private repository authentication,
-- arbitrary repository execution,
-- persistent SSR or backend processes,
-- database and external service provisioning,
-- user-provided secret injection,
-- Docker-compose projects,
-- automatic monorepo application selection,
-- support for every language or package manager,
-- AI-generated analysis,
-- numeric previewability scores.
-
-## Completion Definition
-
-Peephole v0.1 is complete when a user can install the unpacked extension, open a supported public repository, inspect evidence, start a commit-pinned isolated build, and view the resulting static application inside the Peephole experience. Unsupported repositories must explain why, GitHub navigation must remain correct, and no preview path may depend on StackBlitz.
+A capability is complete only when the implementation path, UI or API contract,
+failure behavior, tests, and documentation agree. A fixture repository, planned
+type, analyzer label, or passing fake-adapter test by itself does not establish
+production support.

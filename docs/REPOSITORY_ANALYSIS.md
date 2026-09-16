@@ -15,13 +15,15 @@ Analysis never installs dependencies or executes repository code.
 interface RepositoryRef {
   repositoryId: number
   owner: string
-  name: string
+  repo: string
   defaultBranch: string
   commitSha: string
 }
 ```
 
-All analysis is pinned to `commitSha`. Owner, repository, or branch alone is not an immutable input.
+All analysis is pinned to `commitSha`. Owner, repository, or branch alone is not
+an immutable input. The current UI resolves the default-branch head; Branch
+Preview and user-selected branch resolution are not implemented yet.
 
 Additional inputs:
 
@@ -69,7 +71,12 @@ Attempt only known paths and enforce per-file and total-byte limits.
 
 - `vercel.json`
 - `netlify.toml`
-- `.github/workflows/*.yml` only through a bounded metadata strategy
+
+### Workspace indicators
+
+- `turbo.json`
+- `nx.json`
+- `lerna.json`
 
 Do not recursively download the repository during analysis.
 
@@ -107,7 +114,8 @@ yarn -> version-specific immutable/frozen install
 bun  -> bun install --frozen-lockfile
 ```
 
-v0.1 may narrow actual runner support even when the analyzer recognizes more managers.
+The current runner narrows actual support to npm with a root
+`package-lock.json`, even though the analyzer recognizes more managers.
 
 ## 6. Runtime and Build Detection
 
@@ -126,7 +134,7 @@ interface RuntimeEvidence {
 }
 ```
 
-For native v0.1 builds:
+For current native builds:
 
 - an explicit `build` script is preferred,
 - arbitrary script composition is not guessed,
@@ -154,31 +162,40 @@ Deployment states:
 type DeploymentStatus = "confirmed" | "configured" | "unknown"
 ```
 
-Confirmed means a plausible deployment URL is known from authoritative repository metadata or a provider/API check and passes URL safety validation. A config file alone yields `configured`, not `confirmed`.
+`confirmed` currently means that GitHub repository metadata contains a URL that
+normalizes to HTTP(S). It does not mean Peephole checked reachability, content,
+or framing policy. A `vercel.json` or `netlify.toml` file alone yields
+`configured`, not `confirmed`.
 
-GitHub Pages, repository homepage, Vercel, and Netlify evidence may be inspected. Reachability and framing permission are presentation concerns and do not change source-build eligibility.
+The implemented detector uses repository homepage metadata, `vercel.json`, and
+`netlify.toml`. Existing-site Live Preview, reachability checks, and framing
+checks are future work.
 
 ## 9. README Inspection
 
-README inspection is lightweight supporting evidence for:
-
-- documented install/start/build commands,
-- required environment variables,
-- demo links,
-- backend/database requirements,
-- monorepo application paths.
-
-README claims do not override machine-readable contradictions and are never executed as instructions.
+`README.md` is fetched within the known-file and byte bounds, but the current
+analyzer does not parse README prose into eligibility evidence. Future structure
+or backend detection may add explicit, tested rules; README text must never be
+executed as instructions or allowed to override machine-readable
+contradictions.
 
 ## 10. External Service Hints
 
-Flag dependencies and configuration that suggest required services, including database clients, hosted backend SDKs, authentication providers, server-only frameworks, and runtime API URLs.
+The current bounded rules flag a fixed set of server/database dependencies,
+selected hosted backend clients, and API-like environment-variable names. This
+is an early hint set, not general backend detection.
 
 These are evidence, not proof. A blocker requires a rule tied to the v0.1 contract, such as `build requires secret environment value` or `preview requires persistent server process`.
 
 ## 11. Monorepos
 
-Detect workspace declarations and common monorepo tools. v0.1 returns `unsupported` when:
+The current detector marks any `package.json` `workspaces` field or root
+`pnpm-workspace.yaml`, `turbo.json`, `nx.json`, or `lerna.json` as both
+`monorepo` and `ambiguous`. The current contract returns `unsupported`; it does
+not enumerate applications or select a frontend target.
+
+Future repository/application structure detection may refine the result, but
+today the blocker applies when:
 
 - more than one likely application exists,
 - the build requires choosing a workspace,
@@ -205,21 +222,25 @@ interface PreviewEligibility {
 }
 ```
 
-`native-static-build` requires all relevant v0.1 compatibility checks to pass. `existing-deployment` requires a confirmed safe URL. All other cases return `unsupported`; no StackBlitz fallback exists.
+`native-static-build` requires all compatibility checks plus
+`core/preview/runnerSupport.ts` to admit the framework/package-manager pair.
+`existing-deployment` currently requires normalized HTTP(S) homepage metadata.
+All other cases return `unsupported`; no StackBlitz fallback exists.
 
 Common blocker codes:
 
-- `PRIVATE_REPOSITORY`
 - `UNSUPPORTED_FRAMEWORK`
+- `RUNNER_TARGET_UNAVAILABLE`
 - `UNKNOWN_PACKAGE_MANAGER`
 - `CONFLICTING_LOCKFILES`
+- `MALFORMED_PACKAGE_JSON`
 - `MISSING_BUILD_COMMAND`
 - `UNKNOWN_OUTPUT_DIRECTORY`
 - `SECRET_ENV_REQUIRED`
 - `PERSISTENT_SERVER_REQUIRED`
 - `BACKEND_REQUIRED`
 - `AMBIGUOUS_WORKSPACE`
-- `REPOSITORY_TOO_LARGE`
+- `ANALYSIS_INCOMPLETE`
 
 ## 13. Analysis Output
 
@@ -232,6 +253,7 @@ interface RepositoryAnalysis {
     typescript: boolean
     evidence: string[]
   }
+  packageManager: "npm" | "pnpm" | "yarn" | "bun" | "none" | "unknown"
   runtime: RuntimeEvidence
   environment: {
     templateFound: boolean
@@ -250,8 +272,13 @@ interface RepositoryAnalysis {
     evidence: string[]
   }
   preview: PreviewEligibility
+  inspectedFiles: string[]
   warnings: string[]
 }
 ```
 
 The analyzer output is safe to display and cache. It contains variable names and evidence, never secret values or executed output.
+
+The analyzer is intentionally broader than the current runner. Vue/Svelte and
+non-npm evidence may appear in this output while
+`RUNNER_TARGET_UNAVAILABLE` prevents a preview build.

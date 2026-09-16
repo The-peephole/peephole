@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <a href="https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel">Install Peephole 0.1.0 from the Chrome Web Store</a>
+</p>
+
+<p align="center">
   Peephole analyzes supported public repositories, builds eligible static frontends in an isolated production sandbox, and renders the HTTPS artifact in a Chrome Side Panel.
 </p>
 
@@ -106,36 +110,51 @@ The extension is a controller and presentation surface; repository source is exe
 
 Implementation details and residual risks are documented in [Preview runtime](docs/PREVIEW_RUNTIME.md), [Sandbox disk security](docs/SANDBOX_DISK_SECURITY.md), and [Sandbox network security](docs/SANDBOX_NETWORK_SECURITY.md).
 
-## Production verification
+## Current verification
 
-Peephole's current production path runs on AWS EC2 Ubuntu and has been exercised end to end through the Chrome extension.
+Peephole's static-preview production path runs on AWS EC2 Ubuntu and has been
+exercised end to end through the Chrome extension. These are recorded
+environment-specific validations; they are not re-established by a
+documentation-only change.
 
 | Validation | Recorded result |
 | --- | --- |
 | GitHub App authentication | OAuth, PKCE, signed state, allowed `chromiumapp.org` redirect, and Peephole session issuance verified end to end |
-| Real gVisor sandbox regression | 15/15 passed |
-| Real gVisor golden path | 1/1 passed, including real `npm ci` and Vite/esbuild |
+| Real gVisor sandbox regression | Passed on the production-like Linux host |
+| Real gVisor golden path | Passed with real `npm ci` and Vite/esbuild |
 | Artifact delivery | HTTPS publication and Chrome Side Panel embedding verified |
 | Crash recovery | `SIGKILL`, systemd restart, queue recovery, and startup runsc/disk/network reconciliation verified |
 | Final resource residue | No runsc containers, namespaces, veths, firewall rules, mounts, loop devices, leases, or job files remained |
 | Cache invalidation | `runnerVersion: "production-2"` forced the expected fresh build after the runner security change |
-| Portable CI | 585 passed; 31 environment-gated tests skipped |
+| Portable CI | Format, lint, typecheck, portable tests, and extension build are enforced by CI |
 | PostgreSQL integration | Passed |
 
-The latest normal production smoke produced a fresh cache miss with `status=ready` and `error_code=null`; a follow-up request hit the cache, and the artifact returned HTTP 200. Format, lint, typecheck, and extension build checks also pass.
-
 Environment-gated real gVisor tests are run separately on the production-like Linux host; they are intentionally not part of portable CI.
+
+On `main`, the manually dispatched
+[`Real golden-path build tests`](https://github.com/The-peephole/peephole/actions/runs/35069679620)
+workflow succeeded at merge commit
+`dba47191bdd3600b3f451945653efab2363028c2` using the current first-party
+fixture. That workflow is live-network CI, not the operator-run production
+smoke described in [Production smoke verification](docs/PRODUCTION_SMOKE.md).
 
 ## Supported projects
 
 | Level | Current scope |
 | --- | --- |
-| Production verified | Static HTML; root-level Vite + React using npm |
-| Analyzer and product scope | React, Vue, and Svelte static frontend contracts |
-| Pending equivalent production validation | Vue and Svelte golden-path and security coverage |
-| Out of scope for v0.1 | Private repositories, backend/database provisioning, persistent SSR or Node servers, arbitrary Dockerfiles/languages, and user-provided secrets |
+| Production execution | Static HTML; root-level Vite + React using npm and a root `package-lock.json` |
+| Analysis recognition only | Vue/Svelte Vite, other package managers, backend hints, and monorepo ambiguity; these do not produce runnable plans |
+| Existing deployment handling | Displays a normalized GitHub repository-homepage link in a new tab; embedded deployed-site Live Preview is not implemented |
+| Not implemented | Branch selection, frontend target selection, full-stack execution/routing, secret injection, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
 
-Analysis support is broader than production execution support. Vue and Svelte are not yet described as production-verified.
+Analysis support is broader than production execution support. The official
+Vite + React golden path is
+[`The-peephole/peephole-fixture-vite-react`](https://github.com/The-peephole/peephole-fixture-vite-react)
+at commit `4a2c3b78e15d90865ed565c3d38c4045b5a5235f` (repository id
+`1371620276`). The separate
+[`peephole-fixture-fullstack`](https://github.com/The-peephole/peephole-fixture-fullstack)
+at `eae411a288b212201933cebb206126dd5bb0d93e` is a future roadmap fixture,
+not a supported capability.
 
 ## Local development
 
@@ -160,19 +179,25 @@ The local preview worker is deliberately unsandboxed and must only build source 
 
 ## Project status
 
-Milestones 0–6 are complete for the current public static-preview production path. Milestone 7—release and operations—is in progress.
+The production static-preview foundation is implemented. Product expansion now
+proceeds in this order:
 
-Remaining v0.1 work includes:
+1. GitHub theme synchronization
+2. Branch Preview
+3. Repository / application structure detection
+4. Build Adapter generalization
+5. frontend target selection / frontend monorepo support
+6. existing deployed-site Live Preview
+7. backend detection
+8. backend execution
+9. frontend ↔ backend routing
+10. ephemeral env / secrets
+11. temporary database support
 
-- accessibility review;
-- automated production smoke and release checks;
-- production metrics, log aggregation, and alerts;
-- authenticated package proxying for tighter install-stage egress;
-- equivalent Vue and Svelte production validation;
-- the dedicated `realGvisorMaliciousScript` suite on the AWS gVisor host;
-- Chrome Web Store and v0.1 release preparation.
-
-Post-v0.1 candidates include private repository support, refreshable Peephole sessions, and broader framework/runtime support.
+The full-stack stages are roadmap items, not current product support. Separate
+operational debt includes accessibility review, production observability,
+automated production-smoke orchestration, tighter install-stage package egress,
+and the production-like malicious-script run.
 
 ## Documentation
 
@@ -182,8 +207,8 @@ Post-v0.1 candidates include private repository support, refreshable Peephole se
 - [Repository analysis specification](docs/REPOSITORY_ANALYSIS.md)
 - [GitHub App authentication](docs/GITHUB_APP_AUTH.md)
 - [Privacy policy](PRIVACY.md)
-- [Chrome Web Store submission](docs/CHROME_WEB_STORE.md)
-- [v0.1.0 release checklist](docs/RELEASE_V0.1.0.md)
+- [Chrome Web Store listing and release operations](docs/CHROME_WEB_STORE.md)
+- [v0.1.0 release record and remaining checks](docs/RELEASE_V0.1.0.md)
 - [Requester IP trust](docs/REQUESTER_IP_TRUST.md)
 - [Sandbox disk security](docs/SANDBOX_DISK_SECURITY.md)
 - [Sandbox network security](docs/SANDBOX_NETWORK_SECURITY.md)

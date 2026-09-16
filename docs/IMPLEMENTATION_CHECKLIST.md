@@ -1,7 +1,26 @@
 # Implementation Checklist
 
-This checklist tracks the native Peephole v0.1 path. Checked items reflect the
-current implementation or a recorded real production verification.
+This checklist tracks the implemented static-preview foundation and the next
+ordered product work. Checked items reflect source-backed implementation or a
+recorded environment-specific verification; they do not imply support for the
+later full-stack roadmap.
+
+## Current Development Sequence
+
+1. [ ] GitHub theme synchronization
+2. [ ] Branch Preview
+3. [ ] Repository / application structure detection
+4. [ ] Build Adapter generalization
+5. [ ] frontend target selection / frontend monorepo support
+6. [ ] existing deployed-site Live Preview
+7. [ ] backend detection
+8. [ ] backend execution
+9. [ ] frontend ↔ backend routing
+10. [ ] ephemeral env / secrets
+11. [ ] temporary database support
+
+The separate full-stack fixture is preparation for these later stages, not
+evidence that any of stages 7-11 are implemented.
 
 ## Bootstrap
 
@@ -63,7 +82,9 @@ current implementation or a recorded real production verification.
 - [x] Detect build command and static output directory
 - [x] Detect declared environment variable names
 - [x] Detect external API/backend hints
-- [x] Detect confirmed versus configured deployments
+- [x] Distinguish normalized HTTP(S) repository-homepage metadata from
+      Vercel/Netlify configuration-only evidence; reachability and framing are
+      not checked
 - [x] Detect monorepo ambiguity and unsupported tooling
 - [x] Return evidence, warnings, and blockers
 - [x] Return a versioned preview-eligibility result
@@ -126,6 +147,16 @@ current implementation or a recorded real production verification.
 
 ## Isolated Static Runner
 
+Official Vite + React fixture: repository id `1371620276`,
+`The-peephole/peephole-fixture-vite-react` at
+`4a2c3b78e15d90865ed565c3d38c4045b5a5235f`. PR #6 updated the shared
+fixture metadata on `main` at
+`dba47191bdd3600b3f451945653efab2363028c2`. The previous personal-fork
+fixture identity must not be reused.
+
+Future full-stack fixture: `The-peephole/peephole-fixture-fullstack` at
+`eae411a288b212201933cebb206126dd5bb0d93e`. No current worker path consumes it.
+
 - [x] Define the worker's fetch/install/build/publish port contracts
 - [x] Drive fetch -> install -> build -> publish through the control-plane
       phase state machine (fake adapters, then real adapters)
@@ -173,7 +204,7 @@ current implementation or a recorded real production verification.
       limits bound metadata pressure instead. Allocation reserves
       rootfs/archive/artifact exposure, and startup synchronously reconciles
       strictly marker-owned mount/loop resources before workers. The complete
-      real AWS suite passes 15/15; see `docs/SANDBOX_DISK_SECURITY.md`.
+      real AWS suite passed; see `docs/SANDBOX_DISK_SECURITY.md`.
 - [x] Reap orphan jobs: `LocalDevSandboxReaper` (real, tested against real
       temp directories) and `GVisorOrphanReaper` (cross-references stale
       bundle directories against `runsc list --format json`) -- both now
@@ -388,9 +419,9 @@ current implementation or a recorded real production verification.
 
 ## Tests
 
-- [x] Current non-destructive validation: 583 tests passed, 31
-      environment-gated tests skipped; typecheck, lint, build, format-check,
-      and `git diff --check` passed
+- [x] Current non-destructive validation covers portable tests plus typecheck,
+      lint, build, format-check, and `git diff --check`; environment-gated
+      suites are reported separately instead of as a stale aggregate count
 - [x] GitHub URL parser unit tests
 - [x] GitHub action insertion and reconciliation tests
 - [x] client-side navigation tests
@@ -413,8 +444,8 @@ current implementation or a recorded real production verification.
       all against an actual gVisor host -- plus a full sandboxed golden-path
       test (`tests/realGvisorGoldenPath.test.ts`, same gate): real `npm
       ci` + `npm run build` through the actual `PreviewJobWorker`
-      pipeline, gVisor end to end. The latest AWS verification passed 15/15
-      sandbox tests and 1/1 golden-path test
+      pipeline, gVisor end to end. The recorded AWS sandbox and golden-path
+      verification passed
 - [x] job wall-clock budget and portable workspace disk-quota enforcement tests
 - [x] orphan-sandbox reaper tests (real directories for the dev reaper;
       fake `runsc list` output for the gVisor reaper's unit tests, plus a
@@ -479,7 +510,7 @@ current implementation or a recorded real production verification.
       receiver. Fixed in `core/preview/apiClient.ts` and covered by a
       receiver-checking regression test in `tests/previewApiClient.test.ts`.
 
-## Before v0.1
+## Post-foundation Verification Backlog
 
 - [x] Remove all StackBlitz product paths
 - [ ] Pass supported and unsupported fixture matrix
@@ -488,20 +519,22 @@ current implementation or a recorded real production verification.
 - [x] Verify no stale state across GitHub repository navigation
 - [ ] Test unpacked extension from a clean Chrome profile
 - [ ] Document supported matrix and known limitations
-- [ ] Complete release smoke test
+- [ ] Complete the operator-run production smoke gate for the intended deployed
+      revision; do not substitute a golden-path workflow result
 
-## Remaining Work
+## Cross-Cutting Remaining Work
 
 - [ ] Complete keyboard, focus, contrast, and screen-reader accessibility checks
 - [ ] Add production-grade metrics, centralized log aggregation, and alerts
 - [ ] Automate production deployment smoke and release checks
 - [ ] Replace broad public install egress with an authenticated package proxy
       or equivalently constrained package-egress service
-- [ ] Prepare the Chrome Web Store submission and v0.1 release
+- [ ] Keep Chrome Web Store and release records synchronized with future
+      releases without rewriting historical records
 
 Refreshable Peephole sessions and private-repository Installation Access Tokens
 remain post-v0.1 scopes; private repository support is not a v0.1 completion
 condition. On Linux, `tests/sandboxDisk.test.ts` performs real `chown` calls and
-must run with sufficient privilege: the recorded root run passed 18/18. An
+must run with sufficient privilege: the recorded privileged run passed. An
 unprivileged EPERM result is a test-execution prerequisite failure, not a product
 regression.

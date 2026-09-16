@@ -303,3 +303,46 @@ the new credential-storage rule. See `docs/GITHUB_APP_AUTH.md`.
 The GitHub App is identity-only. Public repository fetching and every preview
 job, worker, gVisor, artifact, and cache contract remain unchanged. Private
 repository support with Installation Access Tokens is a separate future scope.
+
+## D-026 - Preserve the static-preview foundation and expand through ordered contracts
+
+**Status:** Accepted
+
+The current production capability remains the D-021 execution set:
+package-free static HTML and root-level Vite + React on npm. Analyzer recognition
+of Vue/Svelte, other package managers, backend dependencies, or workspaces does
+not make those targets executable. This note clarifies the broader aspirational
+wording in D-014 without rewriting that historical decision.
+
+Product expansion proceeds in this order:
+
+1. GitHub theme synchronization
+2. Branch Preview
+3. Repository / application structure detection
+4. Build Adapter generalization
+5. frontend target selection / frontend monorepo support
+6. existing deployed-site Live Preview
+7. backend detection
+8. backend execution
+9. frontend ↔ backend routing
+10. ephemeral env / secrets
+11. temporary database support
+
+The order exists to establish immutable source selection, application structure,
+and generalized build contracts before adding long-lived or composed runtime
+resources. Each stage must preserve the existing Preview Control Plane,
+server-side plan verification, gVisor/resource boundaries, artifact-origin
+isolation, and recovery behavior. A new fixture must exercise a general
+contract; production code must not dispatch on fixture repository identity.
+
+The official Vite + React golden fixture is repository id `1371620276`,
+`The-peephole/peephole-fixture-vite-react` at
+`4a2c3b78e15d90865ed565c3d38c4045b5a5235f`. PR #6 merged this metadata in
+`dba47191bdd3600b3f451945653efab2363028c2`; the subsequent manually dispatched
+`Real golden-path build tests` run on `main` succeeded. That result is
+live-network CI, not production smoke.
+
+`The-peephole/peephole-fixture-fullstack` at
+`eae411a288b212201933cebb206126dd5bb0d93e` is reserved for future stages. Its
+existence does not establish backend detection, backend execution, routing,
+ephemeral secrets, or temporary database support.

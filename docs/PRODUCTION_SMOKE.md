@@ -36,9 +36,9 @@ The gate uses the first-party public golden fixture already exercised by the
 real Vite and gVisor suites:
 
 ```text
-repository: ppsssj/peephole-fixture-vite-react
-repository id: 1354475085
-commit: d1ac2e71550484b5072de243b4dbf754367ed045
+repository: The-peephole/peephole-fixture-vite-react
+repository id: 1371620276
+commit: 4a2c3b78e15d90865ed565c3d38c4045b5a5235f
 contract: static-v1
 ```
 
@@ -46,6 +46,18 @@ The commit is immutable and was verified to exist. No branch tip is consulted.
 The server still resolves the repository identity and derives the Vite/npm
 build plan independently; the smoke client does not submit or trust a build
 plan.
+
+PR #6 placed this metadata on `main` in merge commit
+`dba47191bdd3600b3f451945653efab2363028c2`. The manually dispatched
+`Real golden-path build tests` workflow succeeded for that revision and proves
+that the live-network golden fixture can be fetched and built in GitHub Actions.
+It does **not** prove that an already-deployed production API, worker, artifact
+host, or cleanup state passed this smoke gate; only the API and host sequence in
+this document does that.
+
+`The-peephole/peephole-fixture-fullstack` at
+`eae411a288b212201933cebb206126dd5bb0d93e` is not used by this verifier.
+Full-stack runtime support has not been implemented.
 
 ## API smoke
 

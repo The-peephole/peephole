@@ -30,7 +30,7 @@ import type { PreviewRequester } from "../types/preview"
 
 // A minimal, trusted fixture authored for this project and pushed to a
 // dedicated public repo (see services/preview-worker README notes below):
-// https://github.com/ppsssj/peephole-fixture-vite-react
+// https://github.com/The-peephole/peephole-fixture-vite-react
 //
 // DEVELOPMENT PROOF, NOT A PRODUCTION-SAFE RUN: `npm ci` and `npm run build`
 // execute directly on this host via HostCommandRunner/LocalDevSandboxProvisioner
