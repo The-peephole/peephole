@@ -2,23 +2,26 @@
 
 ## 1. Purpose
 
-This document defines how Peephole can preview supported GitHub repositories without StackBlitz while keeping repository execution outside the Chrome extension and control plane.
+This document describes the implemented Peephole static-preview runtime and the
+boundaries that future runtime work must preserve.
 
-The core answer is: it is feasible, but only as a constrained remote execution product with an explicit compatibility contract and production-grade isolation. A browser extension alone is not a safe or sufficiently compatible general project runtime.
+Peephole uses constrained remote execution with an explicit compatibility
+contract. A browser extension alone is not a safe or sufficiently compatible
+general project runtime.
 
-## 2. v0.1 Runtime Contract
+## 2. Current Runtime Contract
 
 Supported first:
 
-| Repository class | v0.1 result | Notes |
+| Repository class | Current result | Notes |
 | --- | --- | --- |
 | Static HTML/CSS/JS | Native preview | No package install when unnecessary |
 | Root Vite + React | Native preview | First package-based golden path |
-| Root Vite + Vue/Svelte | Native preview after gated fixtures | Same static-output contract |
-| Existing confirmed deployment | Show/open deployment | Embed only when framing policy allows |
+| Root Vite + Vue/Svelte | Analysis only / unsupported | Recognized, but no runner target is implemented |
+| Existing repository homepage | External link | Normalized HTTP(S) metadata only; no reachability check or embedded Live Preview |
 | Next.js SSR / Node server | Unsupported | Persistent server runner deferred |
 | Ambiguous monorepo | Unsupported | Workspace selection deferred |
-| Backend, DB, Docker, secrets | Unsupported | Requires a broader service model |
+| Backend, DB, Docker, secrets | Unsupported | Full-stack roadmap; not implemented |
 | Library repository with no demo app | Analysis only | There may be nothing visual to run |
 
 `react/react` is an example of the last category: it is primarily a library repository and should not be assumed to have a default preview application.
@@ -68,7 +71,11 @@ interface BuildPlan {
 }
 ```
 
-v0.1 does not accept arbitrary client-supplied shell commands, source roots, output paths, base images, or environment values. Values come from recognized server-side rules.
+The API does not accept arbitrary client-supplied shell commands, source roots,
+output paths, base images, or environment values. Values come from recognized
+server-side rules. Although the shared type can represent several package
+managers, `core/preview/runnerSupport.ts` currently admits only `none` for
+static roots and `npm` for root-level Vite + React.
 
 ## 6. Job Lifecycle
 
@@ -92,11 +99,13 @@ Job status includes stable error codes and sanitized diagnostics. Raw build logs
 2. Fetch the public source archive for the exact commit SHA.
 3. Reject archives that exceed compressed, expanded, path, or file-count limits.
 4. Create a bounded writable workspace over a read-only runtime image.
-5. Install with lockfile enforcement and controlled registry egress.
+5. Install with npm lockfile enforcement and the current bounded public-egress
+   policy.
 6. Disable unrelated network access before the build phase.
 7. Execute the approved build command as a non-root user under quotas.
 8. Resolve the output directory without following escape symlinks.
-9. Validate file count, total bytes, MIME handling, and forbidden content rules.
+9. Validate file count, total bytes, entry types/paths, and serving MIME
+   behavior.
 10. Publish under a job-scoped artifact prefix.
 11. Destroy the sandbox and writable filesystem regardless of outcome.
 
@@ -106,11 +115,13 @@ Public repository builds are hostile multi-tenant workloads. Production isolatio
 
 - a stronger boundary than a shared application process,
 - non-root execution and least-capability configuration,
-- immutable base images and no host mounts,
+- immutable base image and no access to arbitrary or sensitive host paths;
+  only owned job/runtime mounts are exposed,
 - no Docker/container socket exposure,
 - per-job CPU, memory, PID, disk, output, and time quotas,
 - denied loopback, private, link-local, metadata, and control-plane networks,
-- explicit dependency-registry allow policy during install,
+- install egress that blocks private, loopback, link-local, metadata, host, and
+  inter-job destinations; registry-only proxying remains future hardening,
 - no ambient cloud credentials,
 - aggressive cleanup and orphan reaping,
 - separate queues or capacity controls to contain abuse.
@@ -148,14 +159,21 @@ The side panel must validate the URL origin before embedding it.
 
 ## 10. Network Model
 
-The simplest v0.1 model has phases:
+The implemented production model has phases:
 
-1. source fetch: GitHub archive endpoint only,
-2. dependency install: approved package registries only,
-3. build: no egress by default,
-4. preview delivery: ordinary browser requests from the isolated preview origin.
+1. the host fetcher downloads the exact public commit archive from GitHub
+   codeload under archive limits;
+2. dependency install runs in a dedicated sandbox network namespace with public
+   IPv4 egress while private, loopback, link-local, metadata, host, special-use,
+   and inter-job destinations are blocked; only the configured resolvers receive
+   DNS exceptions;
+3. build runs with `network: "none"`;
+4. preview delivery is an ordinary browser navigation to the isolated artifact
+   origin.
 
-DNS resolution and redirects must not bypass IP-range restrictions. Network policy should be enforced outside the guest process.
+This is not registry-only egress. An authenticated package proxy or equivalent
+restriction remains planned hardening. Policy is enforced outside the guest
+process.
 
 ## 11. Caching and Reproducibility
 
@@ -210,35 +228,36 @@ DELETE /v1/preview-jobs/{jobId}
 
 The API validates that a caller may observe/cancel the job and exposes only sanitized errors.
 
-## 15. Infrastructure Decisions
+## 15. Infrastructure Status
 
-Decided (D-018, D-020, D-021, D-022):
+Implemented and verified in the production path:
 
-- sandbox boundary: gVisor (`runsc`) on Linux x86_64, Firecracker deferred,
-- initial resource/timeout limits and archive/workspace/output size caps,
-- initial supported runtime: Node 24, npm only,
-- golden paths: static HTML, root-level Vite + React.
-- initial control-plane persistence and durable work claiming: PostgreSQL with
-  short worker leases; managed PostgreSQL provider remains deployment-specific.
+- gVisor (`runsc`) on Linux x86_64 with a prepared Node 24/npm rootfs;
+- non-root execution, resource/timeout limits, bounded loop-backed workspace,
+  read-only rootfs, network namespaces, and cleanup/reconciliation;
+- static HTML and root-level Vite + React/npm golden paths;
+- PostgreSQL job/cache/quota/artifact state and durable leased work claiming;
+- GitHub App requester authentication;
+- artifact-specific HTTPS hostname routing and persisted artifact expiry;
+- real-host gVisor and end-to-end production-path verification recorded in the
+  living roadmap/checklist.
 
-Still open -- release blockers, not implementation trivia:
+Known limitations and follow-up work:
 
-- cloud/region and managed PostgreSQL provider,
-- artifact storage/CDN and per-job origin routing,
-- anonymous-user quotas and abuse response,
-- registry mirror/proxy strategy,
-- data retention and deletion policy,
-- host-side network policy enforcement for the install phase (restricting
-  the sandbox's network namespace to npm-registry-resolved IPs only -- the
-  `runsc --network=sandbox|none` selection exists, but the firewall/veth
-  rules that would actually constrain "sandbox" mode to the registry do
-  not),
-- a prepared, maintained base rootfs image (Node 24 + npm, non-root user,
-  no secrets) for `GVisorSandboxProvisioner` to copy per job,
-- verifying the real `GVisorSandboxProvisioner`/`RunscCommandRunner`
-  adapters against an actual gVisor host (they are implemented against
-  documented `runsc`/OCI behavior and unit-tested via a fake process
-  runner, but have not run against real `runsc` anywhere).
+- install egress is bounded public IPv4 rather than an authenticated
+  registry-only proxy;
+- production-grade metrics, centralized logs, alerts, retention policy, and
+  automated post-deployment smoke orchestration remain operational work;
+- the dedicated malicious dependency-script suite still needs its recorded
+  production-like AWS run;
+- existing-site Live Preview, generalized frontend adapters/targets, and every
+  full-stack runtime feature remain on the ordered product roadmap.
+
+The official current Vite + React pin is
+`The-peephole/peephole-fixture-vite-react@4a2c3b78e15d90865ed565c3d38c4045b5a5235f`
+(repository id `1371620276`). The prepared full-stack fixture
+`The-peephole/peephole-fixture-fullstack@eae411a288b212201933cebb206126dd5bb0d93e`
+is not consumed by the current runtime.
 
 ## 16. Primary References
 

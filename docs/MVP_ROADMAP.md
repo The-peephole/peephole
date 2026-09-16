@@ -1,233 +1,154 @@
-# MVP Roadmap
+# Peephole Roadmap
 
-## Release Target
+## Current Baseline
 
-v0.1 proves one complete native path:
+Peephole has a deployed, commit-pinned static-preview path:
 
 ```text
-supported public GitHub repository
--> Peephole action
--> analysis and eligibility
--> isolated static build
--> preview in the Peephole side panel
+public GitHub repository
+-> GitHub action and Chrome Side Panel
+-> bounded analysis of the default-branch head commit
+-> authenticated Preview Control Plane job
+-> PostgreSQL queue/state
+-> isolated gVisor build
+-> static HTTPS artifact
+-> Side Panel preview
 ```
 
-StackBlitz is not part of the release target.
+The following foundation is implemented:
 
-## Milestone 0 - Repository Setup
+- GitHub repository injection and SPA navigation handling;
+- repository metadata and bounded known-file analysis;
+- evidence, warnings, blockers, and versioned eligibility;
+- GitHub App authentication with short-lived Peephole sessions;
+- commit-pinned asynchronous jobs, cancellation, expiry, quotas, caching, and
+  PostgreSQL persistence;
+- a real production worker using gVisor, non-root execution, resource limits,
+  disk bounds, phased network controls, and recovery/reaping;
+- isolated static artifact publication and Chrome Side Panel rendering;
+- production deployment plus portable, live-network, PostgreSQL, and
+  environment-gated gVisor verification paths.
 
-**Status:** Complete
+This baseline does not imply arbitrary repository or full-stack support.
 
-- WXT, React, and TypeScript
-- linting, formatting, tests, and production build
-- extension permissions kept minimal
+## Current Execution Contract
 
-## Milestone 1 - GitHub Injection
+The production runner accepts only:
 
-**Status:** Complete
+1. package-free static HTML/CSS/JS with a root `index.html`;
+2. a root-level Vite + React application using npm, a root
+   `package-lock.json`, `npm ci`, a `build` script, and a deterministic static
+   output directory.
 
-- parse valid repository URLs
-- reject non-repository GitHub routes
-- insert exactly one Peephole action
-- open a functional owner/repository panel
-- update correctly across GitHub client-side navigation
-- avoid stale and duplicate UI
+The analyzer recognizes more evidence than the worker can execute. Vue/Svelte
+Vite, pnpm/yarn/bun, monorepos, backends, persistent servers, secrets, and
+databases remain non-runnable. Repository homepage metadata may be shown as an
+external link, but deployed-site Live Preview is not implemented.
 
-The temporary StackBlitz action from this milestone was removed before Milestone 2 work began.
+## Completed Foundation Milestones
 
-## Milestone 2 - Repository Metadata
+### Extension and analysis
 
-**Status:** Complete
+- [x] WXT + React + TypeScript Manifest V3 extension
+- [x] idempotent GitHub repository action and client-side navigation handling
+- [x] Chrome Side Panel state synchronization
+- [x] public repository id, default branch, and immutable head commit resolution
+- [x] bounded known-file loading and metadata caching
+- [x] framework, package-manager, runtime, environment, deployment, and
+      workspace evidence
+- [x] explicit blockers and runner-capability gating
 
-**Goal:** Establish an immutable, bounded analysis input.
+### Control plane and persistence
 
-- [x] fetch repository id, default branch, and head commit SHA
-- [x] fetch homepage and relevant repository metadata
-- [x] inspect `package.json`, recognized lockfile presence, environment templates, and selected config files
-- [x] cache resolved metadata by repository id and commit SHA
-- [x] handle malformed content, request cancellation, and rate limits
-- [x] handle bounded known-file fetching and missing-file results
+- [x] create/status/cancel Preview API
+- [x] server-side repository, commit, and build-plan revalidation
+- [x] idempotency, cache lookup, quotas, expiry, and structured failures
+- [x] PostgreSQL job, cache, quota, artifact, and leased-queue persistence
+- [x] GitHub App OAuth/PKCE flow and authenticated preview sessions
 
-## Milestone 3 - Analysis and Preview Eligibility
+### Production execution and delivery
 
-**Status:** Complete
+- [x] commit archive fetch, bounded extraction, frozen npm install, static
+      build, output validation, and artifact publication
+- [x] real gVisor production composition and non-root execution
+- [x] CPU, memory, PID, wall-clock, archive, workspace-disk, output-size, and
+      file-count controls
+- [x] install/build network phase separation and blocking for private,
+      loopback, link-local, metadata, host, and inter-job destinations
+- [x] startup and normal-path reconciliation for runsc, disk, and network state
+- [x] artifact-specific HTTPS origins, restrictive headers, expiry, and cleanup
+- [x] end-to-end Chrome extension -> production API -> PostgreSQL -> gVisor ->
+      artifact -> Side Panel verification recorded
 
-**Goal:** Decide whether a repository fits the v0.1 contract without executing it.
+## Next Development Sequence
 
-- [x] framework and TypeScript detection
-- [x] package manager and frozen-install command
-- [x] build command and output-directory detection
-- [x] environment and external-service blockers
-- [x] existing deployment evidence
-- [x] monorepo ambiguity detection
-- [x] eligibility result with evidence and blockers
+These stages are ordered. A later stage must not be presented as supported
+because a fixture or interface for it exists.
 
-Acceptance: fixtures resolve deterministically to `existing-deployment`, `native-static-build`, or `unsupported`.
+1. [ ] GitHub theme synchronization
+2. [ ] Branch Preview
+3. [ ] Repository / application structure detection
+4. [ ] Build Adapter generalization
+5. [ ] frontend target selection / frontend monorepo support
+6. [ ] existing deployed-site Live Preview
+7. [ ] backend detection
+8. [ ] backend execution
+9. [ ] frontend ↔ backend routing
+10. [ ] ephemeral env / secrets
+11. [ ] temporary database support
 
-## Milestone 4 - Preview Control Plane
+The early stages establish repository selection and generalized build contracts
+before full-stack execution is considered. Backend execution requires a new
+reviewed runtime contract; it must not be implemented by extending the lifetime
+or privileges of the static-build sandbox.
 
-**Status:** Complete
+## Fixture Status
 
-**Goal:** Create safe, observable, commit-pinned jobs.
+The official Vite + React golden-path fixture is:
 
-- [x] create/status/cancel API
-- [x] idempotency and cache lookup
-- [x] job queue and lifecycle persistence
-- [x] signed, expiring artifact references
-- [x] rate limits, per-user/repository quotas, and structured failure codes
-- [x] fake-runner integration tests
-- [x] real Node HTTP ingress with bounded JSON, request timeouts,
-      liveness/readiness probes, safe errors, and graceful shutdown
-- [x] provider-neutral PostgreSQL job/cache/quota persistence and leased queue
-- [x] server-side exact-commit revalidation and build-plan resolution
-- [x] production composition with PostgreSQL persistence and durable queue,
-      GitHub App requester authentication, and deployed service configuration
-      (`services/production/server.ts`), verified end to end on AWS EC2
+```text
+repository: The-peephole/peephole-fixture-vite-react
+repository id: 1371620276
+commit: 4a2c3b78e15d90865ed565c3d38c4045b5a5235f
+```
 
-This milestone is API- and storage-only: no build command is ever executed by
-this process. Execution is deferred to the isolated runner in Milestone 5.
+PR #6 updated the shared fixture metadata on `main` at merge commit
+`dba47191bdd3600b3f451945653efab2363028c2`. A manually dispatched
+`Real golden-path build tests` run on that `main` revision succeeded. This is a
+live-network workflow result, not a production smoke result.
 
-## Milestone 5 - Isolated Static Runner
+The full-stack fixture is reserved for future roadmap work:
 
-**Status:** Core production runner path complete and verified. The real gVisor
-worker and golden path are verified on AWS EC2 Linux (`realGvisorSandbox`:
-15/15; `realGvisorGoldenPath`: 1/1). Broader supported-fixture coverage and
-authenticated package-proxy egress remain.
+```text
+repository: The-peephole/peephole-fixture-fullstack
+commit: eae411a288b212201933cebb206126dd5bb0d93e
+```
 
-**Goal:** Build the first supported repositories without third-party IDEs.
+It is not connected to a supported full-stack runtime contract today.
 
-- [x] fetch/install/build/publish worker contract (`services/preview-worker`) driving
-      `PreviewControlPlane` phase transitions, verified with fake adapters
-- [x] archive and output size/file-count/path-safety policy
-      (`core/runner/archivePolicy.ts`), enforced regardless of runner backend
-- [x] guaranteed workspace cleanup on success, failure, or concurrent cancellation
-- [x] production isolation technology selected and documented (D-018: gVisor,
-      Firecracker deferred)
-- [x] real `GitHubCommitArchiveFetcher`: commit-pinned codeload download,
-      real tar parsing, streamed compressed-size cap
-- [x] real archive extraction (`services/preview-worker/local/archiveExtractor.ts`,
-      the `tar` package) rejecting traversal/absolute paths/symlinks/device files
-- [x] real `NpmDependencyInstaller`/`NpmBuildExecutor`/`LocalOutputResolver`/
-      `LocalArtifactPublisher`, proven end to end against real GitHub archives
-      for both golden paths (`tests/realStaticHtmlGoldenPath.test.ts`,
-      `tests/realViteReactGoldenPath.test.ts`, gated behind
-      `PEEPHOLE_REAL_NETWORK_TESTS=1`)
-- [x] `GVisorSandboxProvisioner`/`RunscCommandRunner`: real OCI-bundle +
-      `runsc` CLI code, CPU/memory/PID quotas, non-root, cancellation-safe
-      cleanup, verified against real runsc/gVisor on AWS EC2
-- [x] real, active job wall-clock timeout: every install/build command's
-      timeout is clamped to the job's remaining budget
-      (`jobDeadline.ts`), so exceeding it kills the actual running process
-      instead of only flipping the job's status after the fact
-- [x] real workspace disk-usage quota, checked after install and after
-      build independent of archive/output size checks
-- [x] fixed-size loop-backed ext4 workspace hard quota, read-only rootfs,
-      bounded `/tmp` and `/dev/shm`, host-reserve admission, and fail-closed
-      mount/loop/image/bundle recovery, verified on the real AWS host
-- [x] orphan-sandbox reaping: `LocalDevSandboxReaper` (real, tested) and
-      `GVisorOrphanReaper`, including real abandoned-container and production
-      `SIGKILL` recovery verification
-- [x] durable queue consumer loop with lease acknowledgement, delayed retry,
-      and graceful polling shutdown
-- [x] fresh non-root sandbox per job on a real gVisor host (uid/gid 65534)
-- [x] deterministic install with public IPv4 egress while host, private,
-      link-local, metadata, and inter-job destinations are denied
+## Cross-Cutting Work
+
+These items remain important but do not reorder the product sequence above:
+
+- [ ] complete keyboard, focus, contrast, and screen-reader review;
+- [ ] add production-grade metrics, centralized logs, and alerts;
+- [ ] automate production deployment smoke orchestration without conflating it
+      with CI;
 - [ ] replace broad public install egress with an authenticated package proxy
-- [x] CPU throttling and memory/PID limits enforced on a real gVisor host
-- [x] static artifact publication with restrictive headers and expiry through
-      both the local development host and the production artifact host
-- [x] prepared base rootfs image for `GVisorSandboxProvisioner`, exercised by
-      real `npm ci` and Vite/esbuild builds
+      or equivalently constrained service;
+- [ ] run the dedicated malicious dependency-script suite on the
+      production-like gVisor host;
+- [ ] complete the supported/unsupported fixture matrix and external security
+      review.
 
-The dev proof (`LocalDevSandboxProvisioner` + `HostCommandRunner`) runs
-install/build directly on the host with **no isolation at all** and must
-never be pointed at untrusted or arbitrary repository content -- see
-D-019 and the adapters' own doc comments.
+## Verification Gates
 
-Golden paths (both proven for real, not with fakes):
-
-1. static HTML repository (`octocat/Spoon-Knife`),
-2. root-level Vite + React repository
-   (`ppsssj/peephole-fixture-vite-react`, a fixture authored for this
-   project, npm only).
-
-Add Vue and Svelte only after the same contract and security tests pass.
-
-## Milestone 6 - Native Side-Panel Preview
-
-**Status:** Complete for the v0.1 production preview path. A real Chrome
-Extension has completed GitHub App authentication, requested a preview from
-the deployed API, and embedded the resulting HTTPS production artifact after a
-real gVisor build.
-
-**Goal:** Complete the user-facing Peephole flow.
-
-- [x] add Chrome Side Panel entrypoint
-- [x] move repository analysis, eligibility, and analysis errors into the panel
-- [x] synchronize repository context across GitHub client-side navigation
-- [x] show preview job progress and errors
-- [x] start and cancel preview jobs through the configured HTTP API
-- [x] embed only trusted Peephole preview-origin URLs: local loopback during
-      development or an exact artifact-id subdomain under the configured
-      production artifact base domain
-- [x] detach stale preview requests on GitHub navigation
-- [x] connect GitHub App authentication and expiring Peephole sessions without
-      storing GitHub credentials in the extension
-- [x] verify Chrome Extension -> production Preview API -> real gVisor worker
-      -> HTTPS artifact -> Side Panel end to end
-
-## Milestone 7 - Security and Reliability Gate
-
-**Status:** In progress. The core sandbox, resource-limit, network-isolation,
-cache-rollout, and crash-recovery gates are verified; operational and release
-polish remains.
-
-**Goal:** Make the public build service safe enough for v0.1.
-
-- [x] hostile resource, filesystem, and network-isolation cases covered by the
-      15/15 real gVisor sandbox regression on AWS
-- [ ] run the dedicated malicious dependency-script suite
-      (`tests/realGvisorMaliciousScript.test.ts`) on the production-like AWS
-      gVisor host
-- [x] CPU, memory, PID, disk hard-cap, output, and wall-clock limits
-- [x] metadata, private-network, host-service, and inter-job blocking
-- [x] cross-job network and artifact-origin isolation
-- [x] API quotas, abuse throttling, and bounded job budgets
-- [x] cache invalidation through `runnerVersion: "production-2"` rollout
-- [x] cancellation, cleanup, startup reconciliation, and production `SIGKILL`
-      recovery core paths
-- [ ] production-grade operational metrics, log aggregation, and alerts
-- [ ] automated production deployment smoke and release checks
-- [ ] replace broad public install egress with an authenticated package proxy
-- [ ] keyboard/focus/contrast/screen-reader review and release polish
-
-## v0.1 Definition of Done
-
-v0.1 is complete when:
-
-- exactly one Peephole action works across GitHub SPA navigation,
-- analysis is pinned to a commit and explains its evidence,
-- a supported static/Vite public repository builds in an isolated runner,
-- progress and the final app appear in the Peephole side panel,
-- unsupported repositories explain blockers without executing,
-- artifacts expire and no secret or privileged origin is exposed,
-- the end-to-end flow has no StackBlitz dependency,
-- security-gate tests and release smoke tests pass.
-
-## v0.2 Candidates
-
-- private repositories with an explicit GitHub App permission model
-- selected workspace support for known monorepos
-- Next.js static export
-- broader package-manager compatibility
-- browser-side bundling as an optimization for very small projects
-
-## Later Candidates
-
-- persistent SSR/Node application sandboxes
-- backend and database service composition
-- user-provided secrets with a dedicated secret model
-- collaborative sessions
-- AI-assisted analysis
-
-These require a broader threat model and are not v0.1 shortcuts.
+- Portable CI covers formatting, lint, typechecking, unit/integration tests, and
+  extension build without requiring a production host.
+- `Real golden-path build tests` exercises pinned public archives and the real
+  package/build toolchain with live network access.
+- Real gVisor suites require a suitable privileged Linux host and establish
+  claims about that sandbox environment.
+- Production smoke requires an already-deployed instance plus operator-held
+  production credentials and host visibility. A green golden-path workflow
+  does not satisfy this gate.

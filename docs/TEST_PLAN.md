@@ -1,185 +1,180 @@
 # Test Plan
 
-## 1. Testing Strategy
+## 1. Verification Layers
 
-Peephole spans three trust zones, so tests are grouped accordingly:
+Peephole spans extension, control-plane, execution, and artifact trust zones.
+Results from one layer must not be reported as proof of another.
 
-1. pure analysis and eligibility,
-2. extension/GitHub integration and preview API contracts,
-3. hostile execution and preview-origin isolation.
+1. **Portable CI** runs formatting, lint, typechecking, portable Vitest suites,
+   the extension build, and PostgreSQL integration without a gVisor production
+   host.
+2. **Real golden-path workflow** fetches pinned public archives and runs the
+   real package/build toolchain with live GitHub/npm access. The Vite test in
+   this workflow uses the unsandboxed trusted-fixture development adapters.
+3. **Real gVisor suites** require a suitable privileged Linux host and exercise
+   sandbox, network, disk, cleanup, and end-to-end worker behavior.
+4. **Production smoke** targets an already-deployed production instance and
+   combines authenticated public API checks with host-local database/resource
+   inspection.
 
-Unit tests use fixtures and never depend on live GitHub APIs. Production isolation claims require integration tests in the actual runner environment, not mocks alone.
+Unit tests use fixtures and do not depend on live GitHub APIs. A successful
+golden-path workflow is not a production smoke result.
 
-## 2. Unit Tests
+## 2. Current Fixture Registry
 
-### GitHub URL parser
-
-Cover repository roots and subpaths, `.git` normalization where supported, reserved routes, malformed paths, non-GitHub hosts, and organization/user pages.
-
-### GitHub reconciliation
-
-Verify:
-
-- exactly one action after repeated reconciliation,
-- current visible action target selection,
-- removal on non-repository pages,
-- repository state reset after navigation,
-- stale async response rejection,
-- no unsupported `attachShadow` path.
-
-### Analyzer detectors
-
-Use small file-map fixtures for:
-
-- static HTML,
-- React/Vue/Svelte Vite,
-- Next.js,
-- TypeScript,
-- every recognized lock file,
-- conflicting lock files,
-- malformed `package.json`,
-- environment comments, quotes, duplicates, and secret-like names,
-- configured versus confirmed deployment evidence,
-- workspace and monorepo ambiguity.
-
-### Preview eligibility
-
-Required cases:
+Official Vite + React golden path:
 
 ```text
-confirmed safe deployment       -> existing-deployment
-root static repository          -> native-static-build
-root Vite app + lock + build    -> native-static-build
-secret environment required     -> unsupported
-Next.js SSR                     -> unsupported
-ambiguous monorepo              -> unsupported
-unknown package manager         -> unsupported
-missing output directory        -> unsupported
+repository: The-peephole/peephole-fixture-vite-react
+repository id: 1371620276
+commit: 4a2c3b78e15d90865ed565c3d38c4045b5a5235f
+contract: static-v1
 ```
 
-Every case asserts evidence and stable blocker codes, not only the mode.
+PR #6 updated the shared fixture metadata at merge commit
+`dba47191bdd3600b3f451945653efab2363028c2`. The manually dispatched
+`Real golden-path build tests` workflow succeeded on that `main` revision. The
+previous personal-fork repository identity and its old id/SHA are obsolete.
 
-### Preview job state machine
+The package-free static golden path currently uses the pinned public
+`octocat/Spoon-Knife` commit declared in
+`tests/realStaticHtmlGoldenPath.test.ts`.
 
-Test allowed and rejected transitions among:
+Future full-stack fixture:
 
 ```text
-queued -> fetching -> installing -> building -> publishing -> ready
-                                      |             |
-                                      +--> failed <--+
-queued/running -> cancelled
-ready/failed/cancelled -> expired
+repository: The-peephole/peephole-fixture-fullstack
+commit: eae411a288b212201933cebb206126dd5bb0d93e
 ```
 
-Also cover idempotent create requests, duplicate worker completion, retry policy, cache hits, cancellation races, expiry, and repository/commit mismatch.
+No current test should treat that repository as a supported runtime target.
+Full-stack detection, execution, routing, secrets, and databases require their
+own later contracts and gates.
 
-## 3. Extension Integration Tests
+## 3. Portable Tests
 
-With static GitHub-like DOM fixtures, verify action insertion, click handling, side-panel messages, repository switches, subpage navigation, history transitions, Turbo/PJAX-style replacements, and target disappearance/reappearance.
+### GitHub integration
 
-An active job for `owner/repo-a@sha-a` must never render after navigation to `owner/repo-b@sha-b`.
+Cover repository URL parsing, reserved routes, idempotent action insertion,
+visible target selection, repository/non-repository navigation, Turbo-style DOM
+replacement, Side Panel messaging, cancellation, and stale-result rejection.
 
-## 4. API Integration Tests
+### Repository analysis
 
-Use a fake GitHub client, queue, artifact store, and runner to verify:
+Use bounded file-map fixtures for:
 
-- commit resolution and server-side build-plan validation,
-- create/status/cancel behavior,
-- authorization boundaries,
-- job and artifact ownership,
-- structured failure responses,
-- cache-key composition,
-- signed URL expiry,
-- API inability to invoke a shell directly.
+- static HTML and React/Vue/Svelte Vite evidence;
+- Next.js, WXT, and non-Vite React blockers;
+- TypeScript evidence;
+- npm/pnpm/yarn/bun lockfiles and conflicts;
+- malformed `package.json` and incomplete known-file reads;
+- environment template parsing and secret-like names;
+- normalized homepage versus provider-configuration evidence;
+- workspace/monorepo ambiguity;
+- current runner gating: static/none and React-Vite/npm accepted, recognized
+  but unavailable targets blocked.
 
-Database adapter tests verify parameter binding, transaction boundaries,
-idempotency conflicts, row-locked state transitions, quota rollback, and queue
-lease/acknowledgement/retry SQL. Local PostgreSQL 18.4 verifies two concurrent
-workers and expired-lease recovery. Before deployment, additionally verify
-cancellation races and database-restart recovery in the deployed environment.
+Analysis tests must not imply that every recognized framework or package
+manager is executable.
 
-## 5. Runner Golden Paths
+### Preview control plane
 
-Maintain commit-pinned local fixtures for:
+Cover create/status/cancel, authenticated requester ownership, server-side
+repository and exact-commit verification, build-plan re-resolution,
+idempotency, cache keys, quotas, lifecycle transitions, cancellation races,
+expiry, sanitized failures, and inability of the API process to execute a
+shell.
 
-- static HTML with nested routes/assets,
-- Vite React,
-- Vite Vue,
-- Vite Svelte.
+PostgreSQL adapter and integration coverage includes parameter binding,
+transactions, atomic queue admission, concurrent claiming, leases, retry and
+recovery semantics, artifact authorization, and quota rollback. Deployment-
+specific database restart/cancellation verification must be reported
+separately.
 
-For each supported fixture, assert frozen installation, successful build, expected output root, correct MIME types, asset loading, SPA fallback behavior when configured, and workspace cleanup.
+### Worker and artifact boundaries
 
-React/Vue/Svelte additions are gated independently; the v0.1 release can start with static HTML and Vite React if documented honestly.
+Portable tests use fake processes or trusted local temporary directories to
+cover archive limits, traversal/symlink rejection, output resolution, command
+timeouts, cancellation, disk accounting, cleanup, queue behavior, production
+composition wiring, origin validation, artifact expiry, MIME/header behavior,
+and reaper ownership rules.
 
-## 6. Failure Tests
+The local development worker is unsandboxed. Its passing tests are functional
+pipeline evidence, not production isolation evidence.
 
-Cover:
+## 4. Live-Network Golden Paths
 
-- missing or conflicting lock files,
-- install failure,
-- build failure,
-- oversized archive or expanded tree,
-- too many files,
-- missing/oversized output,
-- symlink and path traversal attempts,
-- timeout and cancellation,
-- worker crash and duplicate delivery,
-- artifact-store failure,
-- expired preview,
-- GitHub rate limiting and network failure.
+With `PEEPHOLE_REAL_NETWORK_TESTS=1`, exercise:
 
-The user-facing result must preserve safe diagnostics without leaking tokens, internal paths, or infrastructure details.
+- pinned static HTML archive fetch and publication;
+- the official Vite + React fixture through real `npm ci`, `npm run build`,
+  output resolution, and publication.
 
-## 7. Security Tests
+The scheduled/manual `.github/workflows/golden-path.yml` workflow provides this
+environment. It does not have production credentials or host visibility and
+must not be described as production smoke.
 
-Use intentionally malicious fixtures to verify:
+New frontend targets require an independently pinned first-party fixture only
+after repository/application detection and Build Adapter generalization define
+a non-fixture-specific contract.
 
-- dependency lifecycle scripts cannot access host files or sockets,
-- builds cannot reach loopback, RFC1918/private, link-local, or cloud metadata endpoints,
-- private, link-local, metadata, host, and sibling-job egress is denied,
-- fork bombs and process floods hit PID limits,
-- CPU, memory, disk, output, and wall-time limits terminate the job,
-- one job cannot read another job's workspace or artifacts,
-- runner credentials are absent from the job environment,
-- preview HTML receives no control-plane cookies or tokens,
-- preview content cannot call privileged extension APIs,
-- artifact paths cannot escape their job prefix,
-- logs redact authorization headers and secret-like values.
+## 5. Real gVisor Verification
 
-Do not declare a container image alone to be a passed isolation test. Validate the deployed boundary and host policy.
+With `PEEPHOLE_REAL_GVISOR_TESTS=1` on the documented Linux environment, verify
+the applicable production claims, including:
 
-## 8. Performance and Cost Checks
+- non-root identity and read-only-root behavior;
+- process, CPU, memory, workspace disk, temporary storage, output, and time
+  limits;
+- network namespace allocation, DNS behavior, public install egress, blocked
+  private/link-local/metadata/host/inter-job destinations, and no build egress;
+- cross-job filesystem/network isolation;
+- cancellation plus abandoned runsc/network/disk reconciliation;
+- the Vite + React job through real gVisor, npm, build, and publication.
 
-Measure cold and cached analysis, queue wait, install, build, publish, and time-to-interactive preview separately. Track cache hit rate, artifact bytes, worker CPU/memory seconds, cancellations, timeouts, and orphan cleanup latency.
+The dedicated `realGvisorMaliciousScript` suite exists but its production-like
+AWS run remains a separate unchecked gate. Do not promote its assertions to a
+recorded production result until that run is completed and retained.
 
-Set explicit service budgets before public release. A job exceeding a limit must fail predictably rather than degrade shared capacity.
+## 6. Failure and Security Cases
 
-## 9. Manual GitHub Navigation Matrix
+Maintain coverage for missing/conflicting lockfiles, malformed manifests,
+unsupported runner targets, install/build/publish failure, oversized archives
+or outputs, too many files, unsafe paths, timeout, cancellation, worker crash,
+artifact expiry, GitHub failure/rate limiting, and stale navigation results.
 
-Test at least:
+Security tests should verify only the controls present in the relevant
+environment. Do not infer host isolation from a fake command runner or infer
+registry-only egress from the current public-egress deny rules. User-visible
+diagnostics must remain bounded and must not expose credentials, internal paths,
+or secret values.
 
-- repository root,
-- code subdirectory,
-- issues and pull-request subpages,
-- user and organization pages,
-- search, settings, marketplace, and gist-like reserved routes,
-- repository A -> repository B,
-- repository -> non-repository -> repository,
-- navigation while analysis or a preview job is active.
+## 7. Production Smoke
 
-At all times, verify one action at most, correct owner/repository identity, correct panel state, and no stale result.
+Follow [Production smoke verification](PRODUCTION_SMOKE.md) for the operator
+gate. The API half authenticates through the normal Peephole session, creates a
+job for the pinned Vite fixture, validates the artifact, and checks a cache hit.
+The host half verifies service/readiness state, queue quiescence, known error
+logs, and absence of owned runsc/network/disk residue.
 
-## 10. Release Smoke Test
+Record the deployed revision, command outputs, and job identifiers. Do not
+claim a production-smoke pass from the successful `main` golden-path Action.
 
-From a clean Chrome profile:
+## 8. Roadmap Test Expansion
 
-1. load the production extension unpacked,
-2. visit a pinned supported static fixture and build a preview,
-3. reload and verify the cached result,
-4. visit a pinned Vite fixture and verify assets and interaction,
-5. visit an unsupported SSR or monorepo fixture and verify blockers without a job,
-6. navigate between all fixtures without reload,
-7. cancel an active build and verify cleanup,
-8. allow an artifact to expire and verify the expired state,
-9. confirm there is no StackBlitz action or network request,
-10. run the security gate against the deployed runner configuration.
+Add coverage in the same order as product development:
+
+1. GitHub light/dark theme synchronization and navigation changes
+2. branch selection, immutable resolution, stale branch movement, and cache keys
+3. repository/application structure fixtures
+4. generalized Build Adapter contract tests
+5. frontend target/monorepo selection and isolation
+6. existing-site reachability, framing, navigation, and origin policy
+7. backend detection evidence and false positives
+8. backend process lifecycle and isolation
+9. frontend/backend routing and cross-origin policy
+10. ephemeral secret redaction, scope, and teardown
+11. temporary database tenancy, credentials, lifecycle, and cleanup
+
+The full-stack fixture becomes eligible for these tests only as each required
+contract is actually implemented.
