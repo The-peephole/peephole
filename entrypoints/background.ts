@@ -5,6 +5,8 @@ import { KnownRepositoryFilesLoader } from "../core/github/knownFiles"
 import { RepositoryMetadataCache } from "../core/github/repositoryMetadataCache"
 import { clearLegacyStoredGitHubToken } from "../core/github/tokenStorage"
 import { createSidePanelMessageHandler } from "../core/sidepanel/messages"
+import { createGitHubThemeMessageHandler } from "../core/sidepanel/themeMessages"
+import { createSidePanelThemeStore } from "../core/sidepanel/themeStorage"
 
 export default defineBackground(() => {
   void clearLegacyStoredGitHubToken()
@@ -20,9 +22,15 @@ export default defineBackground(() => {
   const handleSidePanelMessage = createSidePanelMessageHandler(
     browser.sidePanel,
   )
+  const handleGitHubThemeMessage = createGitHubThemeMessageHandler(
+    createSidePanelThemeStore(),
+    { send: (message) => browser.runtime.sendMessage(message) },
+  )
 
   browser.runtime.onMessage.addListener(
     (message, sender) =>
-      handleSidePanelMessage(message, sender) ?? handleMessage(message),
+      handleGitHubThemeMessage(message, sender) ??
+      handleSidePanelMessage(message, sender) ??
+      handleMessage(message),
   )
 })

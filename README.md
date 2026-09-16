@@ -48,6 +48,7 @@ Peephole performs bounded repository analysis first. It identifies the framework
 | Commit-pinned previews | Resolves and builds an exact Git commit instead of trusting a mutable branch tip. |
 | Clear eligibility | Distinguishes previewable repositories from unsupported projects before execution. |
 | GitHub identity | Uses GitHub App OAuth; the extension stores only a short-lived Peephole session. |
+| GitHub-aware theme | Matches the current GitHub Light, Dark, Dark Dimmed, or compatible Primer semantic theme in both the repository action and Side Panel. |
 | Isolated builds | Runs untrusted install and build work as a non-root user inside gVisor with resource and network controls. |
 | Side Panel delivery | Publishes static output over an isolated HTTPS origin and embeds it in Chrome's Side Panel. |
 
@@ -179,10 +180,9 @@ The local preview worker is deliberately unsandboxed and must only build source 
 
 ## Project status
 
-The production static-preview foundation is implemented. Product expansion now
-proceeds in this order:
+The production static-preview foundation and GitHub theme synchronization are
+implemented. Product expansion continues in this order:
 
-1. GitHub theme synchronization
 2. Branch Preview
 3. Repository / application structure detection
 4. Build Adapter generalization

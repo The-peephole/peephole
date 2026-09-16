@@ -230,9 +230,10 @@ already contains `icons/peephole-128.png`.
 
 The manifest permissions and the dimensions, byte sizes, and SHA-256 values of
 the screenshot and promo tile above were rechecked against the local v0.1.0
-release package and repository assets on September 16, 2026. A future UI
-change, including GitHub theme synchronization, requires a fresh screenshot
-review; that roadmap item is not represented as implemented here.
+release package and repository assets on September 16, 2026. The recorded
+v0.1.0 screenshot remains a release snapshot. GitHub theme synchronization was
+implemented afterward, so the next store release requires fresh Light, Dark,
+and Dark Dimmed screenshot review before reusing or replacing listing assets.
 
 ## OAuth extension-ID release gate
 

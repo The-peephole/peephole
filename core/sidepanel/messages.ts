@@ -81,7 +81,7 @@ export function createSidePanelMessageHandler(
       return setContext(sidePanel, tabId, message.repository)
     }
 
-    const path = createSidePanelPath(message.repository)
+    const path = createSidePanelPath(message.repository, tabId)
     const configure = sidePanel.setOptions({
       tabId,
       path,
@@ -96,13 +96,28 @@ export function createSidePanelMessageHandler(
   }
 }
 
-export function createSidePanelPath(repository: RepositoryIdentity): string {
+export function createSidePanelPath(
+  repository: RepositoryIdentity,
+  tabId?: number,
+): string {
   const parameters = new URLSearchParams({
     owner: repository.owner,
     repo: repository.repo,
   })
+  if (tabId !== undefined) {
+    parameters.set("tab", String(tabId))
+  }
 
   return `sidepanel.html?${parameters.toString()}`
+}
+
+export function parseSidePanelTabId(value: string | URL): number | null {
+  const url = typeof value === "string" ? new URL(value) : value
+  const rawTabId = url.searchParams.get("tab")
+  if (!rawTabId || !/^\d+$/.test(rawTabId)) return null
+
+  const tabId = Number(rawTabId)
+  return Number.isSafeInteger(tabId) ? tabId : null
 }
 
 export function parseSidePanelRepository(
@@ -127,7 +142,7 @@ async function setContext(
       repository
         ? {
             tabId,
-            path: createSidePanelPath(repository),
+            path: createSidePanelPath(repository, tabId),
             enabled: true,
           }
         : { tabId, enabled: false },

@@ -158,7 +158,7 @@ silently guessing how a repository should run.
 
 ## 12. Ordered Product Roadmap
 
-1. GitHub theme synchronization
+1. GitHub theme synchronization (implemented)
 2. Branch Preview
 3. Repository / application structure detection
 4. Build Adapter generalization

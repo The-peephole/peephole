@@ -12,11 +12,20 @@ import {
   clearStoredPreviewSession,
   getStoredPreviewSession,
 } from "../../core/preview/sessionStorage"
-import { parseSidePanelRepository } from "../../core/sidepanel/messages"
+import {
+  parseSidePanelRepository,
+  parseSidePanelTabId,
+} from "../../core/sidepanel/messages"
+import {
+  createGitHubThemeMessageClient,
+  subscribeToGitHubThemeUpdates,
+} from "../../core/sidepanel/themeMessages"
 import { SidePanelApp } from "./App"
+import { SidePanelThemeController } from "./SidePanelThemeController"
 import "./style.css"
 
 const repository = parseSidePanelRepository(window.location.href)
+const sourceTabId = parseSidePanelTabId(window.location.href)
 const loadRepositoryAnalysis = createRepositoryAnalysisMessageLoader({
   send: (message) => browser.runtime.sendMessage(message),
 })
@@ -53,6 +62,29 @@ const root = document.getElementById("root")
 
 if (!root) {
   throw new Error("Peephole side panel root was not found.")
+}
+
+if (sourceTabId !== null) {
+  const themeMessages = createGitHubThemeMessageClient({
+    send: (message) => browser.runtime.sendMessage(message),
+  })
+  const themeController = new SidePanelThemeController(
+    document.documentElement,
+    sourceTabId,
+    {
+      load: themeMessages.load,
+      subscribe: (tabId, onThemeChange) =>
+        subscribeToGitHubThemeUpdates(
+          browser.runtime.onMessage,
+          tabId,
+          onThemeChange,
+        ),
+    },
+  )
+  themeController.start()
+  window.addEventListener("pagehide", () => themeController.stop(), {
+    once: true,
+  })
 }
 
 createRoot(root).render(

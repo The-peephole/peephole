@@ -1,8 +1,56 @@
 :root {
-  color: #f0f6fc;
-  color-scheme: dark;
+  --peephole-accent: #0969da;
+  --peephole-attention: #9a6700;
+  --peephole-bg: #ffffff;
+  --peephole-bg-inset: #f6f8fa;
+  --peephole-bg-subtle: #f6f8fa;
+  --peephole-border: #d1d9e0;
+  --peephole-border-muted: #d1d9e0;
+  --peephole-button-bg: #f6f8fa;
+  --peephole-button-bg-hover: #eff2f5;
+  --peephole-button-border: #d1d9e0;
+  --peephole-button-border-hover: #d1d9e0;
+  --peephole-button-fg: #25292e;
+  --peephole-danger: #d1242f;
+  --peephole-fg: #1f2328;
+  --peephole-fg-muted: #59636e;
+  --peephole-focus: #0969da;
+  --peephole-primary-bg: #1f883d;
+  --peephole-primary-bg-hover: #1c8139;
+  --peephole-primary-border: #1f232826;
+  --peephole-primary-fg: #ffffff;
+  --peephole-success: #1f883d;
+
+  background: var(--peephole-bg);
+  color: var(--peephole-fg);
+  color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #0d1117;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-peephole-theme]) {
+    --peephole-accent: #4493f8;
+    --peephole-attention: #d29922;
+    --peephole-bg: #0d1117;
+    --peephole-bg-inset: #010409;
+    --peephole-bg-subtle: #151b23;
+    --peephole-border: #3d444d;
+    --peephole-border-muted: #3d444db3;
+    --peephole-button-bg: #212830;
+    --peephole-button-bg-hover: #262c36;
+    --peephole-button-border: #3d444d;
+    --peephole-button-border-hover: #3d444d;
+    --peephole-button-fg: #f0f6fc;
+    --peephole-danger: #f85149;
+    --peephole-fg: #f0f6fc;
+    --peephole-fg-muted: #9198a1;
+    --peephole-focus: #1f6feb;
+    --peephole-primary-bg: #238636;
+    --peephole-primary-bg-hover: #29903b;
+    --peephole-primary-border: #ffffff26;
+    --peephole-primary-fg: #ffffff;
+    --peephole-success: #3fb950;
+  }
 }
 
 * {
@@ -22,12 +70,12 @@ a {
   padding: 20px 18px 28px;
 }
 .peephole__header {
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid var(--peephole-border-muted);
   margin-bottom: 8px;
   padding-bottom: 16px;
 }
 .peephole__eyebrow {
-  color: #8b949e;
+  color: var(--peephole-fg-muted);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
@@ -40,7 +88,7 @@ a {
   margin: 0;
 }
 .peephole__details {
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid var(--peephole-border-muted);
   margin: 0 0 14px;
   padding: 8px 0;
 }
@@ -51,26 +99,26 @@ a {
   padding: 7px 0;
 }
 .peephole__detail dt {
-  color: #8b949e;
+  color: var(--peephole-fg-muted);
   font-size: 12px;
 }
 .peephole__detail dd {
-  color: #e6edf3;
+  color: var(--peephole-fg);
   font-size: 13px;
   font-weight: 600;
   margin: 0;
   overflow-wrap: anywhere;
 }
 .peephole__detail code {
-  background: #161b22;
+  background: var(--peephole-bg-subtle);
   border-radius: 4px;
-  color: #79c0ff;
+  color: var(--peephole-accent);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
   padding: 2px 5px;
 }
 .peephole__link {
-  color: #58a6ff;
+  color: var(--peephole-accent);
   text-decoration: none;
 }
 .peephole__link:hover {
@@ -79,13 +127,13 @@ a {
 .peephole__link:focus-visible,
 .peephole__retry:focus-visible,
 .peephole__evidence summary:focus-visible {
-  outline: 2px solid #2f81f7;
+  outline: 2px solid var(--peephole-focus);
   outline-offset: 2px;
 }
 .peephole__status {
   align-items: center;
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: var(--peephole-bg-subtle);
+  border: 1px solid var(--peephole-border);
   border-radius: 6px;
   display: flex;
   font-size: 12px;
@@ -105,48 +153,49 @@ a {
   gap: 2px;
 }
 .peephole__status--ready {
-  border-color: #238636;
+  border-color: var(--peephole-success);
 }
 .peephole__status--ready strong {
-  color: #3fb950;
+  color: var(--peephole-success);
 }
 .peephole__status--info {
-  border-color: #1f6feb;
+  border-color: var(--peephole-accent);
 }
 .peephole__status--info strong {
-  color: #58a6ff;
+  color: var(--peephole-accent);
 }
 .peephole__status--blocked {
-  border-color: #9e6a03;
+  border-color: var(--peephole-attention);
 }
 .peephole__status--blocked strong {
-  color: #d29922;
+  color: var(--peephole-attention);
 }
 .peephole__status--ready span,
 .peephole__status--info span,
 .peephole__status--blocked span {
-  color: #8b949e;
+  color: var(--peephole-fg-muted);
 }
 .peephole__status--error {
-  border-color: #da3633;
-  color: #ffb3ad;
+  border-color: var(--peephole-danger);
+  color: var(--peephole-danger);
 }
 .peephole__retry {
-  background: #21262d;
-  border: 1px solid #8b949e;
+  background: var(--peephole-button-bg);
+  border: 1px solid var(--peephole-button-border);
   border-radius: 5px;
-  color: #f0f6fc;
+  color: var(--peephole-button-fg);
   cursor: pointer;
   padding: 4px 8px;
 }
 .peephole__retry:hover {
-  background: #30363d;
+  background: var(--peephole-button-bg-hover);
+  border-color: var(--peephole-button-border-hover);
 }
 .peephole__spinner {
   animation: peephole-spin 0.8s linear infinite;
-  border: 2px solid #30363d;
+  border: 2px solid var(--peephole-border);
   border-radius: 50%;
-  border-top-color: #58a6ff;
+  border-top-color: var(--peephole-accent);
   height: 14px;
   width: 14px;
 }
@@ -155,18 +204,18 @@ a {
   gap: 12px;
 }
 .peephole__section {
-  border-top: 1px solid #21262d;
+  border-top: 1px solid var(--peephole-border-muted);
   padding-top: 11px;
 }
 .peephole__section h3 {
-  color: #8b949e;
+  color: var(--peephole-fg-muted);
   font-size: 11px;
   letter-spacing: 0.08em;
   margin: 0 0 6px;
   text-transform: uppercase;
 }
 .peephole__section--blocked {
-  border-top-color: #9e6a03;
+  border-top-color: var(--peephole-attention);
 }
 .peephole__facts {
   margin: 0;
@@ -186,16 +235,16 @@ a {
   gap: 5px;
 }
 .peephole__chips li {
-  background: #1f2937;
-  border: 1px solid #30363d;
+  background: var(--peephole-bg-inset);
+  border: 1px solid var(--peephole-border);
   border-radius: 999px;
-  color: #c9d1d9;
+  color: var(--peephole-fg);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 10px;
   padding: 3px 7px;
 }
 .peephole__list {
-  color: #c9d1d9;
+  color: var(--peephole-fg);
   display: grid;
   font-size: 11px;
   gap: 5px;
@@ -206,25 +255,25 @@ a {
   position: relative;
 }
 .peephole__list li::before {
-  color: #8b949e;
+  color: var(--peephole-fg-muted);
   content: "•";
   left: 0;
   position: absolute;
 }
 .peephole__section--blocked .peephole__list li::before {
-  color: #d29922;
+  color: var(--peephole-attention);
 }
 .peephole__muted,
 .peephole__empty p {
-  color: #8b949e;
+  color: var(--peephole-fg-muted);
   font-size: 12px;
 }
 .peephole__muted {
   margin: 0;
 }
 .peephole__evidence {
-  border-top: 1px solid #21262d;
-  color: #8b949e;
+  border-top: 1px solid var(--peephole-border-muted);
+  color: var(--peephole-fg-muted);
   font-size: 11px;
   padding-top: 10px;
 }
@@ -238,8 +287,8 @@ a {
   margin: 8px 0 0;
 }
 .peephole__empty {
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: var(--peephole-bg-subtle);
+  border: 1px solid var(--peephole-border);
   border-radius: 8px;
   margin-top: 16px;
   padding: 16px;
@@ -251,8 +300,8 @@ a {
 
 .peephole__preview-action,
 .peephole__job {
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: var(--peephole-bg-subtle);
+  border: 1px solid var(--peephole-border);
   border-radius: 8px;
   padding: 12px;
 }
@@ -270,15 +319,15 @@ a {
 }
 
 .peephole__primary {
-  background: #238636;
-  border: 1px solid #2ea043;
-  color: #fff;
+  background: var(--peephole-primary-bg);
+  border: 1px solid var(--peephole-primary-border);
+  color: var(--peephole-primary-fg);
   min-height: 34px;
   padding: 6px 12px;
 }
 
 .peephole__primary:hover:not(:disabled) {
-  background: #2ea043;
+  background: var(--peephole-primary-bg-hover);
 }
 
 .peephole__primary:disabled {
@@ -287,22 +336,27 @@ a {
 }
 
 .peephole__secondary {
-  background: #21262d;
-  border: 1px solid #8b949e;
-  color: #f0f6fc;
+  background: var(--peephole-button-bg);
+  border: 1px solid var(--peephole-button-border);
+  color: var(--peephole-button-fg);
   justify-self: start;
   padding: 5px 10px;
 }
 
+.peephole__secondary:hover {
+  background: var(--peephole-button-bg-hover);
+  border-color: var(--peephole-button-border-hover);
+}
+
 .peephole__primary:focus-visible,
 .peephole__secondary:focus-visible {
-  outline: 2px solid #2f81f7;
+  outline: 2px solid var(--peephole-focus);
   outline-offset: 2px;
 }
 
 .peephole__action-note,
 .peephole__job p {
-  color: #8b949e;
+  color: var(--peephole-fg-muted);
   font-size: 11px;
   line-height: 1.5;
   margin: 0;
@@ -320,28 +374,29 @@ a {
 }
 
 .peephole__job--ready {
-  border-color: #238636;
+  border-color: var(--peephole-success);
 }
 
 .peephole__preview-frame {
   background: #fff;
-  border: 1px solid #30363d;
+  border: 1px solid var(--peephole-border);
   border-radius: 6px;
+  color-scheme: normal;
   height: 60vh;
   min-height: 320px;
   width: 100%;
 }
 
 .peephole__job--ready strong {
-  color: #3fb950;
+  color: var(--peephole-success);
 }
 
 .peephole__job--error {
-  border-color: #da3633;
+  border-color: var(--peephole-danger);
 }
 
 .peephole__job--error strong {
-  color: #ff7b72;
+  color: var(--peephole-danger);
 }
 
 @keyframes peephole-spin {

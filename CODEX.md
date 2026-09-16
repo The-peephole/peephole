@@ -130,7 +130,7 @@ egress restriction remains future work.
 Implement product expansion in this order unless a later accepted decision
 changes it:
 
-1. GitHub theme synchronization
+1. GitHub theme synchronization (implemented)
 2. Branch Preview
 3. Repository / application structure detection
 4. Build Adapter generalization
@@ -145,6 +145,13 @@ changes it:
 Each stage must expose a reviewed contract and preserve earlier security
 boundaries. In particular, do not jump from a full-stack fixture to backend
 execution, and do not keep the static build container alive as a server.
+
+GitHub theme synchronization reads the current page's computed Primer semantic
+colors, validates a small snapshot, and stores it per tab in
+`browser.storage.session`. The injected action inherits Primer variables
+directly. The Side Panel receives theme-only runtime updates and changes root
+CSS custom properties without remounting repository analysis or preview state.
+Theme names are event markers, not palette dispatch keys.
 
 ## Fixture Registry
 

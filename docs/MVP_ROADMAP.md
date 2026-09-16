@@ -85,7 +85,7 @@ external link, but deployed-site Live Preview is not implemented.
 These stages are ordered. A later stage must not be presented as supported
 because a fixture or interface for it exists.
 
-1. [ ] GitHub theme synchronization
+1. [x] GitHub theme synchronization
 2. [ ] Branch Preview
 3. [ ] Repository / application structure detection
 4. [ ] Build Adapter generalization
@@ -96,6 +96,11 @@ because a fixture or interface for it exists.
 9. [ ] frontend ↔ backend routing
 10. [ ] ephemeral env / secrets
 11. [ ] temporary database support
+
+Theme synchronization uses computed GitHub/Primer semantic colors rather than
+a theme-name palette table. Theme changes update the injected action through
+the page cascade and the Side Panel through a validated, tab-scoped snapshot;
+they do not remount analysis, preview jobs, or the artifact iframe.
 
 The early stages establish repository selection and generalized build contracts
 before full-stack execution is considered. Backend execution requires a new

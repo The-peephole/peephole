@@ -50,7 +50,9 @@ Responsible for:
 - locating the current visible repository action area,
 - inserting and removing exactly one Peephole action,
 - observing GitHub client-side navigation,
-- resetting view state when repository identity changes.
+- resetting view state when repository identity changes, and
+- reading validated computed Primer theme colors through a separate root-theme
+  observer.
 
 It must not analyze `package.json`, call runner infrastructure directly, or infer preview compatibility from DOM text.
 
@@ -72,6 +74,16 @@ Preview content is embedded only from the dedicated Peephole preview origin.
 Today, normalized repository-homepage metadata is displayed as an external link
 opened in a new tab. Peephole does not yet probe, proxy, or embed an existing
 deployed site.
+
+Theme is not part of repository identity. The injected action consumes the
+GitHub page's semantic CSS variables directly. A separate content-script
+observer treats the current root theme attributes and system-scheme changes as
+recomputation signals, reads a small computed color snapshot, and sends it to
+the background. The background validates and stores that snapshot per sender
+tab in `browser.storage.session`. An open Side Panel receives tab-filtered
+runtime updates and changes only root Peephole CSS variables; it does not
+rerender the React tree or reload the repository-specific Side Panel URL. The
+cross-origin artifact iframe explicitly remains outside this theme contract.
 
 ## 4. Analysis Layer
 
@@ -234,8 +246,8 @@ Deployable service boundaries may live in separate repositories later. Their con
 
 ## 13. Planned Architecture Expansion
 
-The ordered expansion is GitHub theme synchronization, Branch Preview,
-repository/application structure detection, Build Adapter generalization,
+GitHub theme synchronization is implemented. The remaining ordered expansion
+is Branch Preview, repository/application structure detection, Build Adapter generalization,
 frontend target selection and monorepo support, existing deployed-site Live
 Preview, backend detection, backend execution, frontend ↔ backend routing,
 ephemeral environment/secrets, and temporary databases.
