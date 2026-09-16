@@ -59,6 +59,25 @@ Cover repository URL parsing, reserved routes, idempotent action insertion,
 visible target selection, repository/non-repository navigation, Turbo-style DOM
 replacement, Side Panel messaging, cancellation, and stale-result rejection.
 
+Theme coverage uses deterministic jsdom fixtures, not live GitHub requests. It
+includes Light, Dark, and Dark Dimmed semantic values; missing and malformed
+token fallback; focused root mutation observation; repository/theme state
+separation; tab-scoped session storage and message validation; SPA navigation;
+and Side Panel CSS updates that preserve analysis DOM and the preview iframe.
+
+Manual unpacked-extension verification for a theme-changing release:
+
+- GitHub Light, Dark, and Dark Dimmed: repository action normal, hover,
+  focus-visible, disabled, icon-border, and error states;
+- each theme: Side Panel text, muted text, borders, status colors, buttons,
+  focus indicators, and disabled states;
+- with the Side Panel open, switch GitHub theme and confirm the panel updates
+  without losing analysis or preview-job state;
+- navigate repository A -> repository B, repository -> non-repository, and back
+  through GitHub SPA navigation and confirm one action plus the current theme;
+- change theme while a preview is ready and confirm the artifact iframe is not
+  reloaded or visually forced to the GitHub theme.
+
 ### Repository analysis
 
 Use bounded file-map fixtures for:
@@ -164,7 +183,7 @@ claim a production-smoke pass from the successful `main` golden-path Action.
 
 Add coverage in the same order as product development:
 
-1. GitHub light/dark theme synchronization and navigation changes
+1. GitHub light/dark/dimmed theme synchronization and navigation changes (implemented)
 2. branch selection, immutable resolution, stale branch movement, and cache keys
 3. repository/application structure fixtures
 4. generalized Build Adapter contract tests

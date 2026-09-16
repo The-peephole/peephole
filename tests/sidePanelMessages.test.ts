@@ -6,6 +6,7 @@ import {
   createSidePanelPath,
   OPEN_SIDE_PANEL,
   parseSidePanelRepository,
+  parseSidePanelTabId,
   SET_SIDE_PANEL_CONTEXT,
   type SidePanelApi,
 } from "../core/sidepanel/messages"
@@ -25,7 +26,7 @@ describe("side panel messages", () => {
     expect(response).toEqual({ ok: true })
     expect(sidePanel.setOptions).toHaveBeenCalledWith({
       tabId: 17,
-      path: "sidepanel.html?owner=the-peephole&repo=peephole",
+      path: "sidepanel.html?owner=the-peephole&repo=peephole&tab=17",
       enabled: true,
     })
   })
@@ -85,6 +86,24 @@ describe("side panel messages", () => {
     ).toEqual(repository)
     expect(
       parseSidePanelRepository("chrome-extension://example/sidepanel.html"),
+    ).toBeNull()
+  })
+
+  it("parses only a bounded numeric source tab from the side panel URL", () => {
+    expect(
+      parseSidePanelTabId(
+        "chrome-extension://example/sidepanel.html?owner=a&repo=b&tab=42",
+      ),
+    ).toBe(42)
+    expect(
+      parseSidePanelTabId(
+        "chrome-extension://example/sidepanel.html?owner=a&repo=b&tab=-1",
+      ),
+    ).toBeNull()
+    expect(
+      parseSidePanelTabId(
+        "chrome-extension://example/sidepanel.html?owner=a&repo=b&tab=other",
+      ),
     ).toBeNull()
   })
 

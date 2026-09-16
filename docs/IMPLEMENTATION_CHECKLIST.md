@@ -7,7 +7,7 @@ later full-stack roadmap.
 
 ## Current Development Sequence
 
-1. [ ] GitHub theme synchronization
+1. [x] GitHub theme synchronization
 2. [ ] Branch Preview
 3. [ ] Repository / application structure detection
 4. [ ] Build Adapter generalization
@@ -43,6 +43,16 @@ evidence that any of stages 7-11 are implemented.
 - [x] Open and synchronize the side panel from the user gesture
 - [x] Abort or ignore stale analysis responses
 - [x] Abort or ignore stale preview responses
+- [x] Read the current GitHub page's computed Primer semantic theme tokens
+- [x] Observe only current root theme markers and system-scheme changes as
+      recomputation triggers; do not dispatch on theme names
+- [x] Keep repository navigation and theme synchronization as separate state
+      concerns
+- [x] Store validated theme snapshots per tab in `browser.storage.session`
+- [x] Update an open Side Panel through runtime messaging without changing its
+      URL or remounting analysis, preview-job, or iframe state
+- [x] Fall back to readable light/dark Peephole tokens when GitHub theme data is
+      incomplete or malformed
 
 ## Extension UI
 
