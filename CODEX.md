@@ -131,7 +131,7 @@ Implement product expansion in this order unless a later accepted decision
 changes it:
 
 1. GitHub theme synchronization (implemented)
-2. Branch Preview
+2. Branch Preview (implemented)
 3. Repository / application structure detection
 4. Build Adapter generalization
 5. frontend target selection / frontend monorepo support
@@ -152,6 +152,31 @@ colors, validates a small snapshot, and stores it per tab in
 directly. The Side Panel receives theme-only runtime updates and changes root
 CSS custom properties without remounting repository analysis or preview state.
 Theme names are event markers, not palette dispatch keys.
+
+Branch Preview adds a bounded `GitHubClient.listRepositoryBranches` (single
+page, `per_page=100`, default branch always included and reported first,
+`truncated` set whenever more branches may exist) and
+`GitHubClient.getRepositoryMetadataAtBranch`, which resolves a selected branch
+to the same `RepositoryMetadata` shape as the default-branch path without ever
+overwriting `defaultBranch` with the selection. `core/github/repositoryRef.ts`
+defines the shared `RepositoryRefSelection`
+(`{ kind: "default" }` or `{ kind: "branch"; name }`) and
+`RepositoryRevisionTarget` (`{ repository, ref }`) contracts, plus the branch-name
+validator (GitHub's actual grammar, not `[a-zA-Z0-9-]+`: `/` is allowed,
+control characters and git's forbidden ref patterns are not) used at every
+message boundary. `RepositoryMetadataCache` keys its short-TTL current-ref
+cache per `repositoryKey:ref` so the default branch and a selected branch never
+read each other's cached HEAD; the analysis cache and known-files loader stay
+keyed on the resolved `commitSha`, unchanged. The Side Panel's branch `<select>`
+lives in `components/RepositoryAnalysisView.tsx`, resets to the repository's
+default branch on GitHub SPA navigation (it remounts on repository identity
+change like the rest of that view), and reuses the existing
+`AbortController`-per-effect pattern so a rapid branch switch cannot render a
+stale response. `entrypoints/sidepanel/App.tsx` keys `PreviewJobPanel` on
+`repositoryId:commitSha`, so a branch change that resolves to an unchanged
+commit reuses the existing preview identity instead of creating a new one; the
+Preview API/worker contract is unchanged and still receives only the resolved
+commit SHA, never a branch name.
 
 ## Fixture Registry
 

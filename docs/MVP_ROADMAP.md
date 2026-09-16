@@ -86,7 +86,7 @@ These stages are ordered. A later stage must not be presented as supported
 because a fixture or interface for it exists.
 
 1. [x] GitHub theme synchronization
-2. [ ] Branch Preview
+2. [x] Branch Preview
 3. [ ] Repository / application structure detection
 4. [ ] Build Adapter generalization
 5. [ ] frontend target selection / frontend monorepo support
@@ -101,6 +101,23 @@ Theme synchronization uses computed GitHub/Primer semantic colors rather than
 a theme-name palette table. Theme changes update the injected action through
 the page cascade and the Side Panel through a validated, tab-scoped snapshot;
 they do not remount analysis, preview jobs, or the artifact iframe.
+
+Branch Preview lets the Side Panel select any branch from a bounded (up to
+100, default branch always included) `GET .../branches` listing and resolves
+it to a full 40-character commit SHA (`GitHubClient.getRepositoryMetadataAtBranch`)
+before analysis, build plan, or Preview API requests ever see it. The selected
+mutable ref (`RepositoryRefSelection`), the repository identity, and the
+resolved immutable commit stay three distinct concepts
+(`RepositoryRevisionTarget` in `types/repository.ts`); `defaultBranch` on
+`RepositoryMetadata` always reflects the repository's real default branch, never
+the current UI selection. The metadata current-ref cache is keyed per
+repository *and* ref (`getRepositoryRefCacheKey`), so a default-branch lookup
+and a named-branch lookup never contaminate each other; analysis, known-files,
+and preview identity remain keyed on `repositoryId:commitSha` exactly as
+before, so two branches pointing at the same commit share one cached analysis
+and one preview-job identity. Branch switches abort the in-flight analysis
+request through the existing `AbortController`/effect-cleanup contract, so
+rapid re-selection cannot render a stale branch's result.
 
 The early stages establish repository selection and generalized build contracts
 before full-stack execution is considered. Backend execution requires a new

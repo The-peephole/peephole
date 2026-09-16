@@ -4,6 +4,7 @@ import type {
   RepositoryMetadataLoader,
 } from "../../types/repository"
 import { getRepositoryKey } from "../../utils/githubUrl"
+import { getRepositoryRefCacheKey } from "./repositoryRef"
 
 const DEFAULT_CURRENT_REF_TTL_MS = 60_000
 
@@ -15,6 +16,11 @@ interface CurrentRefCacheEntry {
 interface RepositoryMetadataSource {
   getRepositoryMetadata(
     repository: RepositoryIdentity,
+    signal?: AbortSignal,
+  ): Promise<RepositoryMetadata>
+  getRepositoryMetadataAtBranch(
+    repository: RepositoryIdentity,
+    branchName: string,
     signal?: AbortSignal,
   ): Promise<RepositoryMetadata>
 }
@@ -38,12 +44,10 @@ export class RepositoryMetadataCache {
     this.now = options.now ?? Date.now
   }
 
-  readonly load: RepositoryMetadataLoader = async (
-    repository,
-    options = {},
-  ) => {
-    const repositoryKey = getRepositoryKey(repository)
-    const currentRef = this.currentRefs.get(repositoryKey)
+  readonly load: RepositoryMetadataLoader = async (target, options = {}) => {
+    const repositoryKey = getRepositoryKey(target.repository)
+    const refKey = getRepositoryRefCacheKey(repositoryKey, target.ref)
+    const currentRef = this.currentRefs.get(refKey)
 
     if (currentRef && currentRef.expiresAt > this.now()) {
       const cached = this.commits.get(currentRef.commitKey)
@@ -53,14 +57,21 @@ export class RepositoryMetadataCache {
       }
     }
 
-    const metadata = await this.source.getRepositoryMetadata(
-      repository,
-      options.signal,
-    )
-    const commitKey = `${metadata.repositoryId}:${metadata.commitSha}`
+    const metadata =
+      target.ref.kind === "default"
+        ? await this.source.getRepositoryMetadata(
+            target.repository,
+            options.signal,
+          )
+        : await this.source.getRepositoryMetadataAtBranch(
+            target.repository,
+            target.ref.name,
+            options.signal,
+          )
+    const commitKey = `${metadata.repositoryId}:${metadata.commitSha.toLowerCase()}`
 
     this.commits.set(commitKey, metadata)
-    this.currentRefs.set(repositoryKey, {
+    this.currentRefs.set(refKey, {
       commitKey,
       expiresAt: this.now() + this.currentRefTtlMs,
     })

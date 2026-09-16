@@ -78,6 +78,54 @@ Manual unpacked-extension verification for a theme-changing release:
 - change theme while a preview is ready and confirm the artifact iframe is not
   reloaded or visually forced to the GitHub theme.
 
+### Branch Preview
+
+Deterministic unit/component fixtures, not live GitHub requests, cover:
+
+- default-branch and non-default-branch listing and selection, including
+  branch names containing `/`, `.`, `-`, and `_`;
+- malformed/empty branch-list API responses and message-boundary rejection
+  (`tests/githubClient.test.ts`, `tests/branchMessages.test.ts`,
+  `tests/repositoryRef.test.ts`);
+- the bounded single-page (`per_page=100`) listing policy and the `truncated`
+  flag, with no follow-on pagination;
+- branch-to-commit-SHA resolution (`getRepositoryMetadataAtBranch`) without
+  `defaultBranch` being overwritten by the selection;
+- current-ref cache isolation between the default branch and a selected
+  branch, same-branch TTL reuse, post-TTL refresh, and two branches sharing
+  one commit-pinned metadata/analysis entry
+  (`tests/repositoryMetadataCache.test.ts`,
+  `tests/repositoryAnalysisService.test.ts`);
+- stale-request abandonment on branch switch and rapid A → B → C selection
+  rendering only the final branch's result
+  (`tests/RepositoryAnalysisView.test.tsx`);
+- a deleted/nonexistent selected branch surfacing an explicit error without
+  silently falling back to the default branch, and a branch-list failure not
+  blocking the independent default-branch analysis;
+- repository SPA navigation resetting branch selection to the new
+  repository's default branch;
+- preview-job identity staying keyed on `repositoryId:commitSha`, so two
+  branches resolving to the same commit share one preview identity while a
+  different commit resets it (`tests/branchPreviewIdentity.test.tsx`).
+
+Manual unpacked-extension verification, on a repository with multiple
+branches:
+
+- default-branch analysis, then select a non-default branch and confirm the
+  displayed commit SHA matches that branch's actual GitHub HEAD;
+- confirm the Build preview request targets that resolved SHA (Preview API
+  request/network inspection), then switch back to the default branch;
+- observe loading and error UI while switching branches, including selecting
+  a branch that was since deleted upstream;
+- repeat branch selection in GitHub Light, Dark, and Dark Dimmed, including
+  switching theme while the branch selector is open, and confirm theme
+  synchronization is not regressed;
+- navigate GitHub repository A (non-default branch selected) to repository B
+  through SPA navigation and confirm B opens on its own default branch;
+- close and reopen the Side Panel, and perform rapid repeated branch
+  switching, confirming the UI always settles on the last-selected branch's
+  result.
+
 ### Repository analysis
 
 Use bounded file-map fixtures for:
@@ -184,7 +232,7 @@ claim a production-smoke pass from the successful `main` golden-path Action.
 Add coverage in the same order as product development:
 
 1. GitHub light/dark/dimmed theme synchronization and navigation changes (implemented)
-2. branch selection, immutable resolution, stale branch movement, and cache keys
+2. branch selection, immutable resolution, stale branch movement, and cache keys (implemented)
 3. repository/application structure fixtures
 4. generalized Build Adapter contract tests
 5. frontend target/monorepo selection and isolation

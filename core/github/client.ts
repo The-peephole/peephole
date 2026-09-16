@@ -1,11 +1,14 @@
 import type {
+  RepositoryBranchList,
   RepositoryIdentity,
   RepositoryMetadata,
 } from "../../types/repository"
 import type { PreviewRepositoryRef } from "../../types/preview"
+import { isRepositoryBranchName } from "./repositoryRef"
 
 const DEFAULT_API_BASE_URL = "https://api.github.com"
 const GITHUB_API_VERSION = "2026-03-10"
+export const MAX_REPOSITORY_BRANCHES = 100
 
 export type GitHubApiErrorCode =
   "not-found" | "rate-limited" | "network" | "invalid-response" | "unavailable"
@@ -37,6 +40,10 @@ interface GitHubBranchResponse {
   commit: {
     sha: string
   }
+}
+
+interface GitHubBranchListEntry extends GitHubBranchResponse {
+  name: string
 }
 
 interface GitHubCommitResponse {
@@ -114,6 +121,104 @@ export class GitHubClient {
       defaultBranch: details.default_branch,
       commitSha: branch.commit.sha,
       homepage: normalizeHomepage(details.homepage),
+    }
+  }
+
+  async getRepositoryMetadataAtBranch(
+    repository: RepositoryIdentity,
+    branchName: string,
+    signal?: AbortSignal,
+  ): Promise<RepositoryMetadata> {
+    if (!isRepositoryBranchName(branchName)) {
+      throw new GitHubApiError(
+        "invalid-response",
+        "The selected GitHub branch name is invalid.",
+      )
+    }
+
+    const repositoryPath = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}`
+    const details = await this.requestJson(
+      repositoryPath,
+      isGitHubRepositoryResponse,
+      signal,
+    )
+
+    if (details.private) {
+      throw new GitHubApiError(
+        "not-found",
+        "Peephole v0.1 supports public repositories only.",
+        404,
+      )
+    }
+
+    let branch: GitHubBranchResponse
+
+    try {
+      branch = await this.requestJson(
+        `${repositoryPath}/branches/${encodeURIComponent(branchName)}`,
+        isGitHubBranchResponse,
+        signal,
+      )
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.code === "not-found") {
+        throw new GitHubApiError(
+          "not-found",
+          `The selected branch "${branchName}" no longer exists or is unavailable.`,
+          error.status,
+        )
+      }
+      throw error
+    }
+
+    return {
+      repositoryId: details.id,
+      owner: details.owner.login,
+      repo: details.name,
+      defaultBranch: details.default_branch,
+      commitSha: branch.commit.sha,
+      homepage: normalizeHomepage(details.homepage),
+    }
+  }
+
+  async listRepositoryBranches(
+    repository: RepositoryIdentity,
+    signal?: AbortSignal,
+  ): Promise<RepositoryBranchList> {
+    const repositoryPath = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}`
+    const details = await this.requestJson(
+      repositoryPath,
+      isGitHubRepositoryResponse,
+      signal,
+    )
+
+    if (details.private) {
+      throw new GitHubApiError(
+        "not-found",
+        "Peephole v0.1 supports public repositories only.",
+        404,
+      )
+    }
+
+    const page = await this.requestJson(
+      `${repositoryPath}/branches?per_page=${MAX_REPOSITORY_BRANCHES}&page=1`,
+      isGitHubBranchListResponse,
+      signal,
+    )
+    const uniqueNames = Array.from(new Set(page.map((branch) => branch.name)))
+    const withoutDefault = uniqueNames.filter(
+      (name) => name !== details.default_branch,
+    )
+    const branches = [
+      details.default_branch,
+      ...withoutDefault.slice(0, MAX_REPOSITORY_BRANCHES - 1),
+    ]
+
+    return {
+      defaultBranch: details.default_branch,
+      branches,
+      truncated:
+        page.length >= MAX_REPOSITORY_BRANCHES ||
+        withoutDefault.length > MAX_REPOSITORY_BRANCHES - 1,
     }
   }
 
@@ -401,10 +506,23 @@ function isGitHubRepositoryResponse(
     Number.isInteger(value.id) &&
     typeof value.name === "string" &&
     typeof value.owner.login === "string" &&
-    typeof value.default_branch === "string" &&
-    value.default_branch.length > 0 &&
+    isRepositoryBranchName(value.default_branch) &&
     (typeof value.homepage === "string" || value.homepage === null) &&
     typeof value.private === "boolean"
+  )
+}
+
+function isGitHubBranchListResponse(
+  value: unknown,
+): value is GitHubBranchListEntry[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (branch) =>
+        isObject(branch) &&
+        isRepositoryBranchName(branch.name) &&
+        isGitHubBranchResponse(branch),
+    )
   )
 }
 

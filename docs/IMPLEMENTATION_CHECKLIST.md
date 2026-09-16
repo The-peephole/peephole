@@ -8,7 +8,7 @@ later full-stack roadmap.
 ## Current Development Sequence
 
 1. [x] GitHub theme synchronization
-2. [ ] Branch Preview
+2. [x] Branch Preview
 3. [ ] Repository / application structure detection
 4. [ ] Build Adapter generalization
 5. [ ] frontend target selection / frontend monorepo support
@@ -83,6 +83,45 @@ evidence that any of stages 7-11 are implemented.
 - [x] Cache metadata by repository id and commit SHA
 - [x] Cache analysis by repository id, commit SHA, and analyzer version
 - [x] Never log credentials or secret-like values
+
+## Branch Preview
+
+- [x] Add a bounded `GitHubClient.listRepositoryBranches` (single page,
+      `per_page=100`, default branch always included and listed first,
+      `truncated` reported instead of hidden) routed only through the
+      existing background-owned GitHub client; no new Chrome permission,
+      content-script fetch primitive, or arbitrary-URL proxy was added
+- [x] Add `GitHubClient.getRepositoryMetadataAtBranch`, which resolves a
+      selected branch to the same `RepositoryMetadata` shape as the
+      default-branch path without overwriting `defaultBranch` with the
+      selection
+- [x] Validate branch names against GitHub's actual grammar
+      (`core/github/repositoryRef.ts`): `/`, `-`, `_`, and `.` are accepted;
+      control characters, unreasonable length, and git's forbidden ref
+      patterns (leading `-`/`/`, trailing `/`/`.`, `..`, `//`, `@{`, bare `@`,
+      `.`-prefixed or `.lock`-suffixed path segments) are rejected at every
+      message boundary
+- [x] Define `RepositoryRefSelection` and `RepositoryRevisionTarget` so
+      repository identity, the selected mutable ref, and the resolved
+      immutable commit SHA are never conflated
+- [x] Key `RepositoryMetadataCache`'s short-TTL current-ref cache per
+      `repositoryKey:ref`, so the default branch and a selected branch never
+      read or overwrite each other's cached HEAD, while the commit-pinned
+      metadata/analysis caches stay keyed on the resolved `commitSha`
+- [x] Add a native, keyboard-accessible branch `<select>` to
+      `components/RepositoryAnalysisView.tsx` that shows the current
+      selection, the resolved commit SHA, and truncation/error states,
+      without introducing a new theme system
+- [x] Abort a stale analysis request when the branch changes and reset
+      selection to the new repository's default branch on GitHub SPA
+      navigation, reusing the existing `AbortController`/effect-cleanup
+      contract so rapid re-selection cannot render a stale result
+- [x] Key `PreviewJobPanel` on `repositoryId:commitSha` (unchanged) so a
+      branch change that resolves to an already-seen commit reuses the
+      existing preview identity instead of creating a duplicate one
+- [x] Keep the Preview API/worker contract, PostgreSQL schema, and gVisor
+      pipeline unchanged: they still receive only the resolved commit SHA,
+      never a branch name
 
 ## Analyzer
 

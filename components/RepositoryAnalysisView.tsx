@@ -1,78 +1,248 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useId, useState, type ReactNode } from "react"
 
+import { DEFAULT_REPOSITORY_REF } from "../core/github/repositoryRef"
 import type {
   Framework,
   PreviewMode,
   RepositoryAnalysis,
   RepositoryAnalysisLoader,
 } from "../types/analysis"
-import type { RepositoryIdentity } from "../types/repository"
+import type {
+  RepositoryBranchList,
+  RepositoryBranchesLoader,
+  RepositoryIdentity,
+  RepositoryRefSelection,
+} from "../types/repository"
 
 interface RepositoryAnalysisViewProps {
   repository: RepositoryIdentity
   loadRepositoryAnalysis: RepositoryAnalysisLoader
+  loadRepositoryBranches: RepositoryBranchesLoader
   renderPreviewControls?: (analysis: RepositoryAnalysis) => ReactNode
 }
 
 type AnalysisState =
-  | { status: "loading" }
+  | { status: "loading"; previous: RepositoryAnalysis | null }
   | { status: "ready"; value: RepositoryAnalysis }
+  | {
+      status: "error"
+      message: string
+      previous: RepositoryAnalysis | null
+    }
+
+type BranchState =
+  | { status: "loading" }
+  | { status: "ready"; value: RepositoryBranchList }
   | { status: "error"; message: string }
 
-export function RepositoryAnalysisView({
+export function RepositoryAnalysisView(props: RepositoryAnalysisViewProps) {
+  const repositoryKey = `${props.repository.owner.toLowerCase()}/${props.repository.repo.toLowerCase()}`
+
+  return <RepositoryAnalysisSession key={repositoryKey} {...props} />
+}
+
+function RepositoryAnalysisSession({
   repository,
   loadRepositoryAnalysis,
+  loadRepositoryBranches,
   renderPreviewControls,
 }: RepositoryAnalysisViewProps) {
   const [analysisState, setAnalysisState] = useState<AnalysisState>({
     status: "loading",
+    previous: null,
   })
-  const [requestVersion, setRequestVersion] = useState(0)
+  const [analysisRequestVersion, setAnalysisRequestVersion] = useState(0)
+  const [branchState, setBranchState] = useState<BranchState>({
+    status: "loading",
+  })
+  const [branchRequestVersion, setBranchRequestVersion] = useState(0)
+  const [selectedRef, setSelectedRef] = useState<RepositoryRefSelection>(
+    DEFAULT_REPOSITORY_REF,
+  )
 
   useEffect(() => {
     const abortController = new AbortController()
-    setAnalysisState({ status: "loading" })
+    setBranchState({ status: "loading" })
 
-    void loadRepositoryAnalysis(repository, {
-      signal: abortController.signal,
-    }).then(
-      (analysis) => {
+    const load = async () => {
+      try {
+        const value = await loadRepositoryBranches(repository, {
+          signal: abortController.signal,
+        })
         if (!abortController.signal.aborted) {
-          setAnalysisState({ status: "ready", value: analysis })
+          setBranchState({ status: "ready", value })
         }
-      },
-      (error: unknown) => {
+      } catch (error) {
         if (!abortController.signal.aborted) {
-          setAnalysisState({
+          setBranchState({
             status: "error",
-            message:
-              error instanceof Error
-                ? error.message
-                : "Repository analysis could not be completed.",
+            message: getErrorMessage(
+              error,
+              "Repository branches could not be loaded.",
+            ),
           })
         }
-      },
-    )
+      }
+    }
 
+    void load()
     return () => abortController.abort()
   }, [
+    branchRequestVersion,
+    loadRepositoryBranches,
+    repository.owner,
+    repository.repo,
+  ])
+
+  useEffect(() => {
+    const abortController = new AbortController()
+    setAnalysisState((current) => ({
+      status: "loading",
+      previous: getPreservedAnalysis(current),
+    }))
+
+    const load = async () => {
+      try {
+        const value = await loadRepositoryAnalysis(
+          { repository, ref: selectedRef },
+          { signal: abortController.signal },
+        )
+        if (!abortController.signal.aborted) {
+          setAnalysisState({ status: "ready", value })
+        }
+      } catch (error) {
+        if (!abortController.signal.aborted) {
+          setAnalysisState((current) => ({
+            status: "error",
+            message: getErrorMessage(
+              error,
+              "Repository analysis could not be completed.",
+            ),
+            previous: getPreservedAnalysis(current),
+          }))
+        }
+      }
+    }
+
+    void load()
+    return () => abortController.abort()
+  }, [
+    analysisRequestVersion,
     loadRepositoryAnalysis,
     repository.owner,
     repository.repo,
-    requestVersion,
+    selectedRef.kind,
+    selectedRef.kind === "branch" ? selectedRef.name : "",
   ])
 
-  const analysis = analysisState.status === "ready" ? analysisState.value : null
+  const preservedAnalysis = getPreservedAnalysis(analysisState)
+  const visibleAnalysis =
+    analysisState.status === "ready" ? analysisState.value : null
+  const selectedBranch = getSelectedBranchName(
+    selectedRef,
+    branchState,
+    preservedAnalysis,
+  )
 
   return (
     <>
-      <RepositoryIdentityDetails analysis={analysis} repository={repository} />
+      <RepositoryIdentityDetails
+        analysis={visibleAnalysis}
+        repository={repository}
+      />
+      <BranchSelector
+        branchState={branchState}
+        onRetry={() => setBranchRequestVersion((version) => version + 1)}
+        onSelect={(branchName) => {
+          const defaultBranch =
+            branchState.status === "ready"
+              ? branchState.value.defaultBranch
+              : preservedAnalysis?.repository.defaultBranch
+          setSelectedRef(
+            branchName === defaultBranch
+              ? DEFAULT_REPOSITORY_REF
+              : { kind: "branch", name: branchName },
+          )
+        }}
+        selectedBranch={selectedBranch}
+      />
       <AnalysisContent
         analysisState={analysisState}
-        onRetry={() => setRequestVersion((version) => version + 1)}
+        onRetry={() => setAnalysisRequestVersion((version) => version + 1)}
         renderPreviewControls={renderPreviewControls}
+        selectedBranch={selectedBranch}
       />
     </>
+  )
+}
+
+function BranchSelector({
+  branchState,
+  onRetry,
+  onSelect,
+  selectedBranch,
+}: {
+  branchState: BranchState
+  onRetry: () => void
+  onSelect: (branchName: string) => void
+  selectedBranch: string
+}) {
+  const descriptionId = useId()
+  const options =
+    branchState.status === "ready"
+      ? includeSelectedBranch(branchState.value.branches, selectedBranch)
+      : selectedBranch
+        ? [selectedBranch]
+        : []
+  const disabled = branchState.status !== "ready"
+
+  return (
+    <section className="peephole__branch">
+      <label className="peephole__branch-label" htmlFor="peephole-branch">
+        Preview branch
+      </label>
+      <select
+        aria-describedby={descriptionId}
+        className="peephole__branch-select"
+        disabled={disabled}
+        id="peephole-branch"
+        name="branch"
+        onChange={(event) => onSelect(event.currentTarget.value)}
+        value={selectedBranch}
+      >
+        {options.length > 0 ? (
+          options.map((branch) => (
+            <option key={branch} value={branch}>
+              {branch}
+            </option>
+          ))
+        ) : (
+          <option value="">Loading branches...</option>
+        )}
+      </select>
+      <div className="peephole__branch-help" id={descriptionId}>
+        {branchState.status === "loading" &&
+          "Loading the bounded GitHub branch list. Default-branch analysis continues independently."}
+        {branchState.status === "ready" &&
+          branchState.value.truncated &&
+          "Showing up to 100 branches, including the default branch. More branches may exist."}
+        {branchState.status === "ready" &&
+          !branchState.value.truncated &&
+          "Each selection is resolved to its current full commit SHA before analysis."}
+        {branchState.status === "error" && (
+          <>
+            <span>{branchState.message}</span>{" "}
+            <button
+              className="peephole__inline-retry"
+              onClick={onRetry}
+              type="button"
+            >
+              Retry branch list
+            </button>
+          </>
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -89,7 +259,6 @@ function RepositoryIdentityDetails({
       <Detail label="Repository" value={repository.repo} />
       {analysis && (
         <>
-          <Detail label="Branch" value={analysis.repository.defaultBranch} />
           <div className="peephole__detail">
             <dt>Commit</dt>
             <dd>
@@ -134,37 +303,53 @@ function AnalysisContent({
   analysisState,
   onRetry,
   renderPreviewControls,
+  selectedBranch,
 }: {
   analysisState: AnalysisState
   onRetry: () => void
   renderPreviewControls?: (analysis: RepositoryAnalysis) => ReactNode
+  selectedBranch: string
 }) {
-  if (analysisState.status === "loading") {
-    return (
-      <div aria-live="polite" className="peephole__status">
-        <span aria-hidden="true" className="peephole__spinner" />
-        Inspecting known repository files...
-      </div>
-    )
-  }
+  const preservedAnalysis = getPreservedAnalysis(analysisState)
+  const ready = analysisState.status === "ready"
 
-  if (analysisState.status === "error") {
-    return (
-      <div className="peephole__status peephole__status--error" role="alert">
-        <p>{analysisState.message}</p>
-        <button
-          className="peephole__retry"
-          onClick={() => onRetry()}
-          type="button"
-        >
-          Retry
-        </button>
-      </div>
-    )
-  }
+  return (
+    <>
+      {analysisState.status === "loading" && (
+        <div aria-live="polite" className="peephole__status">
+          <span aria-hidden="true" className="peephole__spinner" />
+          Resolving and inspecting {selectedBranch || "the default branch"}...
+        </div>
+      )}
 
-  const analysis = analysisState.value
+      {analysisState.status === "error" && (
+        <div className="peephole__status peephole__status--error" role="alert">
+          <p>{analysisState.message}</p>
+          <button className="peephole__retry" onClick={onRetry} type="button">
+            Retry analysis
+          </button>
+        </div>
+      )}
 
+      {preservedAnalysis && (
+        <div hidden={!ready}>
+          <AnalysisResults
+            analysis={preservedAnalysis}
+            renderPreviewControls={renderPreviewControls}
+          />
+        </div>
+      )}
+    </>
+  )
+}
+
+function AnalysisResults({
+  analysis,
+  renderPreviewControls,
+}: {
+  analysis: RepositoryAnalysis
+  renderPreviewControls?: (analysis: RepositoryAnalysis) => ReactNode
+}) {
   return (
     <div className="peephole__analysis">
       <PreviewStatus mode={analysis.preview.mode} />
@@ -289,6 +474,33 @@ function PreviewStatus({ mode }: { mode: PreviewMode }) {
       <span>{content.description}</span>
     </div>
   )
+}
+
+function getSelectedBranchName(
+  selectedRef: RepositoryRefSelection,
+  branchState: BranchState,
+  analysis: RepositoryAnalysis | null,
+): string {
+  if (selectedRef.kind === "branch") return selectedRef.name
+  if (branchState.status === "ready") return branchState.value.defaultBranch
+  return analysis?.repository.defaultBranch ?? ""
+}
+
+function includeSelectedBranch(
+  branches: string[],
+  selectedBranch: string,
+): string[] {
+  return selectedBranch && !branches.includes(selectedBranch)
+    ? [selectedBranch, ...branches]
+    : branches
+}
+
+function getPreservedAnalysis(state: AnalysisState): RepositoryAnalysis | null {
+  return state.status === "ready" ? state.value : state.previous
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback
 }
 
 function formatFramework(framework: Framework): string {

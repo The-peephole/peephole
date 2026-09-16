@@ -308,6 +308,253 @@ describe("GitHubClient", () => {
       client.getRepositoryTextFile(metadata, "package.json", 1_024),
     ).rejects.toMatchObject({ code: "invalid-response" })
   })
+
+  describe("getRepositoryMetadataAtBranch", () => {
+    it("resolves the selected branch HEAD without overwriting defaultBranch", async () => {
+      const featureBranchResponse = {
+        commit: { sha: "abcdef0123456789abcdef0123456789abcdef01" },
+      }
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+        .mockResolvedValueOnce(jsonResponse(featureBranchResponse))
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.getRepositoryMetadataAtBranch(
+          { owner: "facebook", repo: "react" },
+          "feature/login",
+        ),
+      ).resolves.toEqual({
+        repositoryId: 10270250,
+        owner: "facebook",
+        repo: "react",
+        defaultBranch: "main",
+        commitSha: featureBranchResponse.commit.sha,
+        homepage: "https://react.dev/",
+      })
+      expect(fetcher.mock.calls[1]?.[0]).toBe(
+        "https://api.github.com/repos/facebook/react/branches/feature%2Flogin",
+      )
+    })
+
+    it("supports branch names with dots, hyphens and underscores", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+        .mockResolvedValueOnce(jsonResponse(branchResponse))
+      const client = new GitHubClient({ fetcher })
+
+      await client.getRepositoryMetadataAtBranch(
+        { owner: "facebook", repo: "react" },
+        "release-1.2_rc.3",
+      )
+
+      expect(fetcher.mock.calls[1]?.[0]).toBe(
+        "https://api.github.com/repos/facebook/react/branches/release-1.2_rc.3",
+      )
+    })
+
+    it("surfaces a clear error when the selected branch no longer exists", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+        .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.getRepositoryMetadataAtBranch(
+          { owner: "facebook", repo: "react" },
+          "deleted-branch",
+        ),
+      ).rejects.toMatchObject({
+        code: "not-found",
+        message: expect.stringContaining("deleted-branch"),
+      })
+    })
+
+    it("rejects an invalid branch name before making a network request", async () => {
+      const fetcher = vi.fn<typeof fetch>()
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.getRepositoryMetadataAtBranch(
+          { owner: "facebook", repo: "react" },
+          "feature~1",
+        ),
+      ).rejects.toMatchObject({ code: "invalid-response" })
+      expect(fetcher).not.toHaveBeenCalled()
+    })
+
+    it("rejects a private repository before resolving the branch", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          jsonResponse({ ...repositoryResponse, private: true }),
+        )
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.getRepositoryMetadataAtBranch(
+          { owner: "facebook", repo: "react" },
+          "main",
+        ),
+      ).rejects.toMatchObject({ code: "not-found" })
+      expect(fetcher).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe("listRepositoryBranches", () => {
+    it("lists branches with the default branch first and reports no truncation", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+        .mockResolvedValueOnce(
+          jsonResponse([
+            { name: "feature/login", commit: { sha: "a".repeat(40) } },
+            { name: "main", commit: { sha: "b".repeat(40) } },
+            { name: "release-1.2.3", commit: { sha: "c".repeat(40) } },
+          ]),
+        )
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.listRepositoryBranches({ owner: "facebook", repo: "react" }),
+      ).resolves.toEqual({
+        defaultBranch: "main",
+        branches: ["main", "feature/login", "release-1.2.3"],
+        truncated: false,
+      })
+      expect(fetcher.mock.calls[1]?.[0]).toBe(
+        "https://api.github.com/repos/facebook/react/branches?per_page=100&page=1",
+      )
+    })
+
+    it("requests only a single bounded page, never following pagination", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+        .mockResolvedValueOnce(
+          jsonResponse([{ name: "main", commit: { sha: "b".repeat(40) } }]),
+        )
+      const client = new GitHubClient({ fetcher })
+
+      await client.listRepositoryBranches({ owner: "facebook", repo: "react" })
+
+      expect(fetcher).toHaveBeenCalledTimes(2)
+    })
+
+    it("reports truncation when the branch list fills the bounded page", async () => {
+      const page = Array.from({ length: 100 }, (_, index) => ({
+        name: index === 0 ? "main" : `branch-${index}`,
+        commit: { sha: index.toString(16).padStart(40, "0") },
+      }))
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+        .mockResolvedValueOnce(jsonResponse(page))
+      const client = new GitHubClient({ fetcher })
+
+      const result = await client.listRepositoryBranches({
+        owner: "facebook",
+        repo: "react",
+      })
+
+      expect(result.truncated).toBe(true)
+      expect(result.branches.length).toBeLessThanOrEqual(100)
+      expect(result.branches[0]).toBe("main")
+    })
+
+    it("rejects a malformed branch-list API response", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+        .mockResolvedValueOnce(jsonResponse({ not: "an array" }))
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.listRepositoryBranches({ owner: "facebook", repo: "react" }),
+      ).rejects.toMatchObject({ code: "invalid-response" })
+    })
+
+    it("still surfaces the default branch when the branches page comes back empty", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+        .mockResolvedValueOnce(jsonResponse([]))
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.listRepositoryBranches({ owner: "facebook", repo: "react" }),
+      ).resolves.toEqual({
+        defaultBranch: "main",
+        branches: ["main"],
+        truncated: false,
+      })
+    })
+
+    it("propagates a rate-limit error from the branches endpoint", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+        .mockResolvedValueOnce(
+          new Response(null, {
+            status: 403,
+            headers: { "x-ratelimit-remaining": "0" },
+          }),
+        )
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.listRepositoryBranches({ owner: "facebook", repo: "react" }),
+      ).rejects.toMatchObject({ code: "rate-limited" })
+    })
+
+    it("rejects an unavailable repository before listing branches", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.listRepositoryBranches({ owner: "facebook", repo: "react" }),
+      ).rejects.toMatchObject({ code: "not-found" })
+      expect(fetcher).toHaveBeenCalledTimes(1)
+    })
+
+    it("rejects a private repository before listing branches", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          jsonResponse({ ...repositoryResponse, private: true }),
+        )
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.listRepositoryBranches({ owner: "facebook", repo: "react" }),
+      ).rejects.toMatchObject({ code: "not-found" })
+    })
+
+    it("deduplicates a default branch that also appears in the page", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(repositoryResponse))
+        .mockResolvedValueOnce(
+          jsonResponse([
+            { name: "main", commit: { sha: "b".repeat(40) } },
+            { name: "main", commit: { sha: "b".repeat(40) } },
+          ]),
+        )
+      const client = new GitHubClient({ fetcher })
+
+      const result = await client.listRepositoryBranches({
+        owner: "facebook",
+        repo: "react",
+      })
+
+      expect(result.branches).toEqual(["main"])
+    })
+  })
 })
 
 function jsonResponse(value: unknown): Response {

@@ -75,6 +75,16 @@ Today, normalized repository-homepage metadata is displayed as an external link
 opened in a new tab. Peephole does not yet probe, proxy, or embed an existing
 deployed site.
 
+Branch selection is a mutable UI ref, kept separate from both repository
+identity and the resolved immutable commit. The Side Panel lists a bounded set
+of branches, and selecting one resolves its current HEAD to a full commit SHA
+before analysis, build plan, or preview requests are made; nothing downstream
+of that resolution ever receives the branch name itself. Selecting a branch
+aborts any in-flight analysis for the previous selection using the same
+cancellation contract as GitHub SPA navigation, and switching repositories
+(not just branches) resets the selection to the new repository's default
+branch.
+
 Theme is not part of repository identity. The injected action consumes the
 GitHub page's semantic CSS variables directly. A separate content-script
 observer treats the current root theme attributes and system-scheme changes as
@@ -246,14 +256,14 @@ Deployable service boundaries may live in separate repositories later. Their con
 
 ## 13. Planned Architecture Expansion
 
-GitHub theme synchronization is implemented. The remaining ordered expansion
-is Branch Preview, repository/application structure detection, Build Adapter generalization,
-frontend target selection and monorepo support, existing deployed-site Live
-Preview, backend detection, backend execution, frontend ↔ backend routing,
-ephemeral environment/secrets, and temporary databases.
+GitHub theme synchronization and Branch Preview are implemented. The
+remaining ordered expansion is repository/application structure detection,
+Build Adapter generalization, frontend target selection and monorepo support,
+existing deployed-site Live Preview, backend detection, backend execution,
+frontend ↔ backend routing, ephemeral environment/secrets, and temporary
+databases.
 
-Branch Preview must still resolve to an exact commit before cache or job
-creation. Build Adapter generalization must preserve the worker ports and must
-not add fixture-specific production branches. Backend execution requires a
-separate reviewed runtime/lifecycle contract rather than keeping the static
-build sandbox alive.
+Build Adapter generalization must preserve the worker ports and must not add
+fixture-specific production branches. Backend execution requires a separate
+reviewed runtime/lifecycle contract rather than keeping the static build
+sandbox alive.

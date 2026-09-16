@@ -61,9 +61,11 @@ Popularity, stars, and GitHub visibility do not reduce the runtime threat model.
 9. If unsupported or failed, the panel shows a specific reason and never
    attempts hidden fallback execution.
 
-The current UI resolves the default-branch head. Selecting another branch is
-not implemented yet, although every completed analysis and job is pinned to the
-resolved full commit SHA.
+The Side Panel initially selects the repository's default branch. The user may
+choose another branch from a bounded list; Peephole resolves the selection to
+its current HEAD commit SHA before analysis, and every completed analysis and
+job remains pinned to that resolved full commit SHA rather than the mutable
+branch name.
 
 ## 7. Current Capabilities
 
@@ -83,6 +85,8 @@ resolved full commit SHA.
 - native Peephole Side Panel preview
 - normalized repository-homepage presentation as an external link
 - no StackBlitz dependency
+- branch selection from a bounded list, resolved to an exact commit SHA before
+  analysis, build plan, and preview job creation
 
 ### Recognized but not executable
 
@@ -94,7 +98,6 @@ resolved full commit SHA.
 
 ### Not implemented
 
-- branch selection
 - repository application selection or frontend monorepo execution
 - embedded existing deployed-site Live Preview
 - backend detection beyond the current bounded hints
@@ -159,7 +162,7 @@ silently guessing how a repository should run.
 ## 12. Ordered Product Roadmap
 
 1. GitHub theme synchronization (implemented)
-2. Branch Preview
+2. Branch Preview (implemented)
 3. Repository / application structure detection
 4. Build Adapter generalization
 5. frontend target selection / frontend monorepo support

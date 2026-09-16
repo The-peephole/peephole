@@ -2,11 +2,15 @@ import { RepositoryAnalysisView } from "../../components/RepositoryAnalysisView"
 import { PreviewJobPanel } from "../../components/PreviewJobPanel"
 import type { PreviewApi } from "../../core/preview/apiClient"
 import type { RepositoryAnalysisLoader } from "../../types/analysis"
-import type { RepositoryIdentity } from "../../types/repository"
+import type {
+  RepositoryBranchesLoader,
+  RepositoryIdentity,
+} from "../../types/repository"
 
 interface SidePanelAppProps {
   repository: RepositoryIdentity | null
   loadRepositoryAnalysis: RepositoryAnalysisLoader
+  loadRepositoryBranches: RepositoryBranchesLoader
   connectGitHub?: (() => Promise<void>) | null
   previewApi: PreviewApi | null
   previewArtifactBaseDomain?: string | null
@@ -16,6 +20,7 @@ interface SidePanelAppProps {
 export function SidePanelApp({
   repository,
   loadRepositoryAnalysis,
+  loadRepositoryBranches,
   connectGitHub = null,
   previewApi,
   previewConfigurationError = null,
@@ -33,6 +38,7 @@ export function SidePanelApp({
       {repository ? (
         <RepositoryAnalysisView
           loadRepositoryAnalysis={loadRepositoryAnalysis}
+          loadRepositoryBranches={loadRepositoryBranches}
           repository={repository}
           renderPreviewControls={(analysis) => (
             <PreviewJobPanel
