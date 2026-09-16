@@ -258,6 +258,65 @@ describe("GitHubClient", () => {
     )
   })
 
+  it("lists a nested directory's entries at the resolved commit SHA", async () => {
+    const entries = [
+      { type: "dir", name: "web", path: "apps/web", size: 0 },
+      { type: "dir", name: "admin", path: "apps/admin", size: 0 },
+    ]
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse(entries))
+    const client = new GitHubClient({ fetcher })
+
+    await expect(
+      client.getRepositoryDirectoryEntries(metadata, "apps"),
+    ).resolves.toEqual(entries)
+    expect(fetcher).toHaveBeenCalledWith(
+      `https://api.github.com/repos/facebook/react/contents/apps?ref=${metadata.commitSha}`,
+      expect.any(Object),
+    )
+  })
+
+  it("joins a two-segment directory path without encoding its '/' separator", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse([]))
+    const client = new GitHubClient({ fetcher })
+
+    await client.getRepositoryDirectoryEntries(metadata, "apps/my-app")
+
+    expect(fetcher).toHaveBeenCalledWith(
+      `https://api.github.com/repos/facebook/react/contents/apps/my-app?ref=${metadata.commitSha}`,
+      expect.any(Object),
+    )
+  })
+
+  it.each([
+    ["/apps", "an absolute path"],
+    ["apps/", "a trailing slash"],
+    ["../apps", "'..' traversal"],
+    ["apps/../secret", "embedded '..' traversal"],
+    ["apps\\web", "backslash traversal"],
+    ["apps//web", "an empty segment"],
+  ])("rejects %s (%s) before making a request", async (path) => {
+    const fetcher = vi.fn<typeof fetch>()
+    const client = new GitHubClient({ fetcher })
+
+    await expect(
+      client.getRepositoryDirectoryEntries(metadata, path),
+    ).rejects.toMatchObject({ code: "invalid-response" })
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it("rejects a malformed directory-listing response", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ type: "file", name: "apps" }))
+    const client = new GitHubClient({ fetcher })
+
+    await expect(
+      client.getRepositoryDirectoryEntries(metadata, "apps"),
+    ).rejects.toMatchObject({ code: "invalid-response" })
+  })
+
   it("decodes a commit-pinned UTF-8 text file", async () => {
     const content = '{"name":"café"}'
     const encoded = bytesToBase64(new TextEncoder().encode(content))

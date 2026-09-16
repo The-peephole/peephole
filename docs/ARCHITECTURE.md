@@ -66,6 +66,8 @@ The side panel shows:
 
 - repository identity,
 - detected evidence and blockers,
+- a read-only repository structure summary (layout and bounded project
+  candidate paths),
 - preview eligibility,
 - build progress,
 - the resulting preview or a clear unsupported/failure state.
@@ -106,6 +108,18 @@ It must be:
 - resilient to missing or malformed files,
 - independent from GitHub DOM selectors,
 - free of repository-code execution.
+
+Repository/application structure detection extends this with a bounded
+`RepositoryStructure` describing the repository's layout
+(`single-project`/`workspace`/`multi-project`/`unknown`) and a bounded list of
+project candidates. Candidate discovery combines declared workspace patterns
+with a small, fixed set of conventional root directory names; it performs at
+most one level of additional directory listing beneath the repository root
+(never a recursive crawl), and every read uses the same resolved commit SHA
+as the rest of analysis. A candidate is labeled `project-candidate`,
+`package-candidate`, or `unknown`, never asserted as an application or
+library without supporting evidence, and detecting a candidate does not
+select or build it -- that remains a later, separate roadmap stage.
 
 See [Repository analysis](REPOSITORY_ANALYSIS.md).
 
@@ -256,12 +270,12 @@ Deployable service boundaries may live in separate repositories later. Their con
 
 ## 13. Planned Architecture Expansion
 
-GitHub theme synchronization and Branch Preview are implemented. The
-remaining ordered expansion is repository/application structure detection,
-Build Adapter generalization, frontend target selection and monorepo support,
-existing deployed-site Live Preview, backend detection, backend execution,
-frontend ↔ backend routing, ephemeral environment/secrets, and temporary
-databases.
+GitHub theme synchronization, Branch Preview, and repository/application
+structure detection are implemented. The remaining ordered expansion is
+Build Adapter generalization, frontend target selection and monorepo
+support, existing deployed-site Live Preview, backend detection, backend
+execution, frontend ↔ backend routing, ephemeral environment/secrets, and
+temporary databases.
 
 Build Adapter generalization must preserve the worker ports and must not add
 fixture-specific production branches. Backend execution requires a separate

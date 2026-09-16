@@ -7,10 +7,12 @@ import type {
   RepositoryMetadata,
   RepositoryMetadataLoader,
 } from "../../types/repository"
+import type { RepositoryStructure } from "../../types/structure"
 import type {
   KnownRepositoryFilesLoader,
   RepositoryFileSnapshot,
 } from "../github/knownFiles"
+import type { RepositoryStructureLoader } from "../github/repositoryStructureLoader"
 import { analyzeRepository } from "./analyzeRepository"
 
 interface KnownFilesSource {
@@ -20,12 +22,21 @@ interface KnownFilesSource {
   ): Promise<RepositoryFileSnapshot>
 }
 
+interface StructureSource {
+  load(
+    repository: RepositoryMetadata,
+    files: RepositoryFileSnapshot,
+    signal?: AbortSignal,
+  ): Promise<RepositoryStructure>
+}
+
 export class RepositoryAnalysisService {
   private readonly cache = new Map<string, RepositoryAnalysis>()
 
   constructor(
     private readonly loadRepositoryMetadata: RepositoryMetadataLoader,
     private readonly knownFiles: KnownFilesSource | KnownRepositoryFilesLoader,
+    private readonly structure: StructureSource | RepositoryStructureLoader,
   ) {}
 
   readonly load: RepositoryAnalysisLoader = async (target, options = {}) => {
@@ -38,7 +49,8 @@ export class RepositoryAnalysisService {
     }
 
     const files = await this.knownFiles.load(metadata, options.signal)
-    const analysis = analyzeRepository(metadata, files)
+    const structure = await this.structure.load(metadata, files, options.signal)
+    const analysis = analyzeRepository(metadata, files, structure)
     this.cache.set(cacheKey, analysis)
 
     return analysis

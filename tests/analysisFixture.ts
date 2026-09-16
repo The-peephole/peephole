@@ -41,6 +41,24 @@ export const supportedAnalysis: RepositoryAnalysis = {
     ambiguous: false,
     evidence: [],
   },
+  structure: {
+    layout: "single-project",
+    projects: [
+      {
+        path: ".",
+        isRoot: true,
+        role: "project-candidate",
+        hasPackageJson: true,
+        packageName: null,
+        evidence: [],
+        warnings: [],
+      },
+    ],
+    workspaceEvidence: [],
+    warnings: [],
+    complete: true,
+    truncated: false,
+  },
   preview: {
     contractVersion: "static-v1",
     mode: "native-static-build",

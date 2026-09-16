@@ -126,6 +126,67 @@ branches:
   switching, confirming the UI always settles on the last-selected branch's
   result.
 
+### Repository / Application Structure Detection
+
+Deterministic tests split detection logic from GitHub access, per
+[Repository analysis](REPOSITORY_ANALYSIS.md#12-repository-structure-detection):
+
+- pure workspace-pattern parsing/classification and layout/role assembly,
+  with no GitHub client involved (`tests/repositoryStructureDetector.test.ts`):
+  root-only single-project and package-free-static-root layouts;
+  `package.json` `workspaces` array and object forms; a bounded
+  `pnpm-workspace.yaml` `packages:` list; malformed/unsupported declarations
+  producing a warning instead of a guess; `apps/*`-style wildcard versus
+  literal-path classification; `..`, absolute, negated, `**`, and
+  deeper-than-two-segment patterns rejected as unsupported;
+  `project-candidate`/`package-candidate`/`unknown` role classification
+  (including `packages/*` staying `package-candidate` even with a frontend
+  dependency); malformed nested `package.json` kept as a warning-carrying
+  candidate; a failed candidate read marking the result `complete: false`;
+  and the bounded project-candidate/truncation limits;
+- the bounded GitHub loader against a fake client
+  (`tests/repositoryStructureLoader.test.ts`): resolving `apps/*` and
+  `pnpm-workspace.yaml` patterns by listing exactly the wildcard parent
+  directory (never a discovered subdirectory); conventional
+  `frontend`/`web`/`backend` directory candidates with no workspace manager
+  present; candidate dedup between a workspace declaration and a conventional
+  directory name; excluding symlink/submodule listing entries; the directory
+  listing count, per-listing entry count, and candidate-probe count bounds;
+  and an abort propagating instead of being swallowed as a warning;
+- `GitHubClient.getRepositoryDirectoryEntries`
+  (`tests/githubClient.test.ts`): resolving a nested directory at the
+  resolved commit SHA, and rejecting an absolute path, `..` traversal,
+  backslash traversal, a trailing slash, an empty segment, and a malformed
+  (non-array) response before or without making a request
+  (`tests/repositoryPath.test.ts` covers the underlying path validator
+  directly);
+- Side Panel rendering of the detected layout, project paths, and a
+  truncated/incomplete notice (`tests/RepositoryAnalysisView.test.tsx`);
+- `analyzeRepository` keeping the existing `AMBIGUOUS_WORKSPACE` blocker and
+  root-only `native-static-build` eligibility unchanged while adding the new
+  `structure` field, and using a structure-informed blocker message only once
+  more than one project candidate is actually found
+  (`tests/analyzeRepository.test.ts`).
+
+Spot-checked against real GitHub data (not part of the portable suite): the
+official `peephole-fixture-vite-react` golden path keeps its exact prior
+`single-project` / `native-static-build` / zero-blocker result, and
+`peephole-fixture-fullstack` resolves to `multi-project` with `frontend`
+(`project-candidate`) and `backend` (`unknown`) candidates while remaining
+`unsupported` for production execution.
+
+Manual unpacked-extension verification:
+
+1. `The-peephole/peephole-fixture-vite-react`: Structure shows layout
+   "Single project" and one project path, `.`; branch selection and preview
+   build continue to work exactly as before.
+2. `The-peephole/peephole-fixture-fullstack`: Structure shows `frontend` and
+   `backend` project paths; nothing in the UI implies full-stack preview
+   support, and Build preview does not offer or execute either nested path.
+3. A monorepo/workspace fixture (or a deterministic test case): Structure
+   shows a workspace marker, candidate project roots, and a truncated or
+   incomplete indicator when applicable.
+
 ### Repository analysis
 
 Use bounded file-map fixtures for:
@@ -137,7 +198,8 @@ Use bounded file-map fixtures for:
 - malformed `package.json` and incomplete known-file reads;
 - environment template parsing and secret-like names;
 - normalized homepage versus provider-configuration evidence;
-- workspace/monorepo ambiguity;
+- workspace/monorepo ambiguity (the `AMBIGUOUS_WORKSPACE` blocker itself;
+  bounded structure candidate discovery is covered separately below);
 - current runner gating: static/none and React-Vite/npm accepted, recognized
   but unavailable targets blocked.
 
@@ -233,7 +295,7 @@ Add coverage in the same order as product development:
 
 1. GitHub light/dark/dimmed theme synchronization and navigation changes (implemented)
 2. branch selection, immutable resolution, stale branch movement, and cache keys (implemented)
-3. repository/application structure fixtures
+3. repository/application structure fixtures (implemented)
 4. generalized Build Adapter contract tests
 5. frontend target/monorepo selection and isolation
 6. existing-site reachability, framing, navigation, and origin policy

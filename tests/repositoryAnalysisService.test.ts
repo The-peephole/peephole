@@ -4,6 +4,7 @@ import { RepositoryAnalysisService } from "../core/analyzer/repositoryAnalysisSe
 import type { RepositoryFileSnapshot } from "../core/github/knownFiles"
 import { DEFAULT_REPOSITORY_REF } from "../core/github/repositoryRef"
 import type { RepositoryMetadata } from "../types/repository"
+import type { RepositoryStructure } from "../types/structure"
 
 const metadata: RepositoryMetadata = {
   repositoryId: 1,
@@ -21,6 +22,25 @@ const files: RepositoryFileSnapshot = {
   complete: true,
 }
 
+const structure: RepositoryStructure = {
+  layout: "single-project",
+  projects: [
+    {
+      path: ".",
+      isRoot: true,
+      role: "project-candidate",
+      hasPackageJson: false,
+      packageName: null,
+      evidence: [],
+      warnings: [],
+    },
+  ],
+  workspaceEvidence: [],
+  warnings: [],
+  complete: true,
+  truncated: false,
+}
+
 const repository = { owner: "acme", repo: "web" }
 const target = { repository, ref: DEFAULT_REPOSITORY_REF }
 const branchTarget = {
@@ -32,9 +52,11 @@ describe("RepositoryAnalysisService", () => {
   it("reuses analysis for the same repository commit", async () => {
     const loadMetadata = vi.fn().mockResolvedValue(metadata)
     const loadFiles = vi.fn().mockResolvedValue(files)
-    const service = new RepositoryAnalysisService(loadMetadata, {
-      load: loadFiles,
-    })
+    const service = new RepositoryAnalysisService(
+      loadMetadata,
+      { load: loadFiles },
+      { load: vi.fn().mockResolvedValue(structure) },
+    )
 
     const first = await service.load(target)
     const second = await service.load(target)
@@ -54,9 +76,11 @@ describe("RepositoryAnalysisService", () => {
       .mockResolvedValueOnce(metadata)
       .mockResolvedValueOnce(nextMetadata)
     const loadFiles = vi.fn().mockResolvedValue(files)
-    const service = new RepositoryAnalysisService(loadMetadata, {
-      load: loadFiles,
-    })
+    const service = new RepositoryAnalysisService(
+      loadMetadata,
+      { load: loadFiles },
+      { load: vi.fn().mockResolvedValue(structure) },
+    )
 
     const first = await service.load(target)
     const second = await service.load(target)
@@ -71,9 +95,11 @@ describe("RepositoryAnalysisService", () => {
       .fn()
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValueOnce(files)
-    const service = new RepositoryAnalysisService(loadMetadata, {
-      load: loadFiles,
-    })
+    const service = new RepositoryAnalysisService(
+      loadMetadata,
+      { load: loadFiles },
+      { load: vi.fn().mockResolvedValue(structure) },
+    )
 
     await expect(service.load(target)).rejects.toThrow("offline")
     await expect(service.load(target)).resolves.toMatchObject({
@@ -85,9 +111,11 @@ describe("RepositoryAnalysisService", () => {
   it("shares the commit-pinned analysis cache across a branch and the default ref at the same SHA", async () => {
     const loadMetadata = vi.fn().mockResolvedValue(metadata)
     const loadFiles = vi.fn().mockResolvedValue(files)
-    const service = new RepositoryAnalysisService(loadMetadata, {
-      load: loadFiles,
-    })
+    const service = new RepositoryAnalysisService(
+      loadMetadata,
+      { load: loadFiles },
+      { load: vi.fn().mockResolvedValue(structure) },
+    )
 
     const fromDefault = await service.load(target)
     const fromBranch = await service.load(branchTarget)
@@ -99,9 +127,11 @@ describe("RepositoryAnalysisService", () => {
   it("passes the selected branch ref, not a bare string, to metadata resolution", async () => {
     const loadMetadata = vi.fn().mockResolvedValue(metadata)
     const loadFiles = vi.fn().mockResolvedValue(files)
-    const service = new RepositoryAnalysisService(loadMetadata, {
-      load: loadFiles,
-    })
+    const service = new RepositoryAnalysisService(
+      loadMetadata,
+      { load: loadFiles },
+      { load: vi.fn().mockResolvedValue(structure) },
+    )
 
     await service.load(branchTarget)
 
@@ -111,12 +141,46 @@ describe("RepositoryAnalysisService", () => {
   it("reads known files using the resolved commit SHA regardless of the selected ref", async () => {
     const loadMetadata = vi.fn().mockResolvedValue(metadata)
     const loadFiles = vi.fn().mockResolvedValue(files)
-    const service = new RepositoryAnalysisService(loadMetadata, {
-      load: loadFiles,
-    })
+    const service = new RepositoryAnalysisService(
+      loadMetadata,
+      { load: loadFiles },
+      { load: vi.fn().mockResolvedValue(structure) },
+    )
 
     await service.load(branchTarget)
 
     expect(loadFiles).toHaveBeenCalledWith(metadata, undefined)
+  })
+
+  it("resolves repository structure from the same resolved metadata and file snapshot", async () => {
+    const loadMetadata = vi.fn().mockResolvedValue(metadata)
+    const loadFiles = vi.fn().mockResolvedValue(files)
+    const loadStructure = vi.fn().mockResolvedValue(structure)
+    const service = new RepositoryAnalysisService(
+      loadMetadata,
+      { load: loadFiles },
+      { load: loadStructure },
+    )
+
+    const analysis = await service.load(target)
+
+    expect(loadStructure).toHaveBeenCalledWith(metadata, files, undefined)
+    expect(analysis.structure).toBe(structure)
+  })
+
+  it("reuses the cached analysis without recomputing structure for the same commit", async () => {
+    const loadMetadata = vi.fn().mockResolvedValue(metadata)
+    const loadFiles = vi.fn().mockResolvedValue(files)
+    const loadStructure = vi.fn().mockResolvedValue(structure)
+    const service = new RepositoryAnalysisService(
+      loadMetadata,
+      { load: loadFiles },
+      { load: loadStructure },
+    )
+
+    await service.load(target)
+    await service.load(target)
+
+    expect(loadStructure).toHaveBeenCalledTimes(1)
   })
 })

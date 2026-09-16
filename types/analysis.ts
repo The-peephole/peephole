@@ -1,6 +1,7 @@
 import type { RepositoryMetadata, RepositoryRevisionTarget } from "./repository"
+import type { RepositoryStructure } from "./structure"
 
-export const ANALYZER_VERSION = "0.1.1"
+export const ANALYZER_VERSION = "0.1.2"
 export const PREVIEW_CONTRACT_VERSION = "static-v1"
 
 export type Framework =
@@ -70,6 +71,7 @@ export interface RepositoryAnalysis {
     ambiguous: boolean
     evidence: string[]
   }
+  structure: RepositoryStructure
   preview: {
     contractVersion: string
     mode: PreviewMode

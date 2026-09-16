@@ -49,6 +49,7 @@ const TEXT_FILE_LIMITS = new Map<string, number>([
   ["vite.config.mjs", 128 * 1024],
   ["vite.config.ts", 128 * 1024],
   ["vite.config.mts", 128 * 1024],
+  ["pnpm-workspace.yaml", 64 * 1024],
 ])
 
 export interface RepositoryFileSnapshot {
@@ -56,6 +57,13 @@ export interface RepositoryFileSnapshot {
   textFiles: Record<string, string>
   warnings: string[]
   complete: boolean
+  /**
+   * Directory names present at the repository root, from the same bounded
+   * listing as `presentPaths`. Optional so existing hand-built fixtures
+   * (which predate structure detection) keep typechecking; repository
+   * structure detection treats an absent value as "no directories known".
+   */
+  rootDirectories?: string[]
 }
 
 export class KnownRepositoryFilesLoader {
@@ -81,6 +89,10 @@ export class KnownRepositoryFilesLoader {
     const knownEntries = rootEntries
       .filter(isKnownRootFile)
       .sort((left, right) => left.path.localeCompare(right.path))
+    const rootDirectories = rootEntries
+      .filter((entry) => entry.type === "dir" && entry.path === entry.name)
+      .map((entry) => entry.name)
+      .sort()
     const textFiles: Record<string, string> = {}
     let totalBytes = 0
 
@@ -123,6 +135,7 @@ export class KnownRepositoryFilesLoader {
       textFiles,
       warnings,
       complete,
+      rootDirectories,
     }
   }
 }

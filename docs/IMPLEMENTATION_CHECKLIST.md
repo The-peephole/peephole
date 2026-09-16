@@ -9,7 +9,7 @@ later full-stack roadmap.
 
 1. [x] GitHub theme synchronization
 2. [x] Branch Preview
-3. [ ] Repository / application structure detection
+3. [x] Repository / application structure detection
 4. [ ] Build Adapter generalization
 5. [ ] frontend target selection / frontend monorepo support
 6. [ ] existing deployed-site Live Preview
@@ -122,6 +122,68 @@ evidence that any of stages 7-11 are implemented.
 - [x] Keep the Preview API/worker contract, PostgreSQL schema, and gVisor
       pipeline unchanged: they still receive only the resolved commit SHA,
       never a branch name
+
+## Repository / Application Structure Detection
+
+- [x] Define a bounded `RepositoryStructure` contract (`types/structure.ts`):
+      a `layout` of `single-project`/`workspace`/`multi-project`/`unknown`,
+      a bounded list of `RepositoryProjectCandidate` entries (path,
+      root/nested, a conservative `project-candidate`/`package-candidate`/
+      `unknown` role, package.json presence, package name, evidence,
+      warnings), plus `complete`/`truncated` state
+- [x] Split detection into a pure module
+      (`core/analyzer/repositoryStructureDetector.ts`: workspace-pattern
+      parsing/classification and the final layout/role assembly, no I/O) and
+      a bounded loader (`core/github/repositoryStructureLoader.ts`: the
+      actual GitHub reads), so detection logic and GitHub access are tested
+      independently
+- [x] Parse `package.json` `workspaces` (array and `{ packages: [...] }`
+      object forms) and a bounded `pnpm-workspace.yaml` `packages:` list
+      subset (not a YAML parser); malformed or unsupported declarations
+      produce a warning instead of a crash or a guess
+- [x] Classify each workspace glob into a supported 1-2 segment literal path,
+      a supported single-level `dir/*` wildcard, or unsupported (negation,
+      `**`, mid-pattern wildcards, absolute paths, `..`, deeper patterns) --
+      unsupported patterns are warned about, never guessed
+- [x] Combine declared workspace patterns with a small, fixed set of
+      conventional root directory names (`apps`, `packages`, `frontend`,
+      `backend`, `client`, `web`) read from the same bounded root listing
+      `KnownRepositoryFilesLoader` already performs (`rootDirectories`); a
+      directory name alone is never treated as proof of an application
+- [x] Add `GitHubClient.getRepositoryDirectoryEntries`, a fixed, validated,
+      bounded directory-listing operation (`core/github/repositoryPath.ts`
+      rejects absolute paths, `..` traversal, backslash traversal, and
+      malformed segments before any request is made); `getRepositoryRootEntries`
+      now delegates to it. No new Chrome permission or content-script fetch
+      primitive was added
+- [x] Bound every read: at most 8 wildcard directory listings, 200 entries
+      considered per listing, 20 candidate package.json probes, and 512 KB of
+      nested package.json bytes total; hitting a bound sets `truncated: true`
+      instead of hiding it, and only `type: "dir"` listing entries are
+      expanded (symlinks/submodules are never recursively followed)
+- [x] Use the same already-resolved `repository.commitSha` as the rest of
+      analysis for every structure read -- never a mutable branch name --
+      inheriting Branch Preview's existing abort/cache-key contract, so a
+      rapid branch switch or repository SPA navigation cannot surface a
+      stale structure result
+- [x] Treat a per-candidate GitHub failure or a malformed nested
+      package.json as a warning-carrying candidate or a `complete: false`
+      result instead of failing the whole analysis
+- [x] Keep the existing commit-pinned metadata/analysis cache keys and the
+      `workspace.monorepo`/`workspace.ambiguous`/`AMBIGUOUS_WORKSPACE`
+      blocker completely unchanged; only reword the blocker message when
+      structure detection actually found more than one project candidate
+- [x] Bump `ANALYZER_VERSION` to `0.1.2` (new `structure` field on
+      `RepositoryAnalysis`) without changing `PREVIEW_CONTRACT_VERSION`
+- [x] Add a read-only "Structure" section to
+      `components/RepositoryAnalysisView.tsx` (layout and bounded project
+      paths, truncated/incomplete notices) with no target selector, app
+      picker, or per-app preview control
+- [x] Verify against real GitHub data that `peephole-fixture-vite-react`
+      keeps its exact prior `single-project`/`native-static-build` result and
+      that `peephole-fixture-fullstack` resolves to `multi-project` with
+      `frontend`/`backend` candidates while remaining `unsupported` for
+      production execution
 
 ## Analyzer
 
