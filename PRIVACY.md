@@ -1,6 +1,6 @@
 # Peephole Privacy Policy
 
-Effective date: September 13, 2026
+Effective date: September 16, 2026
 
 Peephole is a Chrome extension that analyzes public GitHub repositories and,
 when requested, builds supported static frontends in an isolated Peephole
@@ -99,7 +99,7 @@ The implementation provides the following operational expiration boundaries:
 - signed OAuth state normally expires after 10 minutes;
 - Peephole access sessions normally expire after 30 minutes;
 - active preview jobs initially have a 15-minute execution expiry; and
-- ready preview artifacts and their signed access are normally valid for up to
+- ready preview artifacts and their artifact authorization are normally valid for up to
   60 minutes. Expired artifact files and authorization metadata are processed
   by periodic maintenance; unsigned orphan artifact directories use a two-hour
   cleanup grace period.
@@ -125,7 +125,7 @@ preview features. Data may be processed by:
   to operate the Peephole API, database, worker, and artifact delivery.
 
 Repository-controlled install scripts run without extension privileges in an
-isolated sandbox. They can access the public repository files and approved
+isolated sandbox. They can access the public repository files and bounded
 public-Internet egress during installation, so a repository's own script may
 contact an external public service. Peephole blocks sandbox access to host,
 private, link-local, metadata, and other sandbox networks, but it does not

@@ -1,30 +1,37 @@
-# Peephole v0.1.0 release checklist
+# Peephole v0.1.0 release record and remaining checks
 
-Status values: **PASS** is directly verified; **BLOCKED** prevents submission;
-**MANUAL** requires a human/Dashboard action; **PENDING** has not yet run.
+Peephole v0.1.0 is published on GitHub and the Chrome Web Store. This document
+preserves the release-preparation evidence while tracking verification that is
+still outstanding. **PASS** means the specifically named fact was directly
+verified; **SNAPSHOT** is dated historical evidence that is not automatically
+valid for the current revision; **MANUAL** requires an operator or Developer
+Dashboard check; **PENDING** has no retained completion evidence.
 
 ## Build record
 
+The following package evidence is the September 13, 2026 release-preparation
+snapshot unless a later recheck is stated explicitly.
+
 | Item | Status | Evidence |
 | --- | --- | --- |
-| Extension source | PASS | `8f1fb5742291805c947d0427fd64921bf5e419e9` (release-preparation changes are documentation only) |
-| Package version | PASS | `package.json` is `0.1.0` |
-| Manifest version | PASS | `wxt.config.ts` is `0.1.0`; generated manifest uses Manifest V3 |
-| Public build configuration | PASS | `WXT_PREVIEW_API_BASE_URL` and `WXT_PREVIEW_ARTIFACT_BASE_DOMAIN` only; no server secret is a `WXT_` value |
-| Production API | PASS | `https://api.3.34.33.24.sslip.io/`; public health/readiness and tracked production configuration verified |
-| Production artifact domain | PASS | `3.34.33.24.nip.io`; tracked production configuration, production tests, DNS, and prior production artifact smoke verified |
-| Node/npm | PASS | Node `v24.12.0`; npm `11.6.2` |
-| Dependency install | PASS | `npm ci`; 307 packages, 0 reported vulnerabilities |
-| Release ZIP | PASS | `.output/peephole-0.1.0-chrome.zip`; 196,720 bytes; SHA-256 `56979f685a97508605533285467b07439cd23b8a73bbea279508ffd6bbf42d7a` |
-| Generated manifest audit | PASS | MV3, name/version/icons/Chrome 116, expected permissions/hosts/content scope/CSP; no `<all_urls>` or unexpected permission |
-| Package secret scan | PASS | No credential, private key, database URL, server secret, `.env` file, `ghp_`, or `replace-me` value found. See scan notes below. |
+| Packaged extension source | SNAPSHOT | The release ZIP was recorded from `8f1fb5742291805c947d0427fd64921bf5e419e9`. The `v0.1.0` tag points to `f146cb772db2a5168608bdba7463198ea7e8a6a0`; the intervening tracked changes did not change packaged extension runtime source. |
+| Package version | PASS | `package.json` is `0.1.0`. |
+| Manifest version | PASS | `wxt.config.ts` is `0.1.0`; the generated release manifest uses Manifest V3. |
+| Public build configuration | PASS | `WXT_PREVIEW_API_BASE_URL` and `WXT_PREVIEW_ARTIFACT_BASE_DOMAIN` only; no server secret is a `WXT_` value. |
+| Production API | PASS | `https://api.3.34.33.24.sslip.io/`; public health and readiness returned success on September 16, 2026. This is endpoint availability, not a production preview smoke. |
+| Production artifact domain | SNAPSHOT | `3.34.33.24.nip.io`; tracked configuration, DNS, and an earlier production artifact smoke were recorded during release preparation. They were not rerun by the documentation audit. |
+| Node/npm | SNAPSHOT | Node `v24.12.0`; npm `11.6.2`. |
+| Dependency install | SNAPSHOT | `npm ci`; 307 packages and 0 reported vulnerabilities at release preparation. This result was not reused as a current dependency audit. |
+| Release ZIP | PASS | `.output/peephole-0.1.0-chrome.zip`; 196,720 bytes; SHA-256 `56979f685a97508605533285467b07439cd23b8a73bbea279508ffd6bbf42d7a`. Size and digest were rechecked locally and against the GitHub Release asset on September 16, 2026. |
+| Generated manifest audit | PASS | Rechecked from the ZIP: MV3, version 0.1.0, minimum Chrome 116, expected permissions/hosts/content-script scope/CSP; no `<all_urls>` or unexpected permission. |
+| Package secret scan | SNAPSHOT | The release-preparation scan found no credential, private key, database URL, server secret, `.env` file, `ghp_`, or `replace-me` value. See the preserved scan notes below. |
 
 Generated output and ZIP are ignored by Git and must not be committed.
 
 ### Package scan notes
 
-The complete extracted ZIP was scanned as binary-safe text. Expected harmless
-matches are:
+The complete extracted ZIP was scanned as binary-safe text during release
+preparation. Expected harmless matches were:
 
 - `127.0.0.1` in `manifest.json` as the local-development artifact-only
   `frame-src`, not a host permission or production API endpoint;
@@ -39,57 +46,44 @@ contains no `.env` file. The loopback artifact CSP compatibility should be
 explained to reviewers if flagged; it cannot authorize an API request and does
 not expose extension privileges to a local page.
 
-## Quality gates
+## Quality evidence
 
 | Item | Status | Evidence/action |
 | --- | --- | --- |
-| Main CI | PASS | Main `8f1fb5742291805c947d0427fd64921bf5e419e9`: CI and scheduled real golden-path workflow succeeded |
-| `npm run format:check` | PASS | Prettier reports all matched files use the project code style |
-| `npm run lint` | PASS | `eslint .` reports no errors or warnings |
-| `npm run typecheck` | PASS | `wxt prepare && tsc --noEmit` succeeded |
-| `npm test` | PASS | Vitest: 54 files passed / 6 skipped; 615 tests passed / 31 skipped; 0 failed. Real gVisor/SIGKILL tests remain out of scope for this portable suite |
-| `npm run build` | PASS | Production-configured Chrome MV3 build succeeded |
-| `git diff --check` | PASS | No whitespace errors in tracked or staged diff |
-| Permission audit | PASS | Every generated permission and host scope maps to current source usage; see `docs/CHROME_WEB_STORE.md` |
-| Privacy/data audit | PASS | `PRIVACY.md` and the source-rationale table in `docs/CHROME_WEB_STORE.md` |
+| Current `main` portable CI | PASS | CI succeeded at `dba47191bdd3600b3f451945653efab2363028c2`. |
+| Current first-party golden path | PASS | The manually dispatched `Real golden-path build tests` workflow succeeded at the same revision using `The-peephole/peephole-fixture-vite-react@4a2c3b78e15d90865ed565c3d38c4045b5a5235f`. This is live-network CI, not production smoke or production-host gVisor verification. |
+| Portable test totals | SNAPSHOT | Release preparation recorded 54 files passed / 6 skipped and 615 tests passed / 31 skipped. Exact counts are historical evidence, not a current acceptance requirement; use the current CI result for the revision under review. |
+| Real gVisor/security suites | SNAPSHOT | Prior environment-specific results are retained in the runtime/security documents. Portable CI and the live-network golden workflow do not re-establish them. |
+| Permission and privacy audit | PASS | Current source rationale is documented in `docs/CHROME_WEB_STORE.md` and `PRIVACY.md`. |
 
 ## Store and release gates
 
 | Item | Status | Evidence/action |
 | --- | --- | --- |
-| Privacy policy content | PASS | User-facing policy exists at root `PRIVACY.md` |
-| Public privacy-policy URL | PASS | `https://github.com/The-peephole/peephole/blob/main/PRIVACY.md` verified via unauthenticated HTTPS GET, HTTP 200, actual policy content rendered |
-| English listing copy | PASS | Copy-ready canonical text in `docs/CHROME_WEB_STORE.md` |
-| Privacy-tab disclosure | MANUAL | Apply the documented answers and verify current Dashboard checkbox names |
-| Remote-code answer | MANUAL | Recommended **No**; disclose isolated cross-origin preview iframe architecture and verify against the live Dashboard |
-| 128×128 store icon | PASS | Valid RGBA PNG packaged; composited onto white/dark-gray/black in this task and stays readable on all three |
-| Required screenshot | PASS | `store-assets/peephole-screenshot-01-1280x800.png`, a real user-captured 1280×800 PNG (no crop/resize applied); see `docs/CHROME_WEB_STORE.md` for the full verification |
-| Required 440×280 promo tile | PASS | `store-assets/peephole-promo-440x280.png`, generated from the audited icon in this task; see `docs/CHROME_WEB_STORE.md` for dimensions/hash |
-| CWS developer account and 2FA | MANUAL | Verify in the owner account; not inspected by this task |
-| Draft upload | PENDING | Upload ZIP only after reviewing this PR; do not submit for review yet |
-| Stable Web Store extension ID | BLOCKED | Unknown until draft item/upload exists |
-| Production OAuth allowlist | BLOCKED | Add the exact draft ID to server-side `PEEPHOLE_ALLOWED_EXTENSION_IDS` through a separate controlled production change |
-| Trusted-tester Web Store build OAuth test | PENDING | Install the draft build and test **Connect GitHub** after allowlisting |
-| Production smoke | PENDING | Run API and host modes after the store-build OAuth test |
-| GitHub tag `v0.1.0` | PENDING | Do not create in this preparation task |
-| GitHub Release | PENDING | Do not create in this preparation task |
-| Chrome review submission | BLOCKED | Requires privacy URL, compliant assets, stable ID, OAuth verification, and smoke success |
-| Post-release monitoring | MANUAL | Define owner/window and monitor health, readiness, errors, jobs, artifacts, and user reports |
+| Privacy policy content and public URL | PASS | Root `PRIVACY.md` is public at `https://github.com/The-peephole/peephole/blob/main/PRIVACY.md`. |
+| Listing copy and repository assets | PASS | Current copy and rechecked asset dimensions/hashes are in `docs/CHROME_WEB_STORE.md`. |
+| Dashboard privacy and remote-code answers | MANUAL | The public listing exposes the disclosure categories, but current checkbox labels, certifications, distribution settings, and policy prompts require owner Dashboard access. |
+| CWS developer account and 2FA | MANUAL | Verify in the owner account; this audit did not access the Developer Dashboard. |
+| Stable Web Store extension ID | PASS | Public listing ID: `fieofkhijgngfoflgpkbghbkaidhdgel`. |
+| Public Chrome Web Store listing | PASS | Version 0.1.0 is publicly installable and reports an update date of September 14, 2026. |
+| Production OAuth start allowlist | PASS | On September 16, 2026, the public OAuth start endpoint accepted the exact published-ID callback and returned a GitHub redirect with signed state and S256 PKCE. This status is limited to the start endpoint. |
+| Web Store installation OAuth/session test | PENDING | No retained evidence shows a user completed **Connect GitHub**, session issuance, and an authenticated preview from the published installation. |
+| Production smoke for this release | PENDING | No retained audit evidence shows both documented API and production-host smoke modes were run for the published Web Store build. CI and golden-path workflow success do not satisfy this gate. |
+| GitHub tag `v0.1.0` | PASS | Tag resolves to `f146cb772db2a5168608bdba7463198ea7e8a6a0`. |
+| GitHub Release | PASS | The public `v0.1.0` release contains `peephole-0.1.0-chrome.zip` with the verified size and digest above. |
+| Post-release monitoring record | MANUAL | No retained owner/window record was found; monitor health, readiness, errors, jobs, artifacts, and user reports. |
 
-## Final controlled sequence
+## Remaining controlled checks
 
-1. Merge the reviewed release-preparation PRs through repository rules (the
-   privacy URL, promo tile, and screenshot are all done).
-2. Rebuild and re-check the ZIP if any extension source or packaged asset
-   changes; never reuse a hash after such a change.
-3. Verify the Developer Dashboard account, 2FA, listing, permissions, privacy
-   answers, distribution, and current policy prompts.
-4. Upload as a draft and record the stable extension ID.
-5. Follow the production OAuth allowlist sequence in
-   `docs/CHROME_WEB_STORE.md`.
-6. Pass trusted-tester GitHub OAuth and production smoke.
-7. Create the approved tag/Release, then submit for review.
+1. Verify the current Developer Dashboard settings in the owner account.
+2. Install the public Web Store build and complete GitHub OAuth, Peephole
+   session issuance, and an authenticated preview.
+3. Run and retain the separately documented API and production-host smoke
+   results. Do not substitute portable CI or the golden-path workflow.
+4. Record the post-release monitoring owner and window.
+5. If extension source or a packaged asset changes, rebuild and re-audit the
+   ZIP; never reuse the recorded hash for a changed package.
 
-Release readiness: **BLOCKED** until the stable Web Store ID, production
-OAuth allowlist, store-build OAuth test, and production smoke gates are
-complete.
+Release state: **published**, with Web Store end-to-end OAuth, release-specific
+production smoke, Dashboard-only settings, and monitoring evidence still
+requiring operator verification.

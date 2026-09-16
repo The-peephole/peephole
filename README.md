@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <a href="https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel">Install Peephole 0.1.0 from the Chrome Web Store</a>
+</p>
+
+<p align="center">
   Peephole analyzes supported public repositories, builds eligible static frontends in an isolated production sandbox, and renders the HTTPS artifact in a Chrome Side Panel.
 </p>
 
@@ -203,8 +207,8 @@ and the production-like malicious-script run.
 - [Repository analysis specification](docs/REPOSITORY_ANALYSIS.md)
 - [GitHub App authentication](docs/GITHUB_APP_AUTH.md)
 - [Privacy policy](PRIVACY.md)
-- [Chrome Web Store submission](docs/CHROME_WEB_STORE.md)
-- [v0.1.0 release checklist](docs/RELEASE_V0.1.0.md)
+- [Chrome Web Store listing and release operations](docs/CHROME_WEB_STORE.md)
+- [v0.1.0 release record and remaining checks](docs/RELEASE_V0.1.0.md)
 - [Requester IP trust](docs/REQUESTER_IP_TRUST.md)
 - [Sandbox disk security](docs/SANDBOX_DISK_SECURITY.md)
 - [Sandbox network security](docs/SANDBOX_NETWORK_SECURITY.md)

@@ -1,8 +1,12 @@
-# Chrome Web Store submission copy
+# Chrome Web Store listing and release operations
 
 This document is the operator source of truth for the Peephole v0.1.0 Chrome
-Web Store listing. Copy values only after checking them against the final ZIP
-and the current Developer Dashboard. Official references:
+Web Store listing. The listing is public at
+[`fieofkhijgngfoflgpkbghbkaidhdgel`](https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel),
+version 0.1.0, updated September 14, 2026. Public listing fields can be checked
+without Dashboard access; permissions, privacy answers, distribution, account,
+and policy prompts still require verification in the current Developer
+Dashboard before a later update. Official references:
 
 - [Privacy practices](https://developer.chrome.com/docs/webstore/cws-dashboard-privacy)
 - [User Data Policy](https://developer.chrome.com/docs/webstore/user_data)
@@ -27,7 +31,8 @@ and the current Developer Dashboard. Official references:
 
 > Developer Tools
 
-Category names can change. **NEEDS DASHBOARD VERIFICATION** before submission.
+Category names can change. **NEEDS DASHBOARD VERIFICATION** before a listing
+update.
 
 **Full English description**
 
@@ -46,8 +51,8 @@ Category names can change. **NEEDS DASHBOARD VERIFICATION** before submission.
 >
 > v0.1 supports public repositories only. The production-verified build paths
 > are static HTML and root-level Vite + React projects using npm. Peephole can
-> recognize additional project shapes, but Vue and Svelte do not yet have the
-> same production golden-path and security verification. A repository may be
+> recognize additional project shapes, but Vue and Svelte do not currently
+> produce an executable runner plan. A repository may be
 > unsupported or fail to build if it requires a backend, private dependency,
 > secret, monorepo selection, unsupported package manager, native service, or
 > other capability outside the static-v1 contract.
@@ -133,7 +138,7 @@ the behavior; do not optimize for fewer disclosures.
 | Website content | Yes | Peephole reads the GitHub repository identity from the page and fetches public metadata, root entries, and selected public file contents. `entrypoints/github.content/githubDom.ts`, `core/github/client.ts`, `core/github/knownFiles.ts`. |
 | Web history / browsing activity | Yes, conservatively | The extension processes the current GitHub repository URL for its visible user-facing feature. It does not collect general browser history. `entrypoints/github.content/index.tsx` and `utils/githubUrl.ts`. If the Dashboard distinguishes current-page website content from history, use its definitions and keep the public explanation explicit. |
 | User activity | Likely no | No clickstream, analytics, ad measurement, or behavioral profile is sent or stored. Preview button actions necessarily create requested jobs, but no separate activity analytics exists. **NEEDS DASHBOARD VERIFICATION** because the label definition may encompass service interactions. |
-| Location | No | No geolocation API or location inference feature exists. A requester IP is used for abuse quotas, not location. `services/preview-api/requesterIp.ts`, `services/preview-api/postgres/quota.ts`. |
+| Location | Yes in the published listing, conservatively | No geolocation API or location-inference feature exists. The service processes a requester IP for abuse quotas, so the published listing discloses location conservatively even though Peephole does not derive or store a location. `services/preview-api/requesterIp.ts`, `services/preview-api/postgres/quota.ts`. |
 | Financial, health, communications, or form data | No | Peephole has no such feature or permission. Public repositories could contain arbitrary public text, but the extension reads only the bounded analysis files and a requested build processes the public commit. |
 
 Certification statements should be accepted only while the implementation and
@@ -223,25 +228,35 @@ The duplicate PNG icons under `image/` have the same dimensions and byte sizes
 as the packaged icons. Store upload should use the audited 128×128 PNG; the ZIP
 already contains `icons/peephole-128.png`.
 
+The manifest permissions and the dimensions, byte sizes, and SHA-256 values of
+the screenshot and promo tile above were rechecked against the local v0.1.0
+release package and repository assets on September 16, 2026. A future UI
+change, including GitHub theme synchronization, requires a fresh screenshot
+review; that roadmap item is not represented as implemented here.
+
 ## OAuth extension-ID release gate
 
 The Peephole server accepts only redirect URIs of the exact form
 `https://<allowed-extension-id>.chromiumapp.org/github`, where the extension ID
-must be listed in server-side `PEEPHOLE_ALLOWED_EXTENSION_IDS`. The Web Store
-item gets its own stable ID, so the draft ID is a hard gate:
+must be listed in server-side `PEEPHOLE_ALLOWED_EXTENSION_IDS`. The published
+v0.1.0 ID is `fieofkhijgngfoflgpkbghbkaidhdgel`.
 
-1. Upload the v0.1.0 ZIP as a Chrome Web Store draft.
-2. Record the exact Web Store extension ID.
-3. Verify it is exactly 32 lowercase letters in Chrome's `a`–`p` alphabet.
-4. Add that ID to production `PEEPHOLE_ALLOWED_EXTENSION_IDS` without exposing
-   the config value.
-5. Preserve existing approved IDs until migration is complete.
-6. Perform a controlled `peephole` service restart; do not restart Caddy unless
-   an unrelated approved change requires it.
-7. Verify `/healthz` and `/readyz`.
-8. Install and test the Web Store trusted-tester build.
-9. Test **Connect GitHub** end to end.
-10. Run the documented production smoke checks.
-11. Submit for public review only after every gate succeeds.
+On September 16, 2026, the public production OAuth start endpoint accepted the
+exact redirect URI for that ID and returned a GitHub authorization redirect
+with signed state and an S256 PKCE challenge. This verifies the current start
+endpoint allowlist only. It is not evidence that a user completed GitHub OAuth,
+that the session exchange succeeded, or that a preview build passed from the
+Web Store installation.
 
-Do not remove an existing extension ID during release preparation.
+For a future extension-ID change:
+
+1. Record and validate the new 32-letter Web Store ID.
+2. Add it to production `PEEPHOLE_ALLOWED_EXTENSION_IDS` through a controlled
+   configuration change without exposing the value.
+3. Preserve existing approved IDs until migration is complete.
+4. Restart only the Peephole service, then verify `/healthz` and `/readyz`.
+5. Test **Connect GitHub** and session issuance end to end from the Web Store
+   build.
+6. Run the separately documented production smoke checks.
+
+Do not remove an existing extension ID until its migration is complete.
