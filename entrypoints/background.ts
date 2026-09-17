@@ -1,10 +1,13 @@
 import { createRepositoryAnalysisMessageHandler } from "../core/analyzer/messages"
 import { RepositoryAnalysisService } from "../core/analyzer/repositoryAnalysisService"
+import { BuildTargetAnalysisService } from "../core/analyzer/buildTargetAnalysisService"
+import { createBuildTargetAnalysisMessageHandler } from "../core/analyzer/targetMessages"
 import { GitHubClient } from "../core/github/client"
 import { createRepositoryBranchesMessageHandler } from "../core/github/branchMessages"
 import { KnownRepositoryFilesLoader } from "../core/github/knownFiles"
 import { RepositoryMetadataCache } from "../core/github/repositoryMetadataCache"
 import { RepositoryStructureLoader } from "../core/github/repositoryStructureLoader"
+import { TargetKnownFilesLoader } from "../core/github/targetKnownFiles"
 import { clearLegacyStoredGitHubToken } from "../core/github/tokenStorage"
 import { createSidePanelMessageHandler } from "../core/sidepanel/messages"
 import { createGitHubThemeMessageHandler } from "../core/sidepanel/themeMessages"
@@ -19,8 +22,14 @@ export default defineBackground(() => {
     new KnownRepositoryFilesLoader(githubClient),
     new RepositoryStructureLoader(githubClient),
   )
+  const targetAnalysisService = new BuildTargetAnalysisService(
+    new TargetKnownFilesLoader(githubClient),
+  )
   const handleMessage = createRepositoryAnalysisMessageHandler(
     analysisService.load,
+  )
+  const handleTargetAnalysisMessage = createBuildTargetAnalysisMessageHandler(
+    targetAnalysisService.load,
   )
   const handleRepositoryBranchesMessage =
     createRepositoryBranchesMessageHandler((repository, options = {}) =>
@@ -39,6 +48,7 @@ export default defineBackground(() => {
       handleGitHubThemeMessage(message, sender) ??
       handleSidePanelMessage(message, sender) ??
       handleRepositoryBranchesMessage(message) ??
+      handleTargetAnalysisMessage(message) ??
       handleMessage(message),
   )
 })

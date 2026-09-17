@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises"
+import { lstat } from "node:fs/promises"
 import path from "node:path"
 
 import { DEFAULT_ARCHIVE_LIMITS } from "../../../core/runner/archivePolicy"
@@ -13,6 +13,7 @@ import type { ExtractionState } from "./extractionState"
 import { assertTimeRemaining, effectiveTimeoutMs } from "./jobDeadline"
 import { asLocalWorkspace } from "./localWorkspace"
 import { resolveNpmExecutable } from "./npmCommand"
+import { resolveWorkspaceSourceRoot } from "./workspacePath"
 
 export interface NpmDependencyInstallerOptions {
   timeoutMs?: number
@@ -61,11 +62,15 @@ export class NpmDependencyInstaller implements DependencyInstaller {
       signal,
     )
 
-    const lockfilePath = path.join(local.rootDir, "package-lock.json")
+    const sourceRoot = await resolveWorkspaceSourceRoot(
+      local.rootDir,
+      plan.sourceRoot,
+    )
+    const lockfilePath = path.join(sourceRoot, "package-lock.json")
 
-    if (!(await exists(lockfilePath))) {
+    if (!(await isRegularFile(lockfilePath))) {
       throw new Error(
-        "package-lock.json is required at the repository root for npm ci.",
+        "package-lock.json is required inside the selected preview target for npm ci.",
       )
     }
 
@@ -79,6 +84,7 @@ export class NpmDependencyInstaller implements DependencyInstaller {
       ["ci", "--no-audit", "--no-fund"],
       {
         signal,
+        workingDirectory: plan.sourceRoot,
         timeoutMs: effectiveTimeoutMs(
           local,
           this.options.timeoutMs ?? DEFAULT_RUNNER_TIMEOUTS.buildTimeoutMs,
@@ -116,10 +122,10 @@ export function minimalNpmEnv(): Record<string, string> {
   return env
 }
 
-async function exists(filePath: string): Promise<boolean> {
+async function isRegularFile(filePath: string): Promise<boolean> {
   try {
-    await access(filePath)
-    return true
+    const stats = await lstat(filePath)
+    return stats.isFile() && !stats.isSymbolicLink()
   } catch {
     return false
   }

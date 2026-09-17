@@ -189,12 +189,42 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
     )
     const config = JSON.parse(await readFile(configPath, "utf8"))
     expect(config.process.args).toEqual(["npm", "ci"])
+    expect(config.process.cwd).toBe("/workspace")
     expect(config.process.user).toEqual({ uid: 65534, gid: 65534 })
     expect(config.root.readonly).toBe(true)
     expect(config.process.env).toContain("HOME=/workspace/.home")
     expect(config.process.env).toContain("TEMP=/tmp")
     expect(config.process.env).not.toContain("HOME=/var/tmp")
 
+    await workspace.destroy()
+  })
+
+  it("sets the OCI cwd to a validated nested source root", async () => {
+    const processRunner = new FakeProcessRunner()
+    const provisioner = new GVisorSandboxProvisioner({
+      baseRootfsImage,
+      bundlesRootDir,
+      processRunner,
+      diskManager: new FakeSandboxDiskManager(bundlesRootDir),
+    })
+    const workspace = await provisioner.allocate("job-nested-cwd")
+    const runner = new RunscCommandRunner({ processRunner })
+
+    await runner.run(workspace, "npm", ["run", "build"], {
+      timeoutMs: 5_000,
+      workingDirectory: "apps/web",
+    })
+    const config = JSON.parse(
+      await readFile(path.join(workspace.bundleDir, "config.json"), "utf8"),
+    )
+    expect(config.process.cwd).toBe("/workspace/apps/web")
+
+    await expect(
+      runner.run(workspace, "npm", ["ci"], {
+        timeoutMs: 5_000,
+        workingDirectory: "../outside",
+      }),
+    ).rejects.toThrow("unsafe")
     await workspace.destroy()
   })
 

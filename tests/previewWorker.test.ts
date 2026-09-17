@@ -143,6 +143,42 @@ describe("PreviewJobWorker", () => {
     expect(builder.calls).toHaveLength(0)
   })
 
+  it("rejects a tampered unsafe source root before sandbox allocation or execution", async () => {
+    const harness = createHarness()
+    const created = await harness.control.create(
+      { repository, contractVersion: "static-v1" },
+      "request-0000000001",
+      requester,
+    )
+    const queued = harness.queue.dequeue()
+    if (!queued) throw new Error("expected a queued job")
+    queued.plan = {
+      ...queued.plan,
+      contractVersion: "static-v2",
+      sourceRoot: "../outside",
+    }
+    const sandbox = new FakeSandboxProvisioner()
+    const worker = new PreviewJobWorker(
+      harness.control,
+      new FakeSourceArchiveFetcher(),
+      sandbox,
+      new FakeDependencyInstaller(),
+      new FakeBuildExecutor(),
+      new FakeOutputResolver(okOutput),
+      new FakeArtifactPublisher(),
+    )
+
+    await worker.run(queued)
+
+    expect(sandbox.allocatedIds).toEqual([])
+    await expect(
+      harness.control.get(created.job.id, requester),
+    ).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "RUNNER_UNAVAILABLE",
+    })
+  })
+
   it("fails as FETCH_FAILED and cleans up when the archive exceeds limits", async () => {
     const harness = createHarness()
     const created = await harness.control.create(

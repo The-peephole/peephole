@@ -79,8 +79,9 @@ branch name.
   and workspace detection
 - preview eligibility with blockers
 - asynchronous, persisted preview jobs
-- isolated static builds for package-free static repositories and root-level
-  Vite + React applications using npm and a root `package-lock.json`
+- isolated static builds for package-free root repositories and root or
+  explicitly selected nested Vite + React applications using npm and a
+  target-local `package-lock.json`
 - progress, cancellation, expiry, and clear failure states
 - cached artifacts for identical immutable build inputs
 - native Peephole Side Panel preview
@@ -90,7 +91,8 @@ branch name.
   analysis, build plan, and preview job creation
 - read-only repository/application structure detection: layout
   (single-project, workspace, multi-project, or unknown) and a bounded list
-  of project candidate paths, without selecting or building any of them
+  of project candidate paths; detected frontend candidates can be explicitly
+  selected for a separate exact-SHA build analysis
 
 ### Recognized but not executable
 
@@ -102,7 +104,7 @@ branch name.
 
 ### Not implemented
 
-- repository application selection or frontend monorepo execution
+- shared-root npm/pnpm/yarn workspace orchestration
 - embedded existing deployed-site Live Preview
 - backend detection beyond the current bounded hints
 - backend or persistent server execution
@@ -117,7 +119,7 @@ A native preview is eligible only when all applicable conditions are satisfied:
 
 - the repository is public,
 - the source is pinned to a commit SHA,
-- the application is package-free static HTML or root-level Vite + React,
+- the application is package-free root static HTML or root/selected nested Vite + React,
 - package applications use npm and a root `package-lock.json` for `npm ci`,
 - the build command and static output directory are known,
 - required secret environment values are absent,
@@ -172,7 +174,7 @@ silently guessing how a repository should run.
 2. Branch Preview (implemented)
 3. Repository / application structure detection (implemented)
 4. Build Adapter generalization (implemented)
-5. frontend target selection / frontend monorepo support
+5. frontend target selection / bounded frontend monorepo support (implemented)
 6. existing deployed-site Live Preview
 7. backend detection
 8. backend execution
@@ -183,6 +185,7 @@ silently guessing how a repository should run.
 Stages 7-11 describe future full-stack work. They must not be inferred from the
 prepared full-stack fixture or documented as current capability.
 
-Build Adapter generalization is an internal capability boundary, not a product
-support expansion. The implemented adapters still cover only package-free root
-static HTML and root React + Vite + npm. No nested candidate is selected.
+Build Adapter generalization is an internal capability boundary. The
+implemented adapters cover package-free root static HTML and root or
+independently installable selected nested React + Vite + npm targets.
+Shared-root workspaces remain unsupported.

@@ -1,5 +1,9 @@
-import { PREVIEW_CONTRACT_VERSION } from "../../types/analysis"
+import {
+  LEGACY_PREVIEW_CONTRACT_VERSION,
+  PREVIEW_CONTRACT_VERSION,
+} from "../../types/analysis"
 import type { BuildPlan, PreviewRepositoryRef } from "../../types/preview"
+import { isSafePreviewSourceRoot } from "./sourceRoot"
 
 const COMMIT_SHA_PATTERN = /^[a-f\d]{40}$/i
 const OWNER_PATTERN = /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i
@@ -20,12 +24,20 @@ export function validateBuildPlanShape(value: BuildPlan): BuildPlan {
 
   validateRepositoryRef(value.repository)
 
-  if (value.contractVersion !== PREVIEW_CONTRACT_VERSION) {
+  if (!isSupportedPreviewContractVersion(value.contractVersion)) {
     throw new InvalidBuildPlanError("Unsupported preview contract version.")
   }
 
-  if (value.sourceRoot !== ".") {
-    throw new InvalidBuildPlanError("Only the repository root is supported.")
+  if (
+    !isSafePreviewSourceRoot(value.sourceRoot) ||
+    (value.contractVersion === LEGACY_PREVIEW_CONTRACT_VERSION &&
+      value.sourceRoot !== ".")
+  ) {
+    throw new InvalidBuildPlanError(
+      value.contractVersion === LEGACY_PREVIEW_CONTRACT_VERSION
+        ? "Only the repository root is supported by static-v1."
+        : "The preview source root is invalid for this contract version.",
+    )
   }
 
   if (!["npm", "pnpm", "yarn", "bun", "none"].includes(value.packageManager)) {
@@ -110,7 +122,14 @@ export async function createBuildCacheKey(
   ).join("")
 }
 
-function isSafeRelativeOutputPath(path: string): boolean {
+export function isSupportedPreviewContractVersion(value: string): boolean {
+  return (
+    value === LEGACY_PREVIEW_CONTRACT_VERSION ||
+    value === PREVIEW_CONTRACT_VERSION
+  )
+}
+
+export function isSafeRelativeOutputPath(path: string): boolean {
   if (path === ".") {
     return true
   }

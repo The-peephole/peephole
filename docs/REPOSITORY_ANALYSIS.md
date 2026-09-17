@@ -318,9 +318,11 @@ nested `package.json` is kept as an `unknown`-role candidate carrying its
 parse error as a warning.
 
 Detecting `frontend`/`backend`-shaped candidates never changes preview
-eligibility by itself: the existing `AMBIGUOUS_WORKSPACE` blocker still
-applies when `workspace.ambiguous` is true, and no nested candidate is ever
-passed to the build plan or Preview API.
+eligibility by itself. The repository root remains blocked when workspace
+selection is ambiguous. A user may explicitly select a non-root
+`project-candidate`; that path then receives a separate bounded exact-SHA
+`BuildTargetAnalysis`. Backend/unknown/package candidates are not offered as
+frontend targets, and discovery evidence alone never makes a target runnable.
 
 ## 13. Preview Eligibility
 
@@ -398,10 +400,11 @@ interface RepositoryAnalysis {
 }
 ```
 
-Adding `structure` changed the analysis schema, so `ANALYZER_VERSION` moved
-to `0.1.2`; an analysis cached under the previous version is never reused as
-this shape. `PREVIEW_CONTRACT_VERSION` (`static-v1`) is unchanged because the
-runner/build contract did not change.
+Target selection changes analysis behavior, so `ANALYZER_VERSION` is `0.1.3`;
+target-scoped results have their own version and cache identity of repository
+id + exact commit SHA + source root + target analyzer version.
+`PREVIEW_CONTRACT_VERSION` is `static-v2`. Legacy `static-v1` remains accepted
+only when the target is omitted and therefore implicitly the repository root.
 
 The analyzer output is safe to display and cache. It contains variable names and evidence, never secret values or executed output.
 
@@ -409,9 +412,9 @@ The analyzer is intentionally broader than the current runner. Vue/Svelte and
 non-npm evidence may appear in this output while
 `RUNNER_TARGET_UNAVAILABLE` prevents a preview build.
 
-Build Adapter resolution occurs after analysis and remains root-only. The
-registered `static-html-v1` and `vite-react-npm-v1` adapters match the current
-root evidence, create deterministic plans, and validate their exact execution
-invariants. Zero matches is unsupported; multiple matches are an explicit
-configuration error. `RepositoryStructure.projects` is not consulted to select
-a nested target in this stage.
+Build Adapter resolution occurs after target analysis. `static-html-v1`
+remains root-only. `vite-react-npm-v1` accepts root or safe nested targets only
+when the selected directory is independently installable with its own
+`package.json` and `package-lock.json`. Zero matches is unsupported; multiple
+matches are an explicit configuration error. Shared-root npm workspaces and
+pnpm/yarn/bun orchestration remain unsupported.

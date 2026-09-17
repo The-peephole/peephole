@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { GitHubClient, GitHubContentEntry } from "../core/github/client"
 import { KnownRepositoryFilesLoader } from "../core/github/knownFiles"
+import { TargetKnownFilesLoader } from "../core/github/targetKnownFiles"
 import type { RepositoryMetadata } from "../types/repository"
 
 const repository: RepositoryMetadata = {
@@ -103,6 +104,54 @@ describe("KnownRepositoryFilesLoader", () => {
     expect(result.textFiles).toEqual({})
     expect(result.warnings[0]).toContain(".env.example exceeds")
     expect(githubClient.getRepositoryTextFile).not.toHaveBeenCalled()
+  })
+})
+
+describe("TargetKnownFilesLoader", () => {
+  it("performs one bounded selected-directory listing and returns target-relative names", async () => {
+    const entries: GitHubContentEntry[] = [
+      {
+        name: "package.json",
+        path: "apps/web/package.json",
+        size: 120,
+        type: "file",
+      },
+      {
+        name: "package-lock.json",
+        path: "apps/web/package-lock.json",
+        size: 500_000,
+        type: "file",
+      },
+      {
+        name: "src",
+        path: "apps/web/src",
+        size: 0,
+        type: "dir",
+      },
+    ]
+    const githubClient = {
+      getRepositoryDirectoryEntries: vi.fn().mockResolvedValue(entries),
+      getRepositoryTextFile: vi.fn(async (_repository, path: string) =>
+        path.endsWith("package.json") ? "{}" : null,
+      ),
+    } as unknown as GitHubClient
+    const loader = new TargetKnownFilesLoader(githubClient)
+
+    const result = await loader.load(repository, { sourceRoot: "apps/web" })
+
+    expect(githubClient.getRepositoryDirectoryEntries).toHaveBeenCalledWith(
+      repository,
+      "apps/web",
+      undefined,
+    )
+    expect(result.presentPaths).toEqual(["package-lock.json", "package.json"])
+    expect(result.textFiles).toEqual({ "package.json": "{}" })
+    expect(githubClient.getRepositoryTextFile).toHaveBeenCalledWith(
+      repository,
+      "apps/web/package.json",
+      expect.any(Number),
+      undefined,
+    )
   })
 })
 

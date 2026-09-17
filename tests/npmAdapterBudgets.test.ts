@@ -42,6 +42,7 @@ class ThrowingCommandRunner implements CommandRunner {
 
 class RecordingCommandRunner implements CommandRunner {
   readonly seenTimeoutMs: number[] = []
+  readonly seenWorkingDirectories: Array<string | undefined> = []
 
   constructor(
     private readonly onRun?: (
@@ -56,6 +57,7 @@ class RecordingCommandRunner implements CommandRunner {
     options: CommandRunOptions,
   ): Promise<void> {
     this.seenTimeoutMs.push(options.timeoutMs)
+    this.seenWorkingDirectories.push(options.workingDirectory)
     await this.onRun?.(workspace as LocalPreviewWorkspace)
   }
 }
@@ -103,6 +105,22 @@ describe("job wall-clock budget enforcement", () => {
 
     expect(commandRunner.seenTimeoutMs[0]).toBe(5_000)
 
+    await workspace.destroy()
+  })
+
+  it("runs nested builds from the selected source root", async () => {
+    const provisioner = new LocalDevSandboxProvisioner()
+    const workspace = await provisioner.allocate("job-nested-cwd")
+    const commandRunner = new RecordingCommandRunner()
+    const builder = new NpmBuildExecutor(commandRunner)
+
+    await builder.build(workspace, {
+      ...plan,
+      contractVersion: "static-v2",
+      sourceRoot: "apps/web",
+    })
+
+    expect(commandRunner.seenWorkingDirectories).toEqual(["apps/web"])
     await workspace.destroy()
   })
 })

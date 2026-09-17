@@ -6,6 +6,7 @@ import type {
   PreviewRepositoryRef,
   QueuedPreviewJob,
 } from "../../types/preview"
+import type { PreviewTarget } from "../../types/target"
 
 export interface StoredPreviewJob extends PreviewJob {
   requesterId: string
@@ -15,6 +16,7 @@ export interface PreviewPlanResolver {
   resolve(
     repository: PreviewRepositoryRef,
     contractVersion: string,
+    target: PreviewTarget,
   ): Promise<BuildPlan | null>
 }
 

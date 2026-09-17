@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   createBuildPlanFromAnalysis,
+  createBuildPlanFromTargetAnalysis,
   validateBuildPlan,
 } from "../core/preview/buildAdapters"
 import {
@@ -92,6 +93,44 @@ describe("build plan", () => {
     ).toMatchObject({ packageManager: "none", outputDirectory: "." })
   })
 
+  it("creates a static-v2 nested React Vite npm plan with target-local commands", () => {
+    const nested = createBuildPlanFromTargetAnalysis({
+      ...supportedAnalysis,
+      targetAnalyzerVersion: "test",
+      target: { sourceRoot: "apps/web" },
+      preview: {
+        ...supportedAnalysis.preview,
+        contractVersion: "static-v2",
+      },
+    })
+
+    expect(nested).toMatchObject({
+      contractVersion: "static-v2",
+      sourceRoot: "apps/web",
+      installCommand: "npm ci",
+      buildCommand: "npm run build",
+      outputDirectory: "dist",
+    })
+  })
+
+  it.each([
+    "../web",
+    "apps/../web",
+    "C:/web",
+    "https://example.com/web",
+    "apps\\web",
+    "apps/%2e%2e/web",
+    "apps/web\u0000",
+  ])("rejects unsafe static-v2 source root %j", (sourceRoot) => {
+    expect(() =>
+      validateBuildPlan({
+        ...plan,
+        contractVersion: "static-v2",
+        sourceRoot,
+      }),
+    ).toThrow(InvalidBuildPlanError)
+  })
+
   it("rejects package-manager and command combinations without an adapter", () => {
     const unsupportedPlan: BuildPlan = {
       ...plan,
@@ -131,6 +170,16 @@ describe("build plan", () => {
     )
     await expect(
       createBuildCacheKey({ ...plan, outputDirectory: "build" }, "runner-v1"),
+    ).resolves.not.toBe(first)
+    await expect(
+      createBuildCacheKey(
+        {
+          ...plan,
+          contractVersion: "static-v2",
+          sourceRoot: "apps/web",
+        },
+        "runner-v1",
+      ),
     ).resolves.not.toBe(first)
   })
 })

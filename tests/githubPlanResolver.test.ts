@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { GitHubClient } from "../core/github/client"
 import type { KnownRepositoryFilesLoader } from "../core/github/knownFiles"
+import type { RepositoryStructureLoader } from "../core/github/repositoryStructureLoader"
+import type { TargetKnownFilesLoader } from "../core/github/targetKnownFiles"
 import { GitHubPreviewPlanResolver } from "../services/preview-api/githubPlanResolver"
 import type { PreviewRepositoryRef } from "../types/preview"
 
@@ -130,6 +132,101 @@ describe("GitHubPreviewPlanResolver", () => {
     const resolver = new GitHubPreviewPlanResolver(github, knownFiles)
 
     await expect(resolver.resolve(repository, "static-v1")).resolves.toBeNull()
+  })
+
+  it("reauthorizes and analyzes an exact-SHA nested application target", async () => {
+    const github = {
+      getRepositoryMetadataAtCommit: vi.fn().mockResolvedValue(metadata),
+    } as unknown as GitHubClient
+    const knownFiles = {
+      load: vi.fn().mockResolvedValue({
+        presentPaths: ["package.json", "package-lock.json"],
+        textFiles: {
+          "package.json": JSON.stringify({ workspaces: ["apps/*"] }),
+        },
+        warnings: [],
+        complete: true,
+      }),
+    } as unknown as KnownRepositoryFilesLoader
+    const structure = {
+      load: vi.fn().mockResolvedValue({
+        layout: "workspace",
+        projects: [
+          {
+            path: ".",
+            isRoot: true,
+            role: "package-candidate",
+            hasPackageJson: true,
+            packageName: null,
+            evidence: [],
+            warnings: [],
+          },
+          {
+            path: "apps/web",
+            isRoot: false,
+            role: "project-candidate",
+            hasPackageJson: true,
+            packageName: "web",
+            evidence: ["React dependency detected."],
+            warnings: [],
+          },
+          {
+            path: "apps/api",
+            isRoot: false,
+            role: "unknown",
+            hasPackageJson: true,
+            packageName: "api",
+            evidence: [],
+            warnings: [],
+          },
+        ],
+        workspaceEvidence: [],
+        warnings: [],
+        complete: true,
+        truncated: false,
+      }),
+    } as unknown as RepositoryStructureLoader
+    const targetFiles = {
+      load: vi.fn().mockResolvedValue(viteReactFiles()),
+    } as unknown as TargetKnownFilesLoader
+    const resolver = new GitHubPreviewPlanResolver(
+      github,
+      knownFiles,
+      structure,
+      targetFiles,
+    )
+
+    await expect(
+      resolver.resolve(repository, "static-v2", { sourceRoot: "apps/web" }),
+    ).resolves.toMatchObject({
+      contractVersion: "static-v2",
+      repository,
+      sourceRoot: "apps/web",
+      packageManager: "npm",
+      installCommand: "npm ci",
+      buildCommand: "npm run build",
+      outputDirectory: "dist",
+    })
+    expect(targetFiles.load).toHaveBeenCalledWith(metadata, {
+      sourceRoot: "apps/web",
+    })
+
+    await expect(
+      resolver.resolve(repository, "static-v2", { sourceRoot: "apps/api" }),
+    ).resolves.toBeNull()
+    expect(targetFiles.load).toHaveBeenCalledTimes(1)
+  })
+
+  it("never permits nested targets through the legacy static-v1 contract", async () => {
+    const github = {
+      getRepositoryMetadataAtCommit: vi.fn(),
+    } as unknown as GitHubClient
+    const resolver = new GitHubPreviewPlanResolver(github)
+
+    await expect(
+      resolver.resolve(repository, "static-v1", { sourceRoot: "apps/web" }),
+    ).resolves.toBeNull()
+    expect(github.getRepositoryMetadataAtCommit).not.toHaveBeenCalled()
   })
 })
 

@@ -17,10 +17,11 @@ Supported first:
 | --- | --- | --- |
 | Static HTML/CSS/JS | Native preview | No package install when unnecessary |
 | Root Vite + React | Native preview | First package-based golden path |
+| Selected nested Vite + React | Native preview | npm with target-local `package.json` and `package-lock.json`; commands run in the selected directory |
 | Root Vite + Vue/Svelte | Analysis only / unsupported | Recognized, but no runner target is implemented |
 | Existing repository homepage | External link | Normalized HTTP(S) metadata only; no reachability check or embedded Live Preview |
 | Next.js SSR / Node server | Unsupported | Persistent server runner deferred |
-| Ambiguous monorepo | Unsupported | Workspace selection deferred |
+| Shared-root npm/pnpm/yarn workspace | Analysis only / unsupported | Workspace orchestration remains deferred |
 | Backend, DB, Docker, secrets | Unsupported | Full-stack roadmap; not implemented |
 | Library repository with no demo app | Analysis only | There may be nothing visual to run |
 
@@ -41,16 +42,18 @@ Therefore:
 
 ```text
 1. Extension resolves owner/repo and requests analysis
-2. Analyzer resolves repository id + commit SHA
-3. The Build Adapter resolver produces a normalized build plan when exactly
+2. Analyzer resolves repository id + commit SHA and bounded project candidates
+3. The user may select a candidate, which receives a separate target-scoped
+   exact-SHA analysis
+4. The Build Adapter resolver produces a normalized build plan when exactly
    one registered capability matches
-4. User explicitly selects Build preview
-5. Control API revalidates and creates/idempotently finds a job
-6. Queue assigns the job to an isolated worker
-7. Worker fetches, installs, builds, and publishes static output
-8. Control API reports an expiring preview URL
-9. Side panel embeds the dedicated preview origin
-10. Worker workspace and later artifacts are destroyed
+5. User explicitly selects Build preview
+6. Control API revalidates the commit, candidate, target files, analysis, and plan
+7. Queue assigns the job to an isolated worker
+8. Worker fetches, installs, builds, and publishes only target static output
+9. Control API reports an expiring preview URL
+10. Side panel embeds the dedicated preview origin
+11. Worker workspace and later artifacts are destroyed
 ```
 
 ## 5. Build Plan
@@ -68,7 +71,7 @@ interface BuildPlan {
     name: string
     commitSha: string
   }
-  sourceRoot: "."
+  sourceRoot: string // "." or a validated repository-relative POSIX directory
   packageManager: "npm" | "pnpm" | "yarn" | "bun" | "none"
   installCommand: string | null
   buildCommand: string | null
@@ -76,11 +79,12 @@ interface BuildPlan {
 }
 ```
 
-The API does not accept arbitrary client-supplied shell commands, source roots,
-output paths, base images, or environment values. Values come from the explicit
+The API accepts only a target identity, never client-supplied commands or
+outputs. It independently rediscovers and authorizes that source root at the
+same exact commit. Executable values come from the explicit
 `core/preview/buildAdapters.ts` registry. Its two adapters are
 `static-html-v1` and `vite-react-npm-v1`. Shape validation covers repository
-identity, the full SHA, root-only source, basic types, and a safe output path;
+identity, the full SHA, contract-compatible source root, basic types, and a safe output path;
 adapter validation covers the exact package manager, commands, and output
 semantics. A plan for pnpm/yarn/bun cannot become runnable through shape
 validation alone.
@@ -88,7 +92,9 @@ validation alone.
 Adapter identity is intentionally not part of `BuildPlan`. The current two
 adapters have fully distinct executable plan semantics, client and server
 resolve from analysis deterministically, and the server never trusts a
-client-selected adapter or commands. `sourceRoot` remains the literal `"."`.
+client-selected adapter or commands. `static-v1` remains root-only with an
+implicit `"."`; `static-v2` requires an explicit target and permits a validated
+nested source root. Cache and idempotency identity include that source root.
 
 ## 6. Job Lifecycle
 
@@ -112,15 +118,17 @@ Job status includes stable error codes and sanitized diagnostics. Raw build logs
 2. Fetch the public source archive for the exact commit SHA.
 3. Reject archives that exceed compressed, expanded, path, or file-count limits.
 4. Create a bounded writable workspace over a read-only runtime image.
-5. Install with npm lockfile enforcement and the current bounded public-egress
-   policy.
-6. Disable unrelated network access before the build phase.
-7. Execute the approved build command as a non-root user under quotas.
-8. Resolve the output directory without following escape symlinks.
-9. Validate file count, total bytes, entry types/paths, and serving MIME
+5. Resolve the selected directory with lexical, symlink-segment, and realpath
+   containment checks.
+6. Install from that directory with a target-local npm lockfile and the current
+   bounded public-egress policy.
+7. Disable unrelated network access before the build phase.
+8. Execute the approved build command from the same directory as a non-root user under quotas.
+9. Resolve the target-relative output directory without following escape symlinks.
+10. Validate file count, total bytes, entry types/paths, and serving MIME
    behavior.
-10. Publish under a job-scoped artifact prefix.
-11. Destroy the sandbox and writable filesystem regardless of outcome.
+11. Publish under a job-scoped artifact prefix.
+12. Destroy the sandbox and writable filesystem regardless of outcome.
 
 ## 8. Isolation Requirements
 
@@ -252,7 +260,7 @@ Implemented and verified in the production path:
 - gVisor (`runsc`) on Linux x86_64 with a prepared Node 24/npm rootfs;
 - non-root execution, resource/timeout limits, bounded loop-backed workspace,
   read-only rootfs, network namespaces, and cleanup/reconciliation;
-- static HTML and root-level Vite + React/npm golden paths;
+- static HTML, root Vite + React/npm, and selected nested frontend-only golden paths;
 - PostgreSQL job/cache/quota/artifact state and durable leased work claiming;
 - GitHub App requester authentication;
 - artifact-specific HTTPS hostname routing and persisted artifact expiry;

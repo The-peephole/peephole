@@ -1,10 +1,10 @@
 import type { RepositoryMetadata } from "../../types/repository"
 import type { GitHubClient, GitHubContentEntry } from "./client"
 
-const MAX_ROOT_ENTRIES = 1_000
-const MAX_TOTAL_TEXT_BYTES = 512 * 1024
+export const MAX_KNOWN_FILE_ENTRIES = 1_000
+export const MAX_TOTAL_TEXT_BYTES = 512 * 1024
 
-const KNOWN_ROOT_FILES = new Set([
+export const KNOWN_REPOSITORY_FILES = new Set([
   "package.json",
   "index.html",
   "README.md",
@@ -38,7 +38,7 @@ const KNOWN_ROOT_FILES = new Set([
   "lerna.json",
 ])
 
-const TEXT_FILE_LIMITS = new Map<string, number>([
+export const TEXT_FILE_LIMITS = new Map<string, number>([
   ["package.json", 256 * 1024],
   ["README.md", 128 * 1024],
   [".env.example", 64 * 1024],
@@ -78,7 +78,7 @@ export class KnownRepositoryFilesLoader {
       signal,
     )
     const warnings: string[] = []
-    const complete = rootEntries.length < MAX_ROOT_ENTRIES
+    const complete = rootEntries.length < MAX_KNOWN_FILE_ENTRIES
 
     if (!complete) {
       warnings.push(
@@ -144,6 +144,6 @@ function isKnownRootFile(entry: GitHubContentEntry): boolean {
   return (
     entry.type === "file" &&
     entry.path === entry.name &&
-    KNOWN_ROOT_FILES.has(entry.path)
+    KNOWN_REPOSITORY_FILES.has(entry.path)
   )
 }

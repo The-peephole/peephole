@@ -346,3 +346,41 @@ live-network CI, not production smoke.
 `eae411a288b212201933cebb206126dd5bb0d93e` is reserved for future stages. Its
 existence does not establish backend detection, backend execution, routing,
 ephemeral secrets, or temporary database support.
+
+## D-027 - Version nested frontend targets as static-v2
+
+**Status:** Accepted
+
+Frontend target selection expands real execution semantics, so it does not
+silently broaden `static-v1`. Legacy `static-v1` remains root-only: its request
+must omit `target`, which the server interprets as `sourceRoot: "."`.
+`static-v2` requires an explicit `{ sourceRoot }` target and permits either the
+root or a normalized repository-relative POSIX directory.
+
+The extension discovers bounded project candidates, but discovery is not
+authorization. After selection, it performs a separate target-scoped analysis
+at the resolved commit. On job creation the server independently verifies the
+repository and exact SHA, repeats bounded structure discovery, confirms the
+requested path is a non-root `project-candidate`, reloads target-local known
+files, reruns analysis, and reconstructs the plan through the server-owned
+Build Adapter registry. Client commands, package manager, adapter, and output
+directory are never authoritative.
+
+The only new nested execution contract is an independently installable React +
+Vite + npm target containing both `package.json` and `package-lock.json`.
+`npm ci` and `npm run build` execute with that target as cwd, and only
+`sourceRoot/outputDirectory` is published. Shared-root npm workspaces,
+pnpm/yarn/bun, Turbo/Nx orchestration, Vue/Svelte, SSR, backends, routing,
+secrets, and databases remain outside this contract.
+
+Source roots participate in target-analysis caches, build cache keys,
+idempotency fingerprints, and React preview component identity. The extension
+stores no preview-job session; its existing browser session is authentication
+only and remains user-scoped. Worker path resolution validates lexical
+containment, rejects symbolic-link path segments, and verifies realpath
+containment before install/output access. Existing archive extraction already
+rejects symlinks and hard links.
+
+The full-stack fixture's `frontend` directory is the golden nested target. A
+successful static frontend build is not a full-stack preview: its `/api/hello`
+request may fail because the backend is intentionally not started or routed.

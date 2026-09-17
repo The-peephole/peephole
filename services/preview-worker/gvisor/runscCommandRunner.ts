@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto"
 import { writeFile } from "node:fs/promises"
 import path from "node:path"
 
+import { isSafePreviewSourceRoot } from "../../../core/preview/sourceRoot"
 import { DEFAULT_ARCHIVE_LIMITS } from "../../../core/runner/archivePolicy"
 import {
   DEFAULT_SANDBOX_RESOURCE_LIMITS,
@@ -100,6 +101,10 @@ export class RunscCommandRunner implements CommandRunner {
     options: CommandRunOptions,
   ): Promise<void> {
     options.signal?.throwIfAborted()
+    const workingDirectory = options.workingDirectory ?? "."
+    if (!isSafePreviewSourceRoot(workingDirectory)) {
+      throw new Error("Sandbox working directory is unsafe.")
+    }
     const sandbox = asGVisorWorkspace(workspace)
     const containerId = `${workspace.id}-${randomBytes(4).toString("hex")}`
     sandbox.registerContainer(containerId)
@@ -112,7 +117,10 @@ export class RunscCommandRunner implements CommandRunner {
 
     const spec = buildOciRuntimeSpec({
       command: [command, ...args],
-      cwd: "/workspace",
+      cwd:
+        workingDirectory === "."
+          ? "/workspace"
+          : `/workspace/${workingDirectory}`,
       env: Object.entries({
         ...options.env,
         HOME: SANDBOX_HOME,

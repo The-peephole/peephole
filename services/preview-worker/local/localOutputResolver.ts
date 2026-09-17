@@ -9,6 +9,7 @@ import type { ArchiveByteStore } from "./archiveByteStore"
 import type { ExtractionState } from "./extractionState"
 import type { LocalOutputLocationRegistry } from "./localOutputLocationRegistry"
 import { asLocalWorkspace } from "./localWorkspace"
+import { resolveWorkspaceOutputRoot } from "./workspacePath"
 
 export class LocalOutputResolver implements OutputResolver {
   constructor(
@@ -34,13 +35,11 @@ export class LocalOutputResolver implements OutputResolver {
       signal,
     )
 
-    const outputDir = path.join(local.rootDir, plan.outputDirectory)
-    let current = local.rootDir
-    for (const segment of plan.outputDirectory.split("/")) {
-      current = path.join(current, segment)
-      if ((await lstat(current)).isSymbolicLink())
-        throw new Error("Build output root contains a symlink.")
-    }
+    const outputDir = await resolveWorkspaceOutputRoot(
+      local.rootDir,
+      plan.sourceRoot,
+      plan.outputDirectory,
+    )
     const entries = await walkDirectory(outputDir, outputDir, signal)
 
     this.locations.set(local.id, outputDir)

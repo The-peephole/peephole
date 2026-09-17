@@ -190,8 +190,9 @@ Spot-checked against real GitHub data (not part of the portable suite): the
 official `peephole-fixture-vite-react` golden path keeps its exact prior
 `single-project` / `native-static-build` / zero-blocker result, and
 `peephole-fixture-fullstack` resolves to `multi-project` with `frontend`
-(`project-candidate`) and `backend` (`unknown`) candidates while remaining
-`unsupported` for production execution.
+(`project-candidate`) and `backend` (`unknown`) candidates. Its independently
+installable `frontend` is supported as a frontend-only target; the backend is
+not executed or routed.
 
 Manual unpacked-extension verification:
 
@@ -199,8 +200,10 @@ Manual unpacked-extension verification:
    "Single project" and one project path, `.`; branch selection and preview
    build continue to work exactly as before.
 2. `The-peephole/peephole-fixture-fullstack`: Structure shows `frontend` and
-   `backend` project paths; nothing in the UI implies full-stack preview
-   support, and Build preview does not offer or execute either nested path.
+   `backend`; Preview target offers root and `frontend`, but not `backend`.
+   Selecting `frontend` shows React + Vite, npm, `npm ci`, `npm run build`, and
+   `dist`; its artifact loads while `/api/hello` may fail because no backend is
+   started or routed.
 3. A monorepo/workspace fixture (or a deterministic test case): Structure
    shows a workspace marker, candidate project roots, and a truncated or
    incomplete indicator when applicable.
@@ -227,11 +230,11 @@ manager is executable.
 ### Build Adapter resolution
 
 Cover the exact static and React-Vite-npm matches and plans, no-match behavior
-for Vue/Svelte and pnpm/yarn/bun, the required root package lock, blocked
-analysis, explicit overlapping-match failure, root-only source validation,
-unsafe output rejection, command mutation, unsupported plan admission, and
-cache-key determinism/separation. Structure candidates must not cause nested
-target selection, and the full-stack fixture remains non-runnable.
+for Vue/Svelte and pnpm/yarn/bun, target-local package locks, blocked analysis,
+explicit overlapping-match failure, source-root/output containment, command
+mutation, unsupported plan admission, and cache-key separation by source root.
+Also cover server candidate authorization and the real full-stack fixture's
+frontend-only build without claiming backend or full-stack support.
 
 ### Preview control plane
 

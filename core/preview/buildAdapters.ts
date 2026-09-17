@@ -1,5 +1,8 @@
 import {
   PREVIEW_CONTRACT_VERSION,
+  LEGACY_PREVIEW_CONTRACT_VERSION,
+  TARGET_ANALYZER_VERSION,
+  type BuildTargetAnalysis,
   type Framework,
   type PackageManager,
   type RepositoryAnalysis,
@@ -18,7 +21,7 @@ export interface BuildAdapterMatchInput {
 export interface BuildAdapter {
   readonly id: BuildAdapterId
   matches(input: BuildAdapterMatchInput): boolean
-  createPlan(analysis: RepositoryAnalysis): BuildPlan
+  createPlan(analysis: BuildTargetAnalysis): BuildPlan
   validatePlan(plan: BuildPlan): BuildPlan
 }
 
@@ -41,6 +44,12 @@ export const staticHtmlBuildAdapter: BuildAdapter = {
   },
   createPlan(analysis) {
     assertAnalysisCanCreatePlan(this, analysis)
+
+    if (analysis.target.sourceRoot !== ".") {
+      throw new InvalidBuildPlanError(
+        "Static HTML previews are supported only at the repository root.",
+      )
+    }
 
     if (
       analysis.preview.packageManager !== "none" ||
@@ -65,6 +74,7 @@ export const staticHtmlBuildAdapter: BuildAdapter = {
     const value = validateBuildPlanShape(plan)
 
     if (
+      value.sourceRoot !== "." ||
       value.packageManager !== "none" ||
       value.installCommand !== null ||
       value.buildCommand !== null ||
@@ -147,7 +157,7 @@ export class BuildAdapterResolver {
     return matches[0] ?? null
   }
 
-  createPlan(analysis: RepositoryAnalysis): BuildPlan | null {
+  createPlan(analysis: BuildTargetAnalysis): BuildPlan | null {
     const adapter = this.resolve(analysis)
 
     if (!adapter || !analysisCanCreatePlan(analysis)) {
@@ -194,6 +204,12 @@ export const buildAdapterResolver = new BuildAdapterResolver()
 export function createBuildPlanFromAnalysis(
   analysis: RepositoryAnalysis,
 ): BuildPlan | null {
+  return createBuildPlanFromTargetAnalysis(toRootBuildTargetAnalysis(analysis))
+}
+
+export function createBuildPlanFromTargetAnalysis(
+  analysis: BuildTargetAnalysis,
+): BuildPlan | null {
   return buildAdapterResolver.createPlan(analysis)
 }
 
@@ -207,17 +223,19 @@ export function isBuildAdapterAvailable(
   return buildAdapterResolver.resolve(input) !== null
 }
 
-function analysisCanCreatePlan(analysis: RepositoryAnalysis): boolean {
+function analysisCanCreatePlan(analysis: BuildTargetAnalysis): boolean {
   return (
     analysis.preview.mode === "native-static-build" &&
     analysis.preview.blockers.length === 0 &&
-    analysis.preview.contractVersion === PREVIEW_CONTRACT_VERSION
+    (analysis.preview.contractVersion === PREVIEW_CONTRACT_VERSION ||
+      (analysis.preview.contractVersion === LEGACY_PREVIEW_CONTRACT_VERSION &&
+        analysis.target.sourceRoot === "."))
   )
 }
 
 function assertAnalysisCanCreatePlan(
   adapter: BuildAdapter,
-  analysis: RepositoryAnalysis,
+  analysis: BuildTargetAnalysis,
 ): void {
   if (!adapter.matches(analysis) || !analysisCanCreatePlan(analysis)) {
     throw new InvalidBuildPlanError(
@@ -227,7 +245,7 @@ function assertAnalysisCanCreatePlan(
 }
 
 function repositoryPlanFields(
-  analysis: RepositoryAnalysis,
+  analysis: BuildTargetAnalysis,
 ): Pick<BuildPlan, "contractVersion" | "repository" | "sourceRoot"> {
   return {
     contractVersion: analysis.preview.contractVersion,
@@ -237,6 +255,23 @@ function repositoryPlanFields(
       name: analysis.repository.repo,
       commitSha: analysis.repository.commitSha,
     },
-    sourceRoot: ".",
+    sourceRoot: analysis.target.sourceRoot,
+  }
+}
+
+export function toRootBuildTargetAnalysis(
+  analysis: RepositoryAnalysis,
+): BuildTargetAnalysis {
+  return {
+    repository: analysis.repository,
+    targetAnalyzerVersion: TARGET_ANALYZER_VERSION,
+    target: { sourceRoot: "." },
+    technologies: analysis.technologies,
+    packageManager: analysis.packageManager,
+    runtime: analysis.runtime,
+    environment: analysis.environment,
+    preview: analysis.preview,
+    inspectedFiles: analysis.inspectedFiles,
+    warnings: analysis.warnings,
   }
 }

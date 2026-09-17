@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { RepositoryAnalysisView } from "../components/RepositoryAnalysisView"
 import { GitHubApiError } from "../core/github/client"
 import type {
+  BuildTargetAnalysis,
+  BuildTargetAnalysisLoader,
   RepositoryAnalysis,
   RepositoryAnalysisLoader,
 } from "../types/analysis"
@@ -121,6 +123,146 @@ describe("RepositoryAnalysisView", () => {
     expect(container.textContent).toContain("apps/web")
     expect(container.textContent).toContain("@acme/web")
     expect(container.textContent).toContain("packages/ui")
+  })
+
+  it("offers only application candidates and analyzes the selected exact-SHA target", async () => {
+    const analysis: RepositoryAnalysis = {
+      ...supportedAnalysis,
+      structure: {
+        layout: "workspace",
+        projects: [
+          {
+            path: ".",
+            isRoot: true,
+            role: "package-candidate",
+            hasPackageJson: true,
+            packageName: "root",
+            evidence: [],
+            warnings: [],
+          },
+          {
+            path: "apps/web",
+            isRoot: false,
+            role: "project-candidate",
+            hasPackageJson: true,
+            packageName: "web",
+            evidence: [],
+            warnings: [],
+          },
+          {
+            path: "apps/api",
+            isRoot: false,
+            role: "unknown",
+            hasPackageJson: true,
+            packageName: "api",
+            evidence: [],
+            warnings: [],
+          },
+        ],
+        workspaceEvidence: [],
+        warnings: [],
+        complete: true,
+        truncated: false,
+      },
+    }
+    const loadTarget = vi.fn<BuildTargetAnalysisLoader>().mockResolvedValue({
+      repository: analysis.repository,
+      targetAnalyzerVersion: "test",
+      target: { sourceRoot: "apps/web" },
+      technologies: analysis.technologies,
+      packageManager: analysis.packageManager,
+      runtime: analysis.runtime,
+      environment: analysis.environment,
+      preview: { ...analysis.preview, contractVersion: "static-v2" },
+      inspectedFiles: analysis.inspectedFiles,
+      warnings: analysis.warnings,
+    })
+    const container = await renderView(
+      vi.fn<RepositoryAnalysisLoader>().mockResolvedValue(analysis),
+      roots,
+      {
+        loadBuildTargetAnalysis: loadTarget,
+        renderPreviewControls: (value) => (
+          <span data-testid="selected-target">{value.target.sourceRoot}</span>
+        ),
+      },
+    )
+    const select = container.querySelector<HTMLSelectElement>(
+      'select[name="preview-target"]',
+    )
+    expect(select).not.toBeNull()
+    expect(
+      Array.from(select?.options ?? []).map((option) => option.value),
+    ).toEqual([".", "apps/web"])
+
+    await act(async () => {
+      if (!select) throw new Error("target selector missing")
+      select.value = "apps/web"
+      select.dispatchEvent(new Event("change", { bubbles: true }))
+    })
+
+    expect(loadTarget).toHaveBeenCalledWith(
+      analysis.repository,
+      { sourceRoot: "apps/web" },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    expect(
+      container.querySelector('[data-testid="selected-target"]')?.textContent,
+    ).toBe("apps/web")
+  })
+
+  it("aborts and ignores stale target analysis on a rapid nested-to-root switch", async () => {
+    const analysis = createTargetableAnalysis()
+    const pending = createDeferred<BuildTargetAnalysis>()
+    let signal: AbortSignal | undefined
+    const loadTarget = vi.fn<BuildTargetAnalysisLoader>(
+      (_repository, _target, options) => {
+        signal = options?.signal
+        return pending.promise
+      },
+    )
+    const container = await renderView(
+      vi.fn<RepositoryAnalysisLoader>().mockResolvedValue(analysis),
+      roots,
+      {
+        loadBuildTargetAnalysis: loadTarget,
+        renderPreviewControls: (value) => (
+          <span data-testid="race-target">{value.target.sourceRoot}</span>
+        ),
+      },
+    )
+    const select = container.querySelector<HTMLSelectElement>(
+      'select[name="preview-target"]',
+    )
+    if (!select) throw new Error("target selector missing")
+
+    await act(async () => {
+      select.value = "apps/web"
+      select.dispatchEvent(new Event("change", { bubbles: true }))
+    })
+    await act(async () => {
+      select.value = "."
+      select.dispatchEvent(new Event("change", { bubbles: true }))
+    })
+    expect(signal?.aborted).toBe(true)
+
+    await act(async () => {
+      pending.resolve({
+        repository: analysis.repository,
+        targetAnalyzerVersion: "stale",
+        target: { sourceRoot: "apps/web" },
+        technologies: analysis.technologies,
+        packageManager: analysis.packageManager,
+        runtime: analysis.runtime,
+        environment: analysis.environment,
+        preview: analysis.preview,
+        inspectedFiles: analysis.inspectedFiles,
+        warnings: analysis.warnings,
+      })
+    })
+    expect(
+      container.querySelector('[data-testid="race-target"]')?.textContent,
+    ).toBe(".")
   })
 
   it("shows a truncation notice when structure detection hit a bound", async () => {
@@ -478,6 +620,39 @@ function createDeferred<T>(): {
   return { promise, resolve }
 }
 
+function createTargetableAnalysis(): RepositoryAnalysis {
+  return {
+    ...supportedAnalysis,
+    structure: {
+      layout: "workspace",
+      projects: [
+        {
+          path: ".",
+          isRoot: true,
+          role: "package-candidate",
+          hasPackageJson: true,
+          packageName: "root",
+          evidence: [],
+          warnings: [],
+        },
+        {
+          path: "apps/web",
+          isRoot: false,
+          role: "project-candidate",
+          hasPackageJson: true,
+          packageName: "web",
+          evidence: [],
+          warnings: [],
+        },
+      ],
+      workspaceEvidence: [],
+      warnings: [],
+      complete: true,
+      truncated: false,
+    },
+  }
+}
+
 function defaultBranchLoader(
   branches: string[] = ["main"],
   defaultBranch = "main",
@@ -494,8 +669,11 @@ async function renderView(
   roots: Array<ReturnType<typeof createRoot>>,
   options: {
     branchLoader?: RepositoryBranchesLoader
+    loadBuildTargetAnalysis?: BuildTargetAnalysisLoader
     repository?: RepositoryIdentity
-    renderPreviewControls?: (analysis: RepositoryAnalysis) => ReactNode
+    renderPreviewControls?: (
+      analysis: BuildTargetAnalysis & RepositoryAnalysis,
+    ) => ReactNode
   } = {},
 ): Promise<HTMLDivElement> {
   const container = document.createElement("div")
@@ -507,6 +685,7 @@ async function renderView(
     root.render(
       <RepositoryAnalysisView
         loadRepositoryAnalysis={loader}
+        loadBuildTargetAnalysis={options.loadBuildTargetAnalysis}
         loadRepositoryBranches={options.branchLoader ?? defaultBranchLoader()}
         renderPreviewControls={options.renderPreviewControls}
         repository={options.repository ?? { owner: "react", repo: "react" }}
