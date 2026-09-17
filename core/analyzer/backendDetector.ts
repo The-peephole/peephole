@@ -70,37 +70,19 @@ const SAFE_ENTRYPOINT_SCRIPT_PATTERN =
  * Returns null when there is no backend evidence at all -- a directory name
  * alone, or a database dependency with no other signal absent, is not
  * treated as confirmed backend evidence (see module docs on
- * `types/backend.ts`). A malformed-but-present package.json still yields a
- * degraded candidate carrying the parse error as a warning, mirroring
- * `repositoryStructureDetector.ts`'s treatment of the same case.
+ * `types/backend.ts`). `packageJson` must already be null for a package.json
+ * that was absent *or* malformed: a parse failure is never itself backend
+ * evidence, so this function cannot tell the two apart and does not need
+ * to -- callers surface a parse failure separately via
+ * `backendPackageJsonParseWarning` and `BackendDetection.complete`, never by
+ * fabricating a candidate here.
  */
 export function detectBackendCandidate(
   sourceRoot: string,
   packageJson: ParsedPackageJson | null,
-  parseError: string | null,
   envPresentPaths: readonly string[],
   envTextFiles: Readonly<Record<string, string>>,
 ): BackendCandidate | null {
-  const environmentRequirements = detectEnvironmentRequirements(
-    sourceRoot,
-    envPresentPaths,
-    envTextFiles,
-  )
-
-  if (parseError) {
-    return {
-      sourceRoot,
-      framework: "unknown",
-      runtime: "node",
-      packageName: null,
-      entrypoint: null,
-      databaseDependencies: [],
-      environmentRequirements,
-      evidence: [],
-      warnings: [`package.json could not be parsed: ${parseError}`],
-    }
-  }
-
   if (!packageJson) return null
 
   const dependencies = getAllDependencies(packageJson)
@@ -119,6 +101,11 @@ export function detectBackendCandidate(
     return null
   }
 
+  const environmentRequirements = detectEnvironmentRequirements(
+    sourceRoot,
+    envPresentPaths,
+    envTextFiles,
+  )
   const framework: BackendFramework = frameworkName
     ? BACKEND_FRAMEWORK_DEPENDENCIES[frameworkName]!
     : "unknown"
@@ -175,6 +162,22 @@ export function detectBackendCandidate(
     evidence,
     warnings,
   }
+}
+
+/**
+ * Shared wording for a package.json that was found but could not be parsed
+ * for a given backend candidate path. A parse failure is a read/parse gap,
+ * not backend evidence -- callers must combine this warning with
+ * `complete: false` and must not call `detectBackendCandidate` for the same
+ * read (there is no usable `packageJson` to classify).
+ */
+export function backendPackageJsonParseWarning(
+  sourceRoot: string,
+  parseError: string,
+): string {
+  const path =
+    sourceRoot === "." ? "package.json" : `${sourceRoot}/package.json`
+  return `${path} could not be parsed: ${parseError}`
 }
 
 /** Pure assembly step: turns candidate results into the final `BackendDetection`. */

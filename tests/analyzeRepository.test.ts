@@ -500,6 +500,20 @@ describe("analyzeRepository", () => {
     ])
   })
 
+  it("reports backend not-detected/complete:false with a parse-error warning for a malformed root package.json only", () => {
+    const analysis = analyzeRepository(
+      repository,
+      snapshot({ "package.json": "{ not valid json" }, []),
+    )
+
+    expect(analysis.backend.status).toBe("not-detected")
+    expect(analysis.backend.candidates).toEqual([])
+    expect(analysis.backend.complete).toBe(false)
+    expect(analysis.backend.warnings.join(" ")).toContain(
+      "package.json could not be parsed",
+    )
+  })
+
   it("reports not-detected backend for a root-only frontend with no nested loader", () => {
     const analysis = analyzeRepository(repository, viteSnapshot())
 

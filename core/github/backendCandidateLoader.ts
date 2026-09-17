@@ -1,5 +1,6 @@
 import {
   assembleBackendDetection,
+  backendPackageJsonParseWarning,
   detectBackendCandidate,
 } from "../analyzer/backendDetector"
 import {
@@ -91,6 +92,17 @@ export class BackendCandidateLoader {
         }
       }
 
+      // A package.json that was found but could not be parsed is a
+      // read/parse gap, not backend evidence: never fabricate a candidate
+      // from it. Skip this candidate's env-template probing too -- there is
+      // no candidate left to attach that evidence to.
+      if (parseError) {
+        warnings.push(backendPackageJsonParseWarning(path, parseError))
+        complete = false
+        candidates.push(null)
+        continue
+      }
+
       const envPresentPaths: string[] = []
       const envTextFiles: Record<string, string> = {}
       let readsForThisCandidate = 0
@@ -140,7 +152,6 @@ export class BackendCandidateLoader {
         detectBackendCandidate(
           path,
           packageJson,
-          parseError,
           envPresentPaths,
           envTextFiles,
         ),

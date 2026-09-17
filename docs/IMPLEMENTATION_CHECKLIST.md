@@ -280,9 +280,20 @@ target. It is not evidence that any of stages 7-11 are implemented.
       evidence attached only to an already-qualifying candidate. A
       directory name alone, or a lone hosted-backend-client dependency
       (`@supabase/supabase-js`/`firebase`/`aws-amplify`), never by itself
-      creates a candidate; a malformed-but-present package.json degrades to
-      a warning-carrying candidate rather than crashing, mirroring
-      `repositoryStructureDetector.ts`'s existing treatment of the same case
+      creates a candidate
+- [x] Fixed a false-positive: a package.json that was found but could not be
+      parsed no longer fabricates a "detected" candidate (previously any
+      malformed nested/root package.json alone produced "Backend detected,
+      framework: Unrecognized framework"). `detectBackendCandidate` treats
+      "absent" and "malformed" package.json identically (`packageJson:
+      null`, no candidate); the caller
+      (`core/github/backendCandidateLoader.ts` for a nested candidate,
+      `analyzeRepository.ts` for the root) records
+      `backendPackageJsonParseWarning` in `BackendDetection.warnings` and
+      sets `complete: false` instead, while sibling candidates are still
+      probed and reported normally, and a real database/server dependency
+      that *does* parse still yields a valid `framework: "unknown"`
+      candidate exactly as before
 - [x] Classify the repository root's own backend evidence from data
       `analyzeRepository.ts` already has -- zero extra GitHub requests
 - [x] Add a bounded loader for nested candidates

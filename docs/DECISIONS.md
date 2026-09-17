@@ -529,3 +529,18 @@ selectable as a preview target and never gains a build/run control. Backend
 execution, frontend/backend routing, ephemeral secret/env provisioning, and
 temporary database support (roadmap stages 8-11) remain untouched and
 unstarted by this decision.
+
+**Update:** the first implementation of `detectBackendCandidate` returned a
+degraded-but-present candidate (`framework: "unknown"`) for a
+malformed-but-present package.json, mirroring
+`repositoryStructureDetector.ts`'s treatment of the same case for frontend
+structure. This was a false-positive: it let a single unparseable
+package.json alone produce "Backend detected, framework: Unrecognized
+framework" with zero actual evidence. Fixed so `detectBackendCandidate`
+never fabricates a candidate for a parse failure -- it receives
+`packageJson: null` for both "absent" and "malformed" input and returns
+`null` either way; the caller records `backendPackageJsonParseWarning` in
+`BackendDetection.warnings` and sets `complete: false` instead, while
+sibling candidates are still probed and reported normally, and a real,
+successfully-parsed database/server-only dependency still yields a valid
+`framework: "unknown"` candidate exactly as before.

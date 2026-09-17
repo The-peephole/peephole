@@ -12,6 +12,7 @@ import type { RepositoryFileSnapshot } from "../github/knownFiles"
 import { analyzeBuildTarget, deduplicateBlockers } from "./analyzeBuildTarget"
 import {
   assembleBackendDetection,
+  backendPackageJsonParseWarning,
   detectBackendCandidate,
 } from "./backendDetector"
 import { detectDeployment } from "./deploymentDetector"
@@ -46,17 +47,24 @@ export function analyzeRepository(
   const packageJson = packageJsonResult.value
   const deployment = detectDeployment(repository, files.presentPaths)
   const workspace = detectWorkspace(packageJson, files.presentPaths)
-  const rootBackendCandidate = detectBackendCandidate(
-    ".",
-    packageJson,
-    packageJsonResult.error,
-    files.presentPaths,
-    files.textFiles,
-  )
+  // A malformed root package.json is a read/parse gap, not backend
+  // evidence: it must never fabricate a candidate, and it degrades
+  // `backend.complete` the same way a malformed nested candidate does.
+  const rootBackendCandidate = packageJsonResult.error
+    ? null
+    : detectBackendCandidate(
+        ".",
+        packageJson,
+        files.presentPaths,
+        files.textFiles,
+      )
+  const rootBackendWarnings = packageJsonResult.error
+    ? [backendPackageJsonParseWarning(".", packageJsonResult.error)]
+    : []
   const backend = assembleBackendDetection(
     [rootBackendCandidate, ...(nestedBackend?.candidates ?? [])],
-    nestedBackend?.warnings ?? [],
-    nestedBackend?.complete ?? true,
+    [...rootBackendWarnings, ...(nestedBackend?.warnings ?? [])],
+    !packageJsonResult.error && (nestedBackend?.complete ?? true),
     nestedBackend?.truncated ?? false,
   )
   const environmentRequirements = mergeEnvironmentRequirements([

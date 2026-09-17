@@ -630,10 +630,19 @@ A hosted backend client (`@supabase/supabase-js`, `firebase`,
 backend server -- it never creates a candidate by itself, and on an
 already-qualifying candidate it is recorded as a warning
 ("Hosted backend client detected... this is not local backend server
-evidence"), not as evidence for that candidate's framework. A
-malformed-but-present nested `package.json` still yields a degraded
-candidate carrying the parse error as a warning, mirroring
-`repositoryStructureDetector.ts`'s existing treatment of the same case.
+evidence"), not as evidence for that candidate's framework.
+
+A package.json that was found but could not be parsed is a read/parse gap,
+not backend evidence, and **never** yields a candidate -- unlike
+`repositoryStructureDetector.ts`'s degraded-candidate treatment of the same
+case for frontend structure, a malformed package.json here must not produce
+"Backend detected, framework: Unrecognized framework" from nothing.
+`detectBackendCandidate` receives `packageJson: null` for both "absent" and
+"malformed" (it cannot and does not need to tell them apart); the caller
+(`BackendCandidateLoader` for a nested candidate, `analyzeRepository.ts` for
+the root) instead records `backendPackageJsonParseWarning(sourceRoot,
+parseError)` in `BackendDetection.warnings` and sets `complete: false`,
+while sibling candidates are still probed and reported normally.
 
 ### Root vs. nested backend, and bounded discovery
 

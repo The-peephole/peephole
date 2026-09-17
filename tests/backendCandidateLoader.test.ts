@@ -137,6 +137,65 @@ describe("BackendCandidateLoader", () => {
     expect(result.candidates[0]?.environmentRequirements).toEqual([])
   })
 
+  it("reports not-detected/complete:false with the parse-error warning for a malformed nested package.json only", async () => {
+    const getRepositoryTextFile = vi
+      .fn()
+      .mockImplementation(async (_repo, path: string) => {
+        if (path === "backend/package.json") return "{ not valid json"
+        return null
+      })
+    const loader = new BackendCandidateLoader({ getRepositoryTextFile })
+
+    const result = await loader.load(repository, ["backend"])
+
+    expect(result.status).toBe("not-detected")
+    expect(result.candidates).toEqual([])
+    expect(result.complete).toBe(false)
+    expect(result.warnings.join(" ")).toContain(
+      "backend/package.json could not be parsed",
+    )
+  })
+
+  it("still detects a valid sibling candidate when another candidate's package.json is malformed", async () => {
+    const getRepositoryTextFile = vi
+      .fn()
+      .mockImplementation(async (_repo, path: string) => {
+        if (path === "backend/package.json") return expressPackageJson()
+        if (path === "broken/package.json") return "{ not valid json"
+        return null
+      })
+    const loader = new BackendCandidateLoader({ getRepositoryTextFile })
+
+    const result = await loader.load(repository, ["backend", "broken"])
+
+    expect(result.status).toBe("detected")
+    expect(result.candidates).toMatchObject([
+      { sourceRoot: "backend", framework: "express" },
+    ])
+    expect(result.complete).toBe(false)
+    expect(result.warnings.join(" ")).toContain(
+      "broken/package.json could not be parsed",
+    )
+  })
+
+  it("does not probe env templates for a candidate whose package.json is malformed", async () => {
+    const getRepositoryTextFile = vi
+      .fn()
+      .mockImplementation(async (_repo, path: string) => {
+        if (path === "backend/package.json") return "{ not valid json"
+        return null
+      })
+    const loader = new BackendCandidateLoader({ getRepositoryTextFile })
+
+    await loader.load(repository, ["backend"])
+
+    expect(
+      getRepositoryTextFile.mock.calls.some((call) =>
+        String(call[1]).includes(".env"),
+      ),
+    ).toBe(false)
+  })
+
   it("propagates an abort instead of swallowing it", async () => {
     const abortError = new DOMException("aborted", "AbortError")
     const getRepositoryTextFile = vi.fn().mockRejectedValue(abortError)
