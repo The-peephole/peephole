@@ -2,6 +2,7 @@ import { resolveBackendRuntimePlan } from "../../core/analyzer/backendRuntimeAda
 import { detectBackendCandidate } from "../../core/analyzer/backendDetector"
 import { ENV_TEMPLATE_FILENAMES } from "../../core/analyzer/envTemplateFiles"
 import { parsePackageJson } from "../../core/analyzer/packageJson"
+import { isNpmBackendPackageManagerDeclaration } from "../../core/analyzer/backendPackageManager"
 import type { GitHubClient } from "../../core/github/client"
 import { joinRepositoryPath } from "../../core/github/repositoryPath"
 import { isSafePreviewSourceRoot } from "../../core/preview/sourceRoot"
@@ -117,7 +118,8 @@ export class GitHubBackendRuntimePlanResolver implements BackendRuntimePlanResol
 
     const parsed = parsePackageJson(packageJsonContent)
     if (!parsed.value) return null
-    if (!isNpmDeclaration(parsed.value.packageManager)) return null
+    if (!isNpmBackendPackageManagerDeclaration(parsed.value.packageManager))
+      return null
 
     const lockPath =
       sourceRoot === "."
@@ -158,12 +160,6 @@ export class GitHubBackendRuntimePlanResolver implements BackendRuntimePlanResol
       lockContent !== null,
     )
   }
-}
-
-/** Absent declaration is permitted when the committed package-lock proves npm;
- * a declaration is only accepted when it is exactly npm or npm@<version>. */
-function isNpmDeclaration(value: string | null): boolean {
-  return value === null || /^npm(?:@[A-Za-z0-9.+_-]+)?$/.test(value)
 }
 
 function isAbortError(error: unknown): boolean {

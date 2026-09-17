@@ -18,6 +18,9 @@ export interface BackendCandidate {
   framework: BackendFramework
   runtime: "node"
   packageName: string | null
+  /** The `package.json` packageManager declaration, retained solely for
+   * backend-v1's npm-only compatibility check. */
+  packageManager?: string | null
   /**
    * A safe, textually-derived entrypoint file name from a narrow
    * `node <path>`-style start/dev script, or null when none could be

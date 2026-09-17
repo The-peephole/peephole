@@ -157,6 +157,7 @@ export function detectBackendCandidate(
     framework,
     runtime: "node",
     packageName: packageJson.name,
+    packageManager: packageJson.packageManager,
     entrypoint,
     databaseDependencies,
     environmentRequirements,

@@ -669,10 +669,11 @@ function TargetSelector({
  * Detection only for an unsupported candidate: no build/run/start control is
  * ever offered for it, and a backend candidate is never selectable as a
  * preview target (see `TargetSelector`, which only lists structure
- * `project-candidate` entries). A candidate `resolveBackendExecutionSupport`
- * reports as supported may show Start/Stop controls via
- * `renderBackendRuntimeControls` -- still never a URL, never a preview-target
- * option, and never a frontend/backend connection. See
+ * `project-candidate` entries). A compatible candidate is only presented as
+ * supported when `renderBackendRuntimeControls` is enabled by the caller's
+ * runtime capability; otherwise it is explicitly described as disabled.
+ * Neither state is a URL, preview-target option, or frontend/backend
+ * connection. See
  * docs/PREVIEW_RUNTIME.md's "Backend Runtime (backend-v1)".
  */
 function BackendSection({
@@ -715,9 +716,11 @@ function BackendSection({
                   <Detail
                     label="Execution"
                     value={
-                      support.supported
+                      support.supported && renderBackendRuntimeControls
                         ? `Supported (${support.adapterId})`
-                        : "Not supported yet"
+                        : support.supported
+                          ? "Compatible (backend-v1) - disabled"
+                          : "Not supported yet"
                     }
                   />
                 </dl>

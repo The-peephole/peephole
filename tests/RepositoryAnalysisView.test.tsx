@@ -974,8 +974,52 @@ describe("RepositoryAnalysisView", () => {
     })
     const container = await renderView(loader, roots)
 
-    expect(container.textContent).toContain("Supported (express-node-npm-v1)")
+    expect(container.textContent).toContain(
+      "Compatible (backend-v1) - disabled",
+    )
+    expect(container.textContent).not.toContain(
+      "Supported (express-node-npm-v1)",
+    )
     expect(container.textContent).not.toContain("Start backend")
+  })
+
+  it("does not advertise an explicit pnpm backend as runtime-compatible", async () => {
+    const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
+      ...supportedAnalysis,
+      backend: {
+        status: "detected",
+        candidates: [
+          {
+            sourceRoot: "backend",
+            framework: "express",
+            runtime: "node",
+            packageName: "backend",
+            packageManager: "pnpm@9.0.0",
+            entrypoint: "src/server.js",
+            databaseDependencies: [],
+            environmentRequirements: [],
+            packageLockPresent: true,
+            evidence: ["express dependency detected"],
+            warnings: [],
+          },
+        ],
+        evidence: ["1 backend candidate detected"],
+        warnings: [],
+        complete: true,
+        truncated: false,
+      },
+    })
+    const renderBackendRuntimeControls = vi.fn(() => (
+      <button type="button">Start backend</button>
+    ))
+    const container = await renderView(loader, roots, {
+      renderBackendRuntimeControls,
+    })
+
+    expect(container.textContent).toContain("Not supported yet")
+    expect(container.textContent).not.toContain("Compatible (backend-v1)")
+    expect(container.textContent).not.toContain("Start backend")
+    expect(renderBackendRuntimeControls).not.toHaveBeenCalled()
   })
 
   it("never offers a backend candidate as a selectable or runnable preview target", async () => {

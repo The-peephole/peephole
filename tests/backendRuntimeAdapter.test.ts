@@ -22,6 +22,7 @@ function candidate(
     framework: "express",
     runtime: "node",
     packageName: "backend",
+    packageManager: null,
     entrypoint: "src/server.js",
     databaseDependencies: [],
     environmentRequirements: [],
@@ -240,4 +241,25 @@ describe("resolveBackendExecutionSupport", () => {
     )
     expect(support.supported).toBe(false)
   })
+
+  it.each(["pnpm@9.0.0", "yarn@4.0.0", "bun@1.0.0"])(
+    "does not advertise backend-v1 support for explicit %s declarations",
+    (packageManager) => {
+      const support = resolveBackendExecutionSupport(
+        candidate({ packageManager }),
+      )
+
+      expect(support).toMatchObject({ supported: false, adapterId: null })
+      expect(support.evidence.join(" ")).toContain("npm")
+    },
+  )
+
+  it.each([null, "npm", "npm@10.0.0"])(
+    "retains npm compatibility for packageManager %s",
+    (packageManager) => {
+      expect(
+        resolveBackendExecutionSupport(candidate({ packageManager })).supported,
+      ).toBe(true)
+    },
+  )
 })

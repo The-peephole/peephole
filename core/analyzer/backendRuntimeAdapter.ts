@@ -7,6 +7,7 @@ import type {
 import { BACKEND_RUNTIME_CONTRACT_VERSION } from "../../types/backendRuntime"
 import type { PreviewRepositoryRef } from "../../types/preview"
 import { isSafePreviewSourceRoot } from "../preview/sourceRoot"
+import { isNpmBackendPackageManagerDeclaration } from "./backendPackageManager"
 
 /**
  * `express-node-npm-v1` is the only implemented backend-v1 adapter. It is
@@ -93,6 +94,10 @@ function findUnsupportedReason(candidate: BackendCandidate): string | null {
 
   if (!candidate.packageLockPresent) {
     return "package-lock.json is required for backend-v1 execution."
+  }
+
+  if (!isNpmBackendPackageManagerDeclaration(candidate.packageManager)) {
+    return "Only npm may be declared for backend-v1 execution."
   }
 
   if (!isSafeVerifiableEntrypoint(candidate.entrypoint)) {
