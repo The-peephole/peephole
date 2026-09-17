@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react"
 
+import { resolveBackendExecutionSupport } from "../core/analyzer/backendRuntimeAdapter"
 import { isSafeExternalUrl } from "../core/github/externalUrlPolicy"
 import { DEFAULT_REPOSITORY_REF } from "../core/github/repositoryRef"
 import { toRootBuildTargetAnalysis } from "../core/preview/buildAdapters"
@@ -11,7 +12,7 @@ import type {
   RepositoryAnalysis,
   RepositoryAnalysisLoader,
 } from "../types/analysis"
-import type { BackendDetection } from "../types/backend"
+import type { BackendCandidate, BackendDetection } from "../types/backend"
 import type {
   LiveDeploymentCandidate,
   RepositoryLiveDeployment,
@@ -22,6 +23,7 @@ import type {
   RepositoryBranchList,
   RepositoryBranchesLoader,
   RepositoryIdentity,
+  RepositoryMetadata,
   RepositoryRefSelection,
 } from "../types/repository"
 import type { RepositoryStructureLayout } from "../types/structure"
@@ -35,6 +37,18 @@ interface RepositoryAnalysisViewProps {
   renderPreviewControls?: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
   ) => ReactNode
+  /**
+   * Rendered only for a candidate `resolveBackendExecutionSupport` reports
+   * as supported -- an unsupported candidate always keeps the plain
+   * "Execution: Not supported yet" detail exactly as before, with no call
+   * here at all. This view never owns a `BackendRuntimeApi` client or a
+   * URL of any kind; the caller (see entrypoints/sidepanel) is responsible
+   * for Start/Stop and status polling.
+   */
+  renderBackendRuntimeControls?: (input: {
+    candidate: BackendCandidate
+    repository: RepositoryMetadata
+  }) => ReactNode
 }
 
 type AnalysisState =
@@ -64,6 +78,7 @@ function RepositoryAnalysisSession({
   loadRepositoryBranches,
   loadRepositoryLiveDeployment = unavailableLiveDeploymentLoader,
   renderPreviewControls,
+  renderBackendRuntimeControls,
 }: RepositoryAnalysisViewProps) {
   const [analysisState, setAnalysisState] = useState<AnalysisState>({
     status: "loading",
@@ -195,6 +210,7 @@ function RepositoryAnalysisSession({
         analysisState={analysisState}
         onRetry={() => setAnalysisRequestVersion((version) => version + 1)}
         renderPreviewControls={renderPreviewControls}
+        renderBackendRuntimeControls={renderBackendRuntimeControls}
         loadBuildTargetAnalysis={loadBuildTargetAnalysis}
         selectedBranch={selectedBranch}
       />
@@ -310,6 +326,7 @@ function AnalysisContent({
   analysisState,
   onRetry,
   renderPreviewControls,
+  renderBackendRuntimeControls,
   loadBuildTargetAnalysis,
   selectedBranch,
 }: {
@@ -318,6 +335,10 @@ function AnalysisContent({
   renderPreviewControls?: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
   ) => ReactNode
+  renderBackendRuntimeControls?: (input: {
+    candidate: BackendCandidate
+    repository: RepositoryMetadata
+  }) => ReactNode
   loadBuildTargetAnalysis: BuildTargetAnalysisLoader
   selectedBranch: string
 }) {
@@ -349,6 +370,7 @@ function AnalysisContent({
             key={`${preservedAnalysis.repository.repositoryId}:${preservedAnalysis.repository.commitSha}:${selectedBranch}`}
             loadBuildTargetAnalysis={loadBuildTargetAnalysis}
             renderPreviewControls={renderPreviewControls}
+            renderBackendRuntimeControls={renderBackendRuntimeControls}
           />
         </div>
       )}
@@ -360,12 +382,17 @@ function AnalysisResults({
   analysis,
   loadBuildTargetAnalysis,
   renderPreviewControls,
+  renderBackendRuntimeControls,
 }: {
   analysis: RepositoryAnalysis
   loadBuildTargetAnalysis: BuildTargetAnalysisLoader
   renderPreviewControls?: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
   ) => ReactNode
+  renderBackendRuntimeControls?: (input: {
+    candidate: BackendCandidate
+    repository: RepositoryMetadata
+  }) => ReactNode
 }) {
   const rootAnalysis = useMemo(
     () => toRootBuildTargetAnalysis(analysis),
@@ -529,7 +556,11 @@ function AnalysisResults({
             )}
           </section>
 
-          <BackendSection backend={analysis.backend} />
+          <BackendSection
+            backend={analysis.backend}
+            renderBackendRuntimeControls={renderBackendRuntimeControls}
+            repository={analysis.repository}
+          />
 
           <section className="peephole__section">
             <h3>Environment</h3>
@@ -635,12 +666,27 @@ function TargetSelector({
 }
 
 /**
- * Detection only, never execution: no build/run/start control is ever
- * offered here, and a backend candidate is never selectable as a preview
- * target (see `TargetSelector`, which only lists structure `project-candidate`
- * entries).
+ * Detection only for an unsupported candidate: no build/run/start control is
+ * ever offered for it, and a backend candidate is never selectable as a
+ * preview target (see `TargetSelector`, which only lists structure
+ * `project-candidate` entries). A candidate `resolveBackendExecutionSupport`
+ * reports as supported may show Start/Stop controls via
+ * `renderBackendRuntimeControls` -- still never a URL, never a preview-target
+ * option, and never a frontend/backend connection. See
+ * docs/PREVIEW_RUNTIME.md's "Backend Runtime (backend-v1)".
  */
-function BackendSection({ backend }: { backend: BackendDetection }) {
+function BackendSection({
+  backend,
+  renderBackendRuntimeControls,
+  repository,
+}: {
+  backend: BackendDetection
+  renderBackendRuntimeControls?: (input: {
+    candidate: BackendCandidate
+    repository: RepositoryMetadata
+  }) => ReactNode
+  repository: RepositoryMetadata
+}) {
   return (
     <section className="peephole__section">
       <h3>Backend</h3>
@@ -648,40 +694,52 @@ function BackendSection({ backend }: { backend: BackendDetection }) {
         <p className="peephole__muted">No backend detected.</p>
       ) : (
         <ul aria-label="Detected backend candidates" className="peephole__list">
-          {backend.candidates.map((candidate) => (
-            <li key={candidate.sourceRoot}>
-              <dl className="peephole__facts">
-                <Detail
-                  label="Source"
-                  value={
-                    candidate.sourceRoot === "."
-                      ? "Repository root"
-                      : candidate.sourceRoot
-                  }
-                />
-                <Detail
-                  label="Framework"
-                  value={formatBackendFramework(candidate.framework)}
-                />
-                <Detail label="Runtime" value="Node.js" />
-                <Detail label="Execution" value="Not supported yet" />
-              </dl>
-              {candidate.evidence.length > 0 && (
-                <ul className="peephole__list">
-                  {candidate.evidence.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              )}
-              {candidate.warnings.length > 0 && (
-                <ul className="peephole__list">
-                  {candidate.warnings.map((warning) => (
-                    <li key={warning}>{warning}</li>
-                  ))}
-                </ul>
-              )}
-            </li>
-          ))}
+          {backend.candidates.map((candidate) => {
+            const support = resolveBackendExecutionSupport(candidate)
+            return (
+              <li key={candidate.sourceRoot}>
+                <dl className="peephole__facts">
+                  <Detail
+                    label="Source"
+                    value={
+                      candidate.sourceRoot === "."
+                        ? "Repository root"
+                        : candidate.sourceRoot
+                    }
+                  />
+                  <Detail
+                    label="Framework"
+                    value={formatBackendFramework(candidate.framework)}
+                  />
+                  <Detail label="Runtime" value="Node.js" />
+                  <Detail
+                    label="Execution"
+                    value={
+                      support.supported
+                        ? `Supported (${support.adapterId})`
+                        : "Not supported yet"
+                    }
+                  />
+                </dl>
+                {support.supported &&
+                  renderBackendRuntimeControls?.({ candidate, repository })}
+                {candidate.evidence.length > 0 && (
+                  <ul className="peephole__list">
+                    {candidate.evidence.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                )}
+                {candidate.warnings.length > 0 && (
+                  <ul className="peephole__list">
+                    {candidate.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            )
+          })}
         </ul>
       )}
       {backend.warnings.length > 0 && (

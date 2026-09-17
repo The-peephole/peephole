@@ -82,6 +82,7 @@ export function detectBackendCandidate(
   packageJson: ParsedPackageJson | null,
   envPresentPaths: readonly string[],
   envTextFiles: Readonly<Record<string, string>>,
+  packageLockPresent = false,
 ): BackendCandidate | null {
   if (!packageJson) return null
 
@@ -159,6 +160,7 @@ export function detectBackendCandidate(
     entrypoint,
     databaseDependencies,
     environmentRequirements,
+    packageLockPresent,
     evidence,
     warnings,
   }

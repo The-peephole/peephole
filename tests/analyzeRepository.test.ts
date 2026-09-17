@@ -532,6 +532,7 @@ describe("analyzeRepository", () => {
           packageName: "backend",
           entrypoint: "src/server.js",
           databaseDependencies: [],
+          packageLockPresent: true,
           environmentRequirements: [
             {
               name: "PORT",

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto"
 import { cp, mkdir } from "node:fs/promises"
 import path from "node:path"
 
@@ -8,7 +9,10 @@ import {
 import { DEFAULT_RUNNER_TIMEOUTS } from "../../../core/runner/runnerLimits"
 import type { SandboxProvisioner } from "../ports"
 import type { GVisorPreviewWorkspace } from "./gvisorWorkspace"
-import type { NetworkNamespaceHandle } from "./networkNamespace"
+import type {
+  IngressOnlyNetworkNamespaceHandle,
+  NetworkNamespaceHandle,
+} from "./networkNamespace"
 import { VethNatNetworkProvisioner } from "./networkNamespace"
 import { NodeProcessRunner } from "./nodeProcessRunner"
 import type { ProcessRunner } from "./processRunner"
@@ -104,6 +108,8 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
       const deadline = this.now().getTime() + this.jobTimeoutMs
       const containers = new Set<string>()
       let networkNamespace: Promise<NetworkNamespaceHandle> | null = null
+      let ingressOnlyNetworkNamespace: Promise<IngressOnlyNetworkNamespaceHandle> | null =
+        null
       let destroyPromise: Promise<void> | null = null
 
       const destroy = async (): Promise<void> => {
@@ -152,6 +158,13 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
               cleanupErrors.push(error)
             }
           }
+          if (ingressOnlyNetworkNamespace) {
+            try {
+              await (await ingressOnlyNetworkNamespace).teardown()
+            } catch (error) {
+              cleanupErrors.push(error)
+            }
+          }
           try {
             await this.diskManager.destroyAllocation(allocation)
           } catch (error) {
@@ -188,6 +201,19 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
             dnsServers,
           )
           return (await networkNamespace).path
+        },
+        ensureIngressOnlyNetworkNamespace: async () => {
+          // A distinct allocation id from the disk allocation's: the two
+          // namespaces are independent leases (install's egress-NAT
+          // namespace may still be active when this one is created) and
+          // `NetworkAllocationRegistry` rejects a second concurrent
+          // activation of the same id.
+          ingressOnlyNetworkNamespace ??=
+            this.networkProvisioner.createIngressOnly(
+              randomBytes(16).toString("hex"),
+            )
+          const handle = await ingressOnlyNetworkNamespace
+          return { path: handle.path, peerIp: handle.peerIp }
         },
         destroy,
       }

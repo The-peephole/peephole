@@ -228,6 +228,109 @@ Supporting Next.js SSR or arbitrary Node servers changes the product from static
 
 Do not extend the static worker by simply leaving the build container running. Define and review a separate server-runtime contract first.
 
+## 13a. Backend Runtime (`backend-v1`): Isolated Standalone Execution
+
+This is that separate contract, and it is narrow by design. Its success
+criterion is **"Peephole can safely start, supervise, stop, and clean up one
+narrowly-supported backend process inside gVisor"** -- not "supports
+arbitrary Node backends," not "supports full-stack preview," and not
+"frontend can call the backend." See D-030 for the full design rationale.
+
+**Contract.** `types/backendRuntime.ts` defines `BackendRuntimePlan`, a
+contract fully independent from `BuildPlan`/`static-v1`/`static-v2` with its
+own `backend-v1` version namespace. The only implemented adapter is
+`express-node-npm-v1` (`core/analyzer/backendRuntimeAdapter.ts`): Express
+only, npm with a required `package-lock.json`, zero database dependencies,
+and every environment requirement classified `auto-configurable`
+(`PORT`/`HOST`/`NODE_ENV` only). A client may request only repository
+identity, the exact commit, and an optional `sourceRoot` hint; the server
+(`services/backend-runtime-api/githubRuntimePlanResolver.ts`) independently
+re-derives everything else at that exact commit, and the worker
+(`core/preview/backendRuntimePlanValidator.ts`) re-validates the queued plan
+a second time against an exact allowlist before ever executing anything.
+The runtime never executes `npm start`, a shell, or a client-supplied
+command -- only a structurally-derived `node <entrypoint>.{js,mjs,cjs}`.
+
+**Lifecycle.**
+
+```text
+queued -> fetching -> installing -> starting -> running -> stopping -> stopped
+
+Cancel while queued/fetching/installing/starting -> cancelled (direct)
+Cancel while running/stopping -> stopping -> stopped
+Any active phase -> failed
+Any active phase past its TTL -> expired
+```
+
+Recommended default TTL is 10 minutes; the worker also carries a longer,
+independent OS-process backstop timeout. Recovering from a worker restart is
+fail-closed: any runtime still `starting`/`running` at startup is treated as
+stale, its sandbox/network/disk are reaped, and it is marked `failed` --
+Peephole never lets an orphaned backend keep running after a worker
+restart.
+
+**Runtime process primitive.** `runsc run` is a foreground, blocking CLI
+call with no "start in background" flag. `RunscCommandRunner` (used for
+`npm ci`/`npm run build`) is explicitly "one command, wait for exit,
+delete" and is never repurposed into a persistent-server primitive.
+`GVisorBackendRuntimeProcess` (`services/preview-worker/gvisor/backendRuntimeProcess.ts`)
+is the new, separate primitive: it fires `runsc run` without awaiting its
+completion and exposes `start()/waitUntilReady()/waitForExit()/stop()`.
+Stopping always goes through `runsc kill` then `runsc delete` -- the same
+sanctioned container-lifecycle pair the rest of this codebase already uses
+-- never an OS signal to the local `runsc run` process. Readiness is a bare
+TCP connect to the sandbox's internal port from the host's own root network
+namespace; an application route such as `/health` is never a generic
+contract requirement (only used internally against the official fixture in
+an environment-gated real-host test).
+
+**Network model: ingress-only, no new outbound.** This is the core security
+boundary of this stage. The backend's sandbox gets its own network
+namespace with no NAT, no default route, and no DNS: its egress chain
+unconditionally drops, so it can never reach the public internet, host
+services, cloud metadata, loopback, RFC1918/link-local space, another
+Peephole job, the control plane, or the artifact service. A host-side
+trusted process (today, the readiness probe) can still reach the sandbox's
+assigned port with **zero** firewall exceptions needed, because a
+host-root-namespace connection to a directly-connected veth peer is locally
+generated `OUTPUT` traffic, not `FORWARD`ed traffic -- only the reply
+(`ESTABLISHED,RELATED`) is explicitly allowed back in. Install still runs
+under the existing egress-NAT policy (`npm ci` needs registry access); the
+runtime process never does. See D-030 for how this was made additive to
+`NetworkOrphanReaper`'s existing crash-safety validation instead of
+conflicting with it.
+
+**No public backend URL yet.** The API and UI can only ever report
+"Running" -- never a URL, hostname, or "Open backend" control. There is no
+wildcard public domain, no reverse proxy, no frontend API rewrite, and no
+iframe pointed at the backend. Frontend-to-backend routing is its own,
+later roadmap stage (see stage 9 in `docs/MVP_ROADMAP.md`).
+
+**Control plane.** A separate resource, `POST/GET/DELETE
+/v1/backend-runtimes` (`services/backend-runtime-api/`) -- never the
+existing `PreviewJob` resource. Ownership is bound to the requester subject;
+a different requester gets `404`, not `403`, on both read and cancel. An
+identical in-flight request is returned idempotently; otherwise one active
+runtime per requester is enforced by default. Errors are one of a specific
+typed set (`FETCH_FAILED`, `UNSUPPORTED_BACKEND`, `INSTALL_FAILED`,
+`RUNTIME_START_FAILED`, `RUNTIME_READINESS_TIMEOUT`, `RUNTIME_EXITED`,
+`RUNTIME_TIMEOUT`, `RUNTIME_DISK_LIMIT`, `RUNTIME_UNAVAILABLE`) -- raw
+stdout/stderr, filesystem paths, and runsc/network internals are never
+exposed to a client.
+
+**Known limitations.** Persistence is in-memory only in this change
+(`InMemoryBackendRuntimeStore`/`InMemoryBackendRuntimeQueue`); a durable
+Postgres-backed store, matching the static path's, is future work. The
+ingress-only network policy has full unit coverage but has not been
+exercised against a real gVisor/Linux host. Nothing in this stage is wired
+into `services/production/server.ts`'s `main()` -- a
+`composeProductionBackendRuntime` composition function exists
+(`services/preview-worker/gvisor/composeProductionBackendRuntime.ts`) but is
+intentionally not called from production startup until the network policy
+is verified on a real host. A live disk-quota watcher during the *running*
+phase is not implemented; the sandbox's fixed-size ext4 workspace remains
+the non-bypassable backstop, matching install/build.
+
 ## 14. Minimum API Contract
 
 Create:

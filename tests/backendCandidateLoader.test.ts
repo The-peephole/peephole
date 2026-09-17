@@ -91,6 +91,7 @@ describe("BackendCandidateLoader", () => {
       .fn()
       .mockImplementation(async (_repo, path: string) => {
         if (path.endsWith("/package.json")) return expressPackageJson()
+        if (path.endsWith("/package-lock.json")) return null
         envReads += 1
         return null
       })
@@ -285,5 +286,52 @@ describe("BackendCandidateLoader", () => {
       expect(typeof path).toBe("string")
       expect(path).not.toContain("*")
     }
+  })
+
+  it("records packageLockPresent true when the lockfile is found", async () => {
+    const getRepositoryTextFile = vi
+      .fn()
+      .mockImplementation(async (_repo, path: string) => {
+        if (path === "backend/package.json") return expressPackageJson()
+        if (path === "backend/package-lock.json") return "{}"
+        return null
+      })
+    const loader = new BackendCandidateLoader({ getRepositoryTextFile })
+
+    const result = await loader.load(repository, ["backend"])
+
+    expect(result.candidates[0]?.packageLockPresent).toBe(true)
+  })
+
+  it("records packageLockPresent false when the lockfile is absent", async () => {
+    const getRepositoryTextFile = vi
+      .fn()
+      .mockImplementation(async (_repo, path: string) => {
+        if (path === "backend/package.json") return expressPackageJson()
+        return null
+      })
+    const loader = new BackendCandidateLoader({ getRepositoryTextFile })
+
+    const result = await loader.load(repository, ["backend"])
+
+    expect(result.candidates[0]?.packageLockPresent).toBe(false)
+  })
+
+  it("does not fail the whole load when the lockfile probe errors", async () => {
+    const getRepositoryTextFile = vi
+      .fn()
+      .mockImplementation(async (_repo, path: string) => {
+        if (path === "backend/package.json") return expressPackageJson()
+        if (path === "backend/package-lock.json") {
+          throw new Error("rate limited")
+        }
+        return null
+      })
+    const loader = new BackendCandidateLoader({ getRepositoryTextFile })
+
+    const result = await loader.load(repository, ["backend"])
+
+    expect(result.status).toBe("detected")
+    expect(result.candidates[0]?.packageLockPresent).toBe(false)
   })
 })

@@ -19,6 +19,18 @@ export interface GVisorPreviewWorkspace extends LocalPreviewWorkspace {
    * runs multiple commands. Torn down by `destroy()`.
    */
   ensureNetworkNamespace(dnsServers: readonly string[]): Promise<string>
+  /**
+   * Lazily creates (on first call) a separate, ingress-only network
+   * namespace for this job -- no NAT, no default route, no DNS, and no
+   * ability for the job to originate any outbound traffic. Distinct from
+   * `ensureNetworkNamespace`: a workspace never mixes the two policies on
+   * one namespace. Intended for a supervised backend runtime process, never
+   * for install/build. Torn down by `destroy()`.
+   */
+  ensureIngressOnlyNetworkNamespace(): Promise<{
+    path: string
+    peerIp: string
+  }>
 }
 
 export function asGVisorWorkspace(

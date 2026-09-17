@@ -527,6 +527,7 @@ function allocate(manager: NetworkLeaseManager, allocationId = ALLOCATION_ID) {
   return manager.allocate({
     allocationId,
     uplink: "eth0",
+    policy: "egress-nat",
     dnsServers: ["172.31.0.2"],
   })
 }

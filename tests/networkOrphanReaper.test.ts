@@ -41,7 +41,11 @@ class FakeNetworkHost implements ProcessRunner {
     return result(1, "", "unexpected command")
   }
 
-  install(lease: NetworkLease, state: "marker" | "veth" | "partial" | "full") {
+  install(
+    lease: NetworkLease,
+    state: "marker" | "veth" | "partial" | "full",
+    options: { withDefaultRoute?: boolean } = {},
+  ) {
     if (state === "marker") return
     this.links.add(lease.hostVeth)
     this.links.add(lease.peerVeth)
@@ -55,13 +59,16 @@ class FakeNetworkHost implements ProcessRunner {
     this.namespaceAddresses.set(lease.namespace, [
       address(lease.peerVeth, lease.peerIp),
     ])
-    this.namespaceRoutes.set(lease.namespace, [
-      { dst: "default", gateway: lease.hostIp, dev: lease.peerVeth },
-    ])
+    this.namespaceRoutes.set(
+      lease.namespace,
+      options.withDefaultRoute === false
+        ? []
+        : [{ dst: "default", gateway: lease.hostIp, dev: lease.peerVeth }],
+    )
     const rules = expectedRules(lease)
     this.ipv4 = state === "partial" ? rules.ipv4.slice(0, 5) : rules.ipv4
     if (state === "full") {
-      this.nat = [rules.nat]
+      this.nat = rules.nat ? [rules.nat] : []
       this.ipv6 = rules.ipv6Hooks
     }
   }
@@ -459,6 +466,7 @@ describe("NetworkOrphanReaper", () => {
         peerIp: subnet.peerIp,
         prefixLength: subnet.prefixLength,
         uplink: "eth0",
+        policy: "egress-nat",
         egressChain,
         inputChain,
         returnChain,
@@ -477,6 +485,157 @@ describe("NetworkOrphanReaper", () => {
     })
     await reaper.reap()
     expect(await readdir(leaseDirPath)).toEqual(["lease.json"])
+  })
+})
+
+describe("NetworkOrphanReaper ingress-only policy", () => {
+  let root: string
+  let manager: NetworkLeaseManager
+  let host: FakeNetworkHost
+  let reaper: NetworkOrphanReaper
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), "peephole-network-reaper-"))
+    manager = managerFor(root, false)
+    host = new FakeNetworkHost()
+    reaper = new NetworkOrphanReaper({
+      leaseManager: manager,
+      processRunner: host,
+    })
+  })
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  it.each(["marker", "veth", "partial", "full"] as const)(
+    "reconciles a valid %s crash state with no default route and releases the lease",
+    async (state) => {
+      const lease = await allocateIngressOnly(manager)
+      host.install(lease, state, { withDefaultRoute: false })
+      await reaper.reapAll()
+      expect(host.namespaces).toEqual(new Set())
+      expect(host.links).toEqual(new Set())
+      expect(host.ipv4).toEqual([])
+      expect(host.ipv6).toEqual([])
+      expect(host.nat).toEqual([])
+      expect(await readdir(root)).toEqual([])
+    },
+  )
+
+  it("never expects or removes a NAT rule for an ingress-only lease", async () => {
+    const lease = await allocateIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    expect(host.nat).toEqual([])
+
+    await reaper.reapAll()
+
+    expect(await manager.listOwnedLeases()).toEqual([])
+  })
+
+  it("fails closed if an ingress-only lease somehow acquired a NAT rule", async () => {
+    const lease = await allocateIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    host.nat.push([
+      "-A",
+      "POSTROUTING",
+      "-s",
+      `${lease.peerIp}/32`,
+      "-o",
+      "eth0",
+      "-m",
+      "comment",
+      "--comment",
+      lease.iptablesComment,
+      "-j",
+      "MASQUERADE",
+    ])
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected NAT rule/)
+  })
+
+  it("fails closed if an ingress-only lease's egress chain allows anything", async () => {
+    const lease = await allocateIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    host.ipv4.push(["-A", lease.egressChain, "-j", "ACCEPT"])
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected IPv4 rule/)
+  })
+
+  it("does not confuse an egress-nat and an ingress-only lease coexisting", async () => {
+    const egressLease = await allocate(manager)
+    const ingressLease = await allocateIngressOnly(manager)
+    host.install(egressLease, "full")
+    host.install(ingressLease, "full", { withDefaultRoute: false })
+
+    await reaper.reapAll()
+
+    expect(await manager.listOwnedLeases()).toEqual([])
+    expect(host.ipv4).toEqual([])
+    expect(host.nat).toEqual([])
+  })
+})
+
+describe("expectedRules for the ingress-only policy", () => {
+  it("produces a DROP-only egress chain, no DNS rules, and no NAT", () => {
+    const lease = ingressOnlyLeaseFixture()
+
+    const rules = expectedRules(lease)
+
+    expect(rules.nat).toBeNull()
+    expect(
+      rules.ipv4.filter(
+        (rule) => rule[1] === lease.egressChain && rule[0] === "-A",
+      ),
+    ).toEqual([["-A", lease.egressChain, "-j", "DROP"]])
+  })
+
+  it("allows only established/related traffic into the host and drops the rest", () => {
+    const lease = ingressOnlyLeaseFixture()
+
+    const rules = expectedRules(lease)
+
+    expect(
+      rules.ipv4.filter(
+        (rule) => rule[1] === lease.inputChain && rule[0] === "-A",
+      ),
+    ).toEqual([
+      [
+        "-A",
+        lease.inputChain,
+        "-m",
+        "conntrack",
+        "--ctstate",
+        "ESTABLISHED,RELATED",
+        "-j",
+        "ACCEPT",
+      ],
+      ["-A", lease.inputChain, "-j", "DROP"],
+    ])
+  })
+
+  it("makes the return chain an unconditional DROP", () => {
+    const lease = ingressOnlyLeaseFixture()
+
+    const rules = expectedRules(lease)
+
+    expect(
+      rules.ipv4.filter(
+        (rule) => rule[1] === lease.returnChain && rule[0] === "-A",
+      ),
+    ).toEqual([["-A", lease.returnChain, "-j", "DROP"]])
+  })
+
+  it("keeps the same FORWARD/INPUT hook shape as the egress-nat policy", () => {
+    const lease = ingressOnlyLeaseFixture()
+
+    const rules = expectedRules(lease)
+
+    expect(rules.ipv4Hooks).toEqual([
+      ["-A", "FORWARD", "-i", lease.hostVeth, "-j", lease.egressChain],
+      ["-A", "FORWARD", "-o", lease.hostVeth, "-j", lease.returnChain],
+      ["-A", "INPUT", "-i", lease.hostVeth, "-j", lease.inputChain],
+    ])
   })
 })
 
@@ -535,8 +694,37 @@ function allocate(manager: NetworkLeaseManager) {
   return manager.allocate({
     allocationId: "a".repeat(32),
     uplink: "eth0",
+    policy: "egress-nat",
     dnsServers: ["172.31.0.2"],
   })
+}
+
+function allocateIngressOnly(manager: NetworkLeaseManager) {
+  return manager.allocate({
+    allocationId: "b".repeat(32),
+    uplink: "eth0",
+    policy: "ingress-only",
+    dnsServers: [],
+  })
+}
+
+function ingressOnlyLeaseFixture(): NetworkLease {
+  const allocationId = "c".repeat(32)
+  const index = 7
+  return {
+    version: 1,
+    ...toSubnet(index),
+    ...deriveNetworkNames(allocationId, index),
+    allocationId,
+    uplink: "eth0",
+    policy: "ingress-only",
+    dnsServers: [],
+    creatorPid: process.pid,
+    creatorProcessStartTime: null,
+    bootId: null,
+    createdAt: new Date(0).toISOString(),
+    leaseDir: "/tmp/unused",
+  }
 }
 
 function address(ifname: string, local: string, prefixlen = 30) {

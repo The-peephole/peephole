@@ -770,8 +770,13 @@ No raw template value is ever returned, logged, or displayed -- only a
 variable's name and its classification. No secret is generated, encrypted,
 or stored. No environment variable is injected into a build. No `.env` file
 is created. No database is provisioned. No API URL is rewritten or routed.
-No backend process is spawned, started, or health-checked. "Backend
-detected" and "environment requirement detected" are display labels, not
-capability claims -- the UI shows a detected backend candidate's Execution
-as "Not supported yet," and never conflates it with "Full-stack preview
-supported."
+"Backend detected" and "environment requirement detected" are display
+labels, not capability claims -- the UI shows a detected backend
+candidate's Execution as "Not supported yet" unless it independently
+qualifies for the separate, narrow `backend-v1` execution contract (see
+docs/PREVIEW_RUNTIME.md's "Backend Runtime (backend-v1)" and D-030), in
+which case it shows "Supported (express-node-npm-v1)" and an optional
+Start/Stop control -- detection here never spawns, starts, or health-checks
+anything itself, and this is never conflated with "Full-stack preview
+supported": there is still no frontend/backend connection and no public
+backend URL.

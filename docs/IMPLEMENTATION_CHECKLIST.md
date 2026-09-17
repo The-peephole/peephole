@@ -14,7 +14,7 @@ later full-stack roadmap.
 5. [x] frontend target selection / bounded frontend monorepo support
 6. [x] existing deployed-site Live Preview
 7. [x] backend detection + environment requirement analysis
-8. [ ] backend execution
+8. [x] backend execution
 9. [ ] frontend ↔ backend routing
 10. [ ] ephemeral env / secrets
 11. [ ] temporary database support
@@ -340,6 +340,113 @@ target. It is not evidence that any of stages 7-11 are implemented.
       candidate is never selectable in `TargetSelector` and never gains a
       build/run control; only variable names and their classification are
       ever shown, never a raw template value
+
+## Backend Execution (`backend-v1`)
+
+See D-030 and docs/PREVIEW_RUNTIME.md's "Backend Runtime (backend-v1)"
+section for the full design. Success is narrowly "safely start, supervise,
+stop, and clean up one supported backend process inside gVisor" -- not
+arbitrary Node backend support and not frontend/backend connectivity.
+
+- [x] Define `backend-v1`/`BackendRuntimePlan` (`types/backendRuntime.ts`)
+      as a contract fully independent of `BuildPlan`/`static-v1`/`static-v2`
+- [x] Implement the only adapter, `express-node-npm-v1`
+      (`core/analyzer/backendRuntimeAdapter.ts`): Express only, npm with a
+      required `package-lock.json`, zero database dependencies, every
+      environment requirement `auto-configurable`, a safe
+      `.js`/`.mjs`/`.cjs` entrypoint only, always executes `node
+      <entrypoint>` directly (never `npm start`, a shell, or
+      `ts-node`/`tsx`)
+- [x] Thread `packageLockPresent` through `BackendCandidate`
+      (`types/backend.ts`, `core/analyzer/backendDetector.ts`,
+      `core/analyzer/analyzeRepository.ts`,
+      `core/github/backendCandidateLoader.ts`) so the adapter can enforce
+      the lockfile requirement
+- [x] Independent server-side plan re-derivation at the exact commit
+      (`services/backend-runtime-api/githubRuntimePlanResolver.ts`),
+      mirroring `GitHubPreviewPlanResolver`'s shape; a client may request
+      only repository identity, commit, and an optional `sourceRoot` hint
+- [x] A second, worker-side plan re-validation against an exact allowlist
+      (`core/preview/backendRuntimePlanValidator.ts`) before anything
+      executes, independent of whether the queue/store can be trusted
+- [x] A separate control plane and persistence model
+      (`services/backend-runtime-api/{ports,errors,controlPlane,inMemoryAdapters,http}.ts`):
+      `queued/fetching/installing/starting/running/stopping` plus terminal
+      `stopped/failed/cancelled/expired`; ownership bound to requester
+      subject (404, not 403, for another requester); idempotent reuse of an
+      identical active request; one active runtime per requester by default;
+      typed error codes only, never a raw INTERNAL_ERROR catch-all
+- [x] A separate resource, `POST/GET/DELETE /v1/backend-runtimes` -- never
+      the existing `PreviewJob` resource; response never includes a URL
+- [x] A new gVisor runtime process primitive,
+      `GVisorBackendRuntimeProcess`
+      (`services/preview-worker/gvisor/backendRuntimeProcess.ts`):
+      `start()/waitUntilReady()/waitForExit()/stop()`; fires `runsc run`
+      without awaiting completion (confirmed `runsc run` has no
+      background-start flag); stops via `runsc kill` then `runsc delete`,
+      never an OS signal to the local `runsc run` process; readiness is a
+      bare TCP connect from the host's own root network namespace, never a
+      required `/health` route
+- [x] `RunscCommandRunner` is untouched -- confirmed it stays a "one
+      command, wait for exit, delete" primitive, never repurposed for a
+      persistent server
+- [x] Ingress-only network policy, additive to existing crash-safety code:
+      `NetworkLease`/`NetworkLeaseMarker` gain an immutable
+      `policy: "egress-nat" | "ingress-only"` field
+      (`services/preview-worker/gvisor/subnetAllocator.ts`); every existing
+      egress-nat call site passes `policy: "egress-nat"` explicitly,
+      byte-for-byte unchanged; `VethNatNetworkProvisioner.createIngressOnly()`
+      is a new, separate method (no NAT, no default route, egress
+      unconditional `DROP`, input accepts only `ESTABLISHED,RELATED`,
+      return unconditional `DROP`); `NetworkOrphanReaper.expectedRules()`
+      branches on `lease.policy` so cleanup/reconciliation never
+      false-positives on an ingress-only lease
+- [x] Install and runtime phases use two independent leases (distinct
+      random allocation ids) so they can coexist without colliding in
+      `NetworkAllocationRegistry`'s per-id activation guard
+- [x] `BackendRuntimeSupervisor`
+      (`services/backend-runtime-worker/backendRuntimeSupervisor.ts`): a
+      wholly separate FETCH -> INSTALL -> START -> monitor -> STOP
+      orchestration, never an extension of
+      `PreviewJobWorker.runPipeline`; reuses `GitHubCommitArchiveFetcher`,
+      `ExtractionState`, `GVisorSandboxProvisioner`, and `RunscCommandRunner`
+      (`network: "sandbox"` for `npm ci`) unchanged; polls the control
+      plane's own TTL/cancel state rather than a separate timer
+- [x] `BackendRuntimeWorkerLoop`
+      (`services/backend-runtime-worker/backendRuntimeWorkerLoop.ts`): a
+      separate lease/renew loop with `PreviewWorkerLoop`'s identical shape;
+      `PreviewWorkerLoop` itself is untouched
+- [x] `composeProductionBackendRuntime`
+      (`services/preview-worker/gvisor/composeProductionBackendRuntime.ts`)
+      wires the real pipeline, but is **not** called from
+      `services/production/server.ts`'s `main()` -- see "Known limitations"
+      below
+- [x] Client-side `BackendRuntimeApiClient`
+      (`core/backendRuntime/apiClient.ts`), mirroring `PreviewApiClient`'s
+      session/auth/response-validation shape, and a
+      `BackendRuntimeControl` component
+      (`components/BackendRuntimeControl.tsx`) wired into
+      `RepositoryAnalysisView`'s Backend section via a new
+      `renderBackendRuntimeControls` render prop -- rendered only for a
+      candidate `resolveBackendExecutionSupport` reports as supported; an
+      unsupported candidate keeps "Execution: Not supported yet" exactly as
+      stage 7 left it; never adds a preview-target option, never shows a
+      URL, never connects frontend and backend
+- [x] Full unit coverage: adapter/plan (29 tests), control plane (22),
+      HTTP handler (5), ingress-only network policy and reconciliation (21
+      across `networkNamespace`/`networkOrphanReaper`/`gvisorAdapter`
+      tests), the gVisor runtime process primitive with a real local TCP
+      listener standing in for the sandbox (7), the supervisor with fake
+      runtime/queue/sandbox/install dependencies covering every phase
+      failure and the cancel/expire/crash paths (11), the worker loop (4),
+      and the client-side API client (6) -- see docs/TEST_PLAN.md
+- [ ] Known limitations, disclosed rather than worked around: persistence
+      is in-memory only in this change; the ingress-only network policy has
+      full unit coverage but has not been exercised against a real
+      gVisor/Linux host; nothing is wired into production `main()` yet; a
+      live disk-quota watcher during the *running* phase (as opposed to
+      install) is not implemented, relying on the sandbox's fixed-size
+      ext4 workspace as the backstop, matching install/build
 
 ## Analyzer
 

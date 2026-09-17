@@ -57,6 +57,7 @@ export function analyzeRepository(
         packageJson,
         files.presentPaths,
         files.textFiles,
+        files.presentPaths.includes("package-lock.json"),
       )
   const rootBackendWarnings = packageJsonResult.error
     ? [backendPackageJsonParseWarning(".", packageJsonResult.error)]

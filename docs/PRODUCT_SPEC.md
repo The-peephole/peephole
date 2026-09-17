@@ -105,13 +105,19 @@ branch name.
   (Express/NestJS/Fastify/Koa/Hapi framework evidence, database/server
   dependency evidence, a textually-derived and network-unverified
   entrypoint) for the repository root and a bounded set of nested
-  structure candidates; detected, never executed, started, or offered as a
-  preview target
+  structure candidates; never offered as a preview target regardless of
+  execution support
 - read-only environment requirement analysis: declared `.env.example`-family
   variable *names* (never values) classified as auto-configurable,
   preview-generated-secret-candidate, database-requirement,
   external-routing-candidate, user-required, or unknown, each tagged with
   its source root; no value is ever generated, injected, or requested
+- narrow backend execution (`backend-v1`, one adapter,
+  `express-node-npm-v1`): a detected candidate that is Express, uses npm
+  with a committed `package-lock.json`, has zero database dependencies, and
+  needs no environment beyond `PORT`/`HOST`/`NODE_ENV` may be started and
+  stopped as a supervised, isolated process inside gVisor; every other
+  candidate stays detected-but-not-executable exactly as before
 
 ### Recognized but not executable
 
@@ -121,12 +127,15 @@ branch name.
   local backend, evidence
 - workspace and monorepo ambiguity
 - Next.js, WXT, and non-Vite React blockers
+- any backend candidate outside `express-node-npm-v1`'s narrow shape
+  (a different framework, a missing lockfile, a database dependency, or an
+  environment requirement beyond `PORT`/`HOST`/`NODE_ENV`)
 
 ### Not implemented
 
 - shared-root npm/pnpm/yarn workspace orchestration
 - embedded remote deployed-site iframe or a proxy/fetch of a deployment URL
-- backend or persistent server execution
+- a public backend URL, hostname, or reverse proxy of any kind
 - frontend/backend routing
 - ephemeral environment or secret injection
 - temporary database provisioning
@@ -199,16 +208,22 @@ silently guessing how a repository should run.
 5. frontend target selection / bounded frontend monorepo support (implemented)
 6. existing deployed-site Live Preview (implemented)
 7. backend detection + environment requirement analysis (implemented)
-8. backend execution
+8. backend execution (implemented, narrow)
 9. frontend ↔ backend routing
 10. ephemeral env / secrets
 11. temporary database support
 
-Stages 8-11 describe future full-stack work. They must not be inferred from
-the prepared full-stack fixture, from stage 7's detection-only evidence, or
-documented as current capability. "Backend detected" and "environment
-requirement detected" are not "backend execution supported" or "environment
-configured."
+Stages 9-11 describe future full-stack work and must not be inferred from
+the prepared full-stack fixture or documented as current capability. Stage
+8's "narrow" qualifier is load-bearing: it supports exactly one backend
+shape (Express + npm + a committed lockfile + zero database dependencies +
+only `PORT`/`HOST`/`NODE_ENV` environment needs), never arbitrary Node
+backends, and its success is "can safely start/stop/clean up that one
+process inside gVisor" -- not "full-stack preview" and not "frontend can
+call the backend." "Backend detected" and "environment requirement
+detected" remain distinct from "backend execution supported," which is
+itself distinct from "backend routed to a frontend" or "environment
+configured" -- none of the latter exist yet.
 
 Build Adapter generalization is an internal capability boundary. The
 implemented adapters cover package-free root static HTML and root or

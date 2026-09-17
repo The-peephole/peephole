@@ -28,6 +28,14 @@ export interface BackendCandidate {
   /** Names of recognized database/server-side dependencies, if any. */
   databaseDependencies: string[]
   environmentRequirements: EnvironmentRequirement[]
+  /**
+   * Whether `{sourceRoot}/package-lock.json` was found. This is bounded
+   * evidence for a *future* execution-support signal (see
+   * `types/backendRuntime.ts`'s `BackendExecutionSupport`) -- it is never
+   * itself an authorization to execute anything, and a real backend
+   * runtime job always re-verifies this independently at the exact commit.
+   */
+  packageLockPresent: boolean
   evidence: string[]
   warnings: string[]
 }

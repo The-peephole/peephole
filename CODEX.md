@@ -52,10 +52,20 @@ Production execution is deliberately narrower than analysis:
   output directory.
 
 Vue/Svelte Vite, other package managers, shared-root workspace orchestration,
-backends, persistent servers, secrets, and temporary databases are not current
-runner capabilities. A repository's declared homepage and current GitHub
-Deployment status are both external-link evidence, opened in a new tab; there
-is no embedded deployed-site iframe or arbitrary remote proxy.
+persistent servers beyond `backend-v1`'s one narrow adapter, secrets, and
+temporary databases are not current runner capabilities. A repository's
+declared homepage and current GitHub Deployment status are both
+external-link evidence, opened in a new tab; there is no embedded
+deployed-site iframe or arbitrary remote proxy.
+
+Backend execution (`backend-v1`, see docs/PREVIEW_RUNTIME.md and D-030) is a
+wholly separate contract and pipeline from the static build path above: its
+own control plane, worker, gVisor runtime primitive, and ingress-only
+network policy. It supports exactly one adapter (`express-node-npm-v1`:
+Express + npm + a committed lockfile + no database dependency + only
+`PORT`/`HOST`/`NODE_ENV` environment needs) and never produces a public URL
+or a frontend/backend connection. Do not read its existence as "arbitrary
+Node backends are supported" or "full-stack preview is supported."
 
 ## Architecture to Preserve
 
@@ -147,14 +157,16 @@ changes it:
 5. frontend target selection / bounded frontend monorepo support (implemented)
 6. existing deployed-site Live Preview (implemented)
 7. backend detection + environment requirement analysis (implemented)
-8. backend execution
+8. backend execution (implemented, narrow -- see D-030)
 9. frontend ↔ backend routing
 10. ephemeral env / secrets
 11. temporary database support
 
 Each stage must expose a reviewed contract and preserve earlier security
 boundaries. In particular, do not jump from a full-stack fixture to backend
-execution, and do not keep the static build container alive as a server.
+execution, and do not keep the static build container alive as a server --
+stage 8's actual implementation is a wholly separate `backend-v1` contract
+and pipeline, exactly per that rule, not an extension of the static one.
 
 GitHub theme synchronization reads the current page's computed Primer semantic
 colors, validates a small snapshot, and stores it per tab in
@@ -333,6 +345,46 @@ never relaxes `SECRET_ENV_REQUIRED` or `BACKEND_REQUIRED` eligibility
 bumps (`0.1.0` -> `0.1.1`) for this additive field; `static-v1`/`static-v2`/
 `BuildPlan` and the Preview API/worker/gVisor pipeline are untouched.
 
+Backend execution (`backend-v1`; `types/backendRuntime.ts`,
+`services/backend-runtime-api/`, `services/backend-runtime-worker/`,
+`core/analyzer/backendRuntimeAdapter.ts`,
+`core/preview/backendRuntimePlanValidator.ts`) is a wholly separate
+contract, control plane, and worker pipeline -- see D-030 and
+docs/PREVIEW_RUNTIME.md's "Backend Runtime (backend-v1)" section for the
+full design, which this paragraph only summarizes. The single adapter,
+`express-node-npm-v1`, requires Express, npm with a committed
+`package-lock.json`, zero database dependencies, and every environment
+requirement already `auto-configurable`; it always executes a
+structurally-derived `node <entrypoint>.{js,mjs,cjs}` directly, never `npm
+start` or a shell. A client may request only repository identity, exact
+commit, and an optional `sourceRoot` hint; the server independently
+re-derives the plan at that exact commit
+(`GitHubBackendRuntimePlanResolver`), and the worker re-validates the
+queued plan a second time against an exact allowlist
+(`validateBackendRuntimePlan`) before executing anything. The runtime
+process primitive, `GVisorBackendRuntimeProcess`, is new -- `RunscCommandRunner`
+stays exactly the "one command, wait for exit, delete" primitive it already
+was, never repurposed for a persistent server -- and fires `runsc run`
+without awaiting completion, exposing
+`start()/waitUntilReady()/waitForExit()/stop()`; stopping always goes
+through `runsc kill` then `runsc delete`, the same pair
+`GVisorSandboxProvisioner.destroy()` already uses. The runtime's network
+namespace uses a new, additive `policy: "egress-nat" | "ingress-only"`
+field on `NetworkLease` (`subnetAllocator.ts`): the runtime gets
+`"ingress-only"` (no NAT, no default route, egress unconditionally `DROP`,
+input accepts only `ESTABLISHED,RELATED` replies), while every existing
+install/build lease keeps `"egress-nat"` byte-for-byte unchanged; a
+host-root-namespace connection to the sandbox's veth-peer address (the
+readiness probe) needs zero firewall exceptions since it is
+locally-generated `OUTPUT` traffic, never `FORWARD`ed. `BackendRuntimeSupervisor`
+is a new FETCH -> INSTALL -> START -> monitor -> STOP orchestration, never
+an extension of `PreviewJobWorker.runPipeline`. There is still no public
+backend URL, no frontend/backend routing, no generated secret, and no
+provisioned database -- those remain stages 9-11. Persistence in this stage
+is in-memory only, and the ingress-only network policy is unit-tested but
+unverified against a real gVisor/Linux host; production `main()` does not
+wire this in yet.
+
 ## Fixture Registry
 
 The official Vite + React golden-path fixture is:
@@ -354,11 +406,13 @@ repository: The-peephole/peephole-fixture-fullstack
 commit: eae411a288b212201933cebb206126dd5bb0d93e
 ```
 
-Its existence is test preparation only. It is not evidence of full-stack
-analysis, execution, routing, secrets, or database support. Its
-`frontend`/`backend` layout is now exercised as a real repository structure
-detection target (both surface as bounded project candidates); this proves
-structure detection only, not a runnable full-stack path.
+Its `frontend`/`backend` layout is exercised as a real repository structure
+detection target (both surface as bounded project candidates), and its
+`backend` directory (Express, npm, `/health` and `/api/hello`) is the
+reference fixture for `backend-v1` execution. It is not evidence of
+full-stack routing, secrets, or database support: the frontend and backend
+are never connected to each other, and there is still no runnable
+full-stack path.
 
 ## Change Procedure
 

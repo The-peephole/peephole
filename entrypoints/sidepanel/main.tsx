@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client"
 
 import { createRepositoryAnalysisMessageLoader } from "../../core/analyzer/messages"
 import { createBuildTargetAnalysisMessageLoader } from "../../core/analyzer/targetMessages"
+import { BackendRuntimeApiClient } from "../../core/backendRuntime/apiClient"
 import { createRepositoryBranchesMessageLoader } from "../../core/github/branchMessages"
 import { createLiveDeploymentMessageLoader } from "../../core/github/liveDeploymentMessages"
 import { PreviewApiClient } from "../../core/preview/apiClient"
@@ -42,6 +43,7 @@ const loadRepositoryLiveDeployment = createLiveDeploymentMessageLoader({
   send: (message) => browser.runtime.sendMessage(message),
 })
 let previewApi: PreviewApiClient | null = null
+let backendRuntimeApi: BackendRuntimeApiClient | null = null
 let reconnectGitHub: (() => Promise<void>) | null = null
 let previewArtifactBaseDomain: string | null = null
 let previewConfigurationError: string | null = null
@@ -55,6 +57,15 @@ try {
   )
   previewApi = previewApiBaseUrl
     ? new PreviewApiClient(previewApiBaseUrl, {
+        getSession: getStoredPreviewSession,
+        clearSession: clearStoredPreviewSession,
+      })
+    : null
+  // Same control-plane origin as the preview API (already covered by its
+  // host permission) -- backend-v1 is a separate resource on that host,
+  // not a separate service.
+  backendRuntimeApi = previewApiBaseUrl
+    ? new BackendRuntimeApiClient(previewApiBaseUrl, {
         getSession: getStoredPreviewSession,
         clearSession: clearStoredPreviewSession,
       })
@@ -106,6 +117,7 @@ createRoot(root).render(
       loadBuildTargetAnalysis={loadBuildTargetAnalysis}
       loadRepositoryBranches={loadRepositoryBranches}
       loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
+      backendRuntimeApi={backendRuntimeApi}
       connectGitHub={reconnectGitHub}
       previewApi={previewApi}
       previewArtifactBaseDomain={previewArtifactBaseDomain}

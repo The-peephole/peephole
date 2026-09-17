@@ -560,3 +560,120 @@ evidence it did manage to read, sibling candidates are still probed, and an
 abort still propagates instead of being caught. `truncated` is untouched by
 this -- a read failure and a bound being reached remain distinct signals,
 exactly as elsewhere in this codebase.
+
+## D-030 - Backend runtime (`backend-v1`) is a wholly separate, narrow, ingress-only execution contract -- never an extension of the static build pipeline
+
+**Status:** Accepted
+
+Section 13 of `docs/PREVIEW_RUNTIME.md` warned against extending the static
+worker "by simply leaving the build container running." This decision is
+that separate contract. `backend-v1` (`types/backendRuntime.ts`) has its own
+version namespace, its own control plane (`services/backend-runtime-api/`,
+a `POST/GET/DELETE /v1/backend-runtimes` resource, never the existing
+`PreviewJob`/`BuildPlan` resource), its own worker orchestration
+(`services/backend-runtime-worker/BackendRuntimeSupervisor`, a FETCH ->
+INSTALL -> START -> monitor -> STOP sequence, never
+`PreviewJobWorker.runPipeline`), and its own lifecycle state machine
+(`queued/fetching/installing/starting/running/stopping` plus the terminal
+`stopped/failed/cancelled/expired`). `static-v1`/`static-v2`/`BuildPlan`, the
+static artifact cache, artifact publication, and M7's own backend
+detection/environment classification are untouched.
+
+The only implemented adapter, `express-node-npm-v1`
+(`core/analyzer/backendRuntimeAdapter.ts`), is deliberately as narrow as the
+static adapters were at v0.1: Express only, npm with a required
+`package-lock.json`, zero database dependencies, and every environment
+requirement classified `auto-configurable` (`PORT`/`HOST`/`NODE_ENV` only --
+M7's own classifier already scopes this exactly). It never executes `npm
+start`, a shell, or any client-supplied command: the analyzer extracts a
+safe, structurally-derived entrypoint and the runtime always executes `node
+<entrypoint>` directly, restricted further than M7's own detector to
+`.js`/`.mjs`/`.cjs` (rejecting `.ts`/`.mts`/`.cts`, since nothing here ever
+runs `ts-node`/`tsx`). A client may request only repository identity, the
+exact commit, and an optional `sourceRoot` hint; `GitHubBackendRuntimePlanResolver`
+independently re-fetches package.json/lockfile/env-templates at that exact
+commit and reconstructs the entire plan itself, mirroring
+`GitHubPreviewPlanResolver`'s exact-commit revalidation shape for the static
+contract. `BackendRuntimeSupervisor` re-validates the queued plan a second
+time (`core/preview/backendRuntimePlanValidator.ts`) against an exact
+allowlist before ever executing anything, independent of whether the queue
+or store can be trusted.
+
+**The runtime process primitive is new, not a repurposed
+`RunscCommandRunner`.** `runsc run` is a foreground, blocking CLI invocation
+with no "start in the background" flag; `RunscCommandRunner` is explicitly a
+"fire one command, wait for exit, delete the container" primitive used by
+`npm ci`/`npm run build`, and stays exactly that. `GVisorBackendRuntimeProcess`
+(`services/preview-worker/gvisor/backendRuntimeProcess.ts`) fires the same
+`runsc run` invocation without awaiting its completion, exposes
+`start()/waitUntilReady()/waitForExit()/stop()`, and stops a running
+container the same sanctioned way `RunscCommandRunner`'s own disk-quota
+watcher and `GVisorSandboxProvisioner.destroy()` already do -- a separate
+`runsc kill` then `runsc delete`, never an OS-level signal to the local
+`runsc run` process. Readiness is a bare TCP connect to the sandbox's
+internal port from the host's own root network namespace, polled with
+bounded exponential backoff; an application route such as `/health` is
+never a generic contract requirement (the fixture happens to have one, used
+only in an environment-gated real-host test, never exposed as an API).
+
+**Network policy is the core security boundary of this stage, and it
+surfaced a real conflict with existing crash-safety code.**
+`NetworkOrphanReaper.expectedRules()` hardcoded one firewall-rule shape
+(DNS-accept + blocklist-drop + default-accept egress, NAT/MASQUERADE) and
+`validateSnapshot()` throws on any lease whose actual rules don't match it
+-- during both normal cleanup and startup reconciliation. A differently
+configured "ingress-only" lease would have made that validator fail-close on
+exactly the lease it should clean up. The fix is additive: `NetworkLease`/
+`NetworkLeaseMarker` (`subnetAllocator.ts`) gained an immutable `policy:
+"egress-nat" | "ingress-only"` field, set once at `allocate()` time and
+never mutated in place (a lease's policy cannot transition mid-lifetime --
+install and runtime phases get two independent leases, each with a distinct,
+randomly generated allocation id, so they can coexist without colliding in
+`NetworkAllocationRegistry`'s per-id activation guard); every existing
+egress-nat call site passes `policy: "egress-nat"` explicitly, byte-for-byte
+unchanged. `VethNatNetworkProvisioner.createIngressOnly()` is a new, separate
+method (not a branch inside the existing `create()`) that configures no
+NAT/MASQUERADE and no default route, an egress chain that unconditionally
+`DROP`s, an input chain that accepts only `ESTABLISHED,RELATED` replies
+(the trusted readiness/proxy probe's return traffic) before dropping
+everything else, and a return chain that unconditionally `DROP`s (nothing
+should ever be forwarded into this namespace from elsewhere). The FORWARD/
+INPUT hook shape into the root namespace's chains is identical to the
+egress-nat policy, so `NetworkOrphanReaper`'s cleanup/reconciliation code
+needed no change beyond making `expectedRules()` branch on `lease.policy`
+for the chain *contents*.
+
+A host-side trusted process (the readiness probe today; a future ingress
+proxy) can already reach the sandbox's assigned port with **zero** firewall
+exceptions: a connection from a process in the host's root network namespace
+to the sandbox's directly-connected veth-peer address is locally generated
+`OUTPUT` traffic delivered straight over the veth link, not `FORWARD`ed
+traffic -- it never touches either namespace's `FORWARD` chain regardless of
+policy. Only the sandbox's own *outbound* traffic needed new policy work.
+This is why "ingress allowed, egress denied" was achievable without any
+`network=host`, wildcard proxy, or public hostname.
+
+**Explicitly not implemented in this change**, all deferred to their own
+future roadmap stages: any public backend URL/hostname/proxy (the API and
+UI can only ever say "Running", never a location), frontend-to-backend
+routing or rewriting, ephemeral env/secret provisioning beyond the fixed
+`PORT`/`HOST`/`NODE_ENV`, and temporary/provisioned application databases
+(a `backend_runtime_jobs`-shaped table in Peephole's own control-plane
+Postgres is permitted infrastructure for this stage's persistence, but is
+unrelated to and must never be confused with future *repository*
+database provisioning).
+
+**Known limitations, disclosed rather than worked around:** persistence in
+this change is in-memory only (`InMemoryBackendRuntimeStore`/
+`InMemoryBackendRuntimeQueue`); a durable Postgres-backed store is future
+work, same shape as the static path's. The ingress-only network policy has
+full unit coverage (rule generation, reconciliation, and cleanup, all
+against a fake process runner) but has not been exercised against a real
+gVisor/Linux host -- this session has no such host available. Nothing in
+this stage is wired into `services/production/server.ts`'s `main()`; a
+`composeProductionBackendRuntime` composition function exists but is
+intentionally not called from production startup until the network policy
+is verified against a real host. A live disk-quota watcher during the
+*running* phase (as opposed to install) is not implemented; the sandbox's
+own hard ext4 quota remains the non-bypassable backstop, matching how disk
+limits are already enforced everywhere else in this codebase.

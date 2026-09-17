@@ -140,9 +140,10 @@ export class NetworkOrphanReaper {
         cleanupErrors.push(error)
       }
     }
-    if (containsRule(before.nat, expected.nat)) {
+    const expectedNat = expected.nat
+    if (expectedNat && containsRule(before.nat, expectedNat)) {
       await attempt(() =>
-        this.iptablesRun(["-t", "nat", "-D", ...expected.nat.slice(1)]),
+        this.iptablesRun(["-t", "nat", "-D", ...expectedNat.slice(1)]),
       )
     }
     for (const rule of expected.ipv6Hooks) {
@@ -289,7 +290,7 @@ export class NetworkOrphanReaper {
           valueAfter(rule, "-s") === `${lease.peerIp}/32`,
       )
       for (const rule of relevantNat) {
-        if (!sameRule(rule, expected.nat)) {
+        if (!expected.nat || !sameRule(rule, expected.nat)) {
           throw new Error(
             `Network lease ${String(lease.index)} has an unexpected NAT rule.`,
           )
@@ -570,46 +571,77 @@ export function expectedRules(lease: NetworkLease): {
   ipv4: string[][]
   ipv4Hooks: string[][]
   ipv6Hooks: string[][]
-  nat: string[]
+  nat: string[] | null
 } {
   const egressRules: string[][] = []
   const inputRules: string[][] = []
-  for (const dns of lease.dnsServers) {
-    for (const protocol of ["udp", "tcp"]) {
-      const suffix = [
-        "-d",
-        `${dns}/32`,
-        "-p",
-        protocol,
-        "-m",
-        protocol,
-        "--dport",
-        "53",
-        "-j",
-        "ACCEPT",
-      ]
-      egressRules.push(["-A", lease.egressChain, ...suffix])
-      inputRules.push(["-A", lease.inputChain, ...suffix])
-    }
-  }
-  for (const destination of BLOCKED_IPV4_DESTINATIONS) {
-    egressRules.push(["-A", lease.egressChain, "-d", destination, "-j", "DROP"])
-  }
-  egressRules.push(["-A", lease.egressChain, "-j", "ACCEPT"])
-  inputRules.push(["-A", lease.inputChain, "-j", "DROP"])
-  const returnRules = [
-    [
+  const returnRules: string[][] = []
+
+  if (lease.policy === "ingress-only") {
+    // The job namespace may never originate traffic anywhere -- not the
+    // public internet, not another job, not the host's own other services.
+    egressRules.push(["-A", lease.egressChain, "-j", "DROP"])
+    // Only the reply to a connection the HOST itself opened (the trusted
+    // readiness/proxy probe) may reach a host-owned address.
+    inputRules.push([
       "-A",
-      lease.returnChain,
+      lease.inputChain,
       "-m",
       "conntrack",
       "--ctstate",
       "ESTABLISHED,RELATED",
       "-j",
       "ACCEPT",
-    ],
-    ["-A", lease.returnChain, "-j", "DROP"],
-  ]
+    ])
+    inputRules.push(["-A", lease.inputChain, "-j", "DROP"])
+    // Nothing should ever be forwarded into this namespace from elsewhere.
+    returnRules.push(["-A", lease.returnChain, "-j", "DROP"])
+  } else {
+    for (const dns of lease.dnsServers) {
+      for (const protocol of ["udp", "tcp"]) {
+        const suffix = [
+          "-d",
+          `${dns}/32`,
+          "-p",
+          protocol,
+          "-m",
+          protocol,
+          "--dport",
+          "53",
+          "-j",
+          "ACCEPT",
+        ]
+        egressRules.push(["-A", lease.egressChain, ...suffix])
+        inputRules.push(["-A", lease.inputChain, ...suffix])
+      }
+    }
+    for (const destination of BLOCKED_IPV4_DESTINATIONS) {
+      egressRules.push([
+        "-A",
+        lease.egressChain,
+        "-d",
+        destination,
+        "-j",
+        "DROP",
+      ])
+    }
+    egressRules.push(["-A", lease.egressChain, "-j", "ACCEPT"])
+    inputRules.push(["-A", lease.inputChain, "-j", "DROP"])
+    returnRules.push(
+      [
+        "-A",
+        lease.returnChain,
+        "-m",
+        "conntrack",
+        "--ctstate",
+        "ESTABLISHED,RELATED",
+        "-j",
+        "ACCEPT",
+      ],
+      ["-A", lease.returnChain, "-j", "DROP"],
+    )
+  }
+
   const ipv4Hooks = [
     ["-A", "FORWARD", "-i", lease.hostVeth, "-j", lease.egressChain],
     ["-A", "FORWARD", "-o", lease.hostVeth, "-j", lease.returnChain],
@@ -632,20 +664,23 @@ export function expectedRules(lease: NetworkLease): {
     ],
     ipv4Hooks,
     ipv6Hooks,
-    nat: [
-      "-A",
-      "POSTROUTING",
-      "-s",
-      `${lease.peerIp}/32`,
-      "-o",
-      lease.uplink,
-      "-m",
-      "comment",
-      "--comment",
-      lease.iptablesComment,
-      "-j",
-      "MASQUERADE",
-    ],
+    nat:
+      lease.policy === "ingress-only"
+        ? null
+        : [
+            "-A",
+            "POSTROUTING",
+            "-s",
+            `${lease.peerIp}/32`,
+            "-o",
+            lease.uplink,
+            "-m",
+            "comment",
+            "--comment",
+            lease.iptablesComment,
+            "-j",
+            "MASQUERADE",
+          ],
   }
 }
 
