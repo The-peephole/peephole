@@ -2,7 +2,7 @@ import type { RepositoryMetadata, RepositoryRevisionTarget } from "./repository"
 import type { RepositoryStructure } from "./structure"
 import type { PreviewTarget } from "./target"
 
-export const ANALYZER_VERSION = "0.1.3"
+export const ANALYZER_VERSION = "0.1.4"
 export const TARGET_ANALYZER_VERSION = "0.1.0"
 export const LEGACY_PREVIEW_CONTRACT_VERSION = "static-v1"
 export const PREVIEW_CONTRACT_VERSION = "static-v2"
@@ -63,8 +63,16 @@ export interface RepositoryAnalysis {
     publicClientVariables: string[]
     secretLikeVariables: string[]
   }
+  /**
+   * Local, immutable, per-commit deployment *evidence* only -- never proof of
+   * an actual live deployment. "declared" reflects `repository.homepage`
+   * metadata alone; "confirmed" live-deployment status comes only from the
+   * separate, mutable `RepositoryLiveDeploymentLoader`
+   * (`types/deployment.ts`), which independently queries the GitHub
+   * Deployments API and is never folded into this SHA-keyed analysis.
+   */
   deployment: {
-    status: "confirmed" | "configured" | "unknown"
+    status: "declared" | "configured" | "unknown"
     provider: "homepage" | "vercel" | "netlify" | null
     url: string | null
     evidence: string[]

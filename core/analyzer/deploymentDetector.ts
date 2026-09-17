@@ -1,7 +1,18 @@
 import type { RepositoryMetadata } from "../../types/repository"
 
+/**
+ * Local, per-commit deployment *evidence* only. "declared" means the
+ * repository declares a homepage URL in its GitHub metadata -- it does not
+ * mean that URL is an actual deployed application (it could equally be a
+ * marketing site, documentation, or -- as with this very repository -- a
+ * Chrome Web Store listing). "configured" means a provider config file was
+ * found with no known URL. Neither value is proof of a live deployment;
+ * that determination is made separately by the bounded GitHub Deployments
+ * API lookup in `core/github/repositoryDeploymentsLoader.ts`, whose result
+ * is mutable state kept out of this immutable, SHA-keyed analysis.
+ */
 export interface DeploymentDetection {
-  status: "confirmed" | "configured" | "unknown"
+  status: "declared" | "configured" | "unknown"
   provider: "homepage" | "vercel" | "netlify" | null
   url: string | null
   evidence: string[]
@@ -11,39 +22,42 @@ export function detectDeployment(
   repository: RepositoryMetadata,
   presentPaths: readonly string[],
 ): DeploymentDetection {
-  const evidence: string[] = []
-  let provider: DeploymentDetection["provider"] = null
-
-  if (repository.homepage) {
+  // Provider configuration is checked first so a declared homepage (a
+  // separate repository-metadata/UI concern, always shown on its own) never
+  // shadows genuine configuration evidence when both are present.
+  if (presentPaths.includes("vercel.json")) {
     return {
-      status: "confirmed",
-      provider: "homepage",
-      url: repository.homepage,
-      evidence: ["Safe repository homepage metadata detected"],
+      status: "configured",
+      provider: "vercel",
+      url: null,
+      evidence: ["Vercel configuration detected"],
     }
   }
 
-  if (presentPaths.includes("vercel.json")) {
-    provider = "vercel"
-    evidence.push("Vercel configuration detected")
-  } else if (presentPaths.includes("netlify.toml")) {
-    provider = "netlify"
-    evidence.push("Netlify configuration detected")
+  if (presentPaths.includes("netlify.toml")) {
+    return {
+      status: "configured",
+      provider: "netlify",
+      url: null,
+      evidence: ["Netlify configuration detected"],
+    }
   }
 
-  if (evidence.length === 0) {
+  if (repository.homepage) {
     return {
-      status: "unknown",
-      provider: null,
-      url: null,
-      evidence: [],
+      status: "declared",
+      provider: "homepage",
+      url: repository.homepage,
+      evidence: [
+        "Repository declares a homepage URL; this is not verified as a live deployment",
+      ],
     }
   }
 
   return {
-    status: "configured",
-    provider,
+    status: "unknown",
+    provider: null,
     url: null,
-    evidence,
+    evidence: [],
   }
 }

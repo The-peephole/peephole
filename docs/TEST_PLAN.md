@@ -208,6 +208,109 @@ Manual unpacked-extension verification:
    shows a workspace marker, candidate project roots, and a truncated or
    incomplete indicator when applicable.
 
+### Existing Deployed-Site Live Preview
+
+Deterministic unit/component fixtures, not live GitHub requests, cover:
+
+- the false-positive fix itself: a declared repository homepage alone is
+  `deployment.status: "declared"`, never `"confirmed"`, and never overrides
+  `preview.mode: "native-static-build"` for a genuinely buildable target
+  (`tests/analyzeRepository.test.ts`);
+- `vercel.json`/`netlify.toml` alone remains `"configured"` with `url: null`;
+  no evidence stays `"unknown"`;
+- `existing-deployment` mode appearing only as the fallback when a build is
+  not possible but local evidence exists, and `unsupported` when neither
+  applies;
+- `GitHubClient.listRepositoryDeployments`/`listDeploymentStatuses`: field
+  mapping, the bounded single-page request (`per_page=10` / `per_page=30`,
+  never paginated further), `truncated` set when a page comes back full, an
+  invalid deployment id rejected before any request, and malformed list
+  responses rejected (`tests/githubClient.test.ts`);
+- `core/analyzer/liveDeploymentSelector.ts`
+  (`tests/liveDeploymentSelector.test.ts`): `production_environment`-first
+  and production-like-name ranking with stable tie order; a `success`
+  status with a valid URL confirmed; a missing `environment_url`,
+  failed/inactive/error/pending/in_progress/queued status, or unsafe URL
+  never selected regardless of environment name; zero lookups producing
+  `not-detected` with `candidateCount: 0`; the `truncated` flag propagated;
+- `core/github/repositoryDeploymentsLoader.ts`
+  (`tests/repositoryDeploymentsLoader.test.ts`): zero deployments short-
+  circuiting to `not-detected` without any status lookup; picking the most
+  recent status by `createdAt` regardless of API response order; bounding
+  status lookups to the top `MAX_DEPLOYMENT_STATUS_LOOKUPS` (5) ranked
+  deployments and marking `truncated` when more existed; a single
+  deployment's failed status lookup degrading to an unknown status without
+  failing the whole load; an abort propagating instead of being swallowed;
+  the deployment-list `truncated` flag propagating through;
+- `core/github/externalUrlPolicy.ts` (`tests/externalUrlPolicy.test.ts`):
+  HTTPS accepted, HTTP rejected by default and accepted only with
+  `allowHttp`, HTTP still rejected on a private host even with `allowHttp`;
+  `javascript:`/`data:`/`file:`/`blob:`/`chrome-extension:` rejected;
+  `localhost`/`*.localhost`, `127.0.0.1`, `::1`, RFC 1918 private IPv4
+  (`10.x`, `172.16-31.x`, `192.168.x`), link-local IPv4 (`169.254.x`), CGNAT
+  IPv4 (`100.64-127.x`), link-local IPv6 (`fe80::/10`), unique-local IPv6
+  (`fc00::/7`), and an IPv4-mapped IPv6 loopback literal all rejected; a
+  public IPv4 literal accepted; embedded credentials, control characters,
+  and an excessively long URL rejected; malformed and non-string input
+  rejected;
+- `core/github/liveDeploymentCache.ts` (`tests/liveDeploymentCache.test.ts`):
+  TTL reuse, case-insensitive repository-identity keying, TTL expiry
+  refetch, two repositories in separate entries, a failed lookup not cached,
+  and the default TTL falling between 30 and 60 seconds;
+- `core/github/liveDeploymentMessages.ts`
+  (`tests/liveDeploymentMessages.test.ts`): message validation, a malformed
+  request id or repository identity ignored rather than forwarded,
+  cancellation aborting the matching background request, GitHub errors
+  serialized without leaking unknown-error detail, a malformed response
+  rejected instead of forwarded, and abort-triggered cancellation on the
+  loader side;
+- `RepositoryAnalysisView`'s new "Deployment" section
+  (`tests/RepositoryAnalysisView.test.tsx`): the repository homepage
+  rendered separately from live-deployment status; a Chrome Web Store (or
+  any other) homepage never labeled a confirmed live deployment; a
+  confirmed candidate's environment/URL/ref/SHA and its
+  matches/differs/unknown comparison against the selected commit; an "Open
+  live site" link using safe external navigation
+  (`target="_blank"`/`rel="noopener noreferrer"`) with no iframe introduced;
+  a deployment lookup failure rendering its own isolated message while
+  `Build Preview`/"Native preview compatible" analysis output is unaffected;
+  the live deployment lookup not re-firing on a branch change (only the
+  comparison text can change); and repository SPA navigation clearing a
+  still-in-flight previous repository's deployment response instead of
+  leaking it into the new repository's view.
+
+Not covered by the portable suite (documented policy only, since it depends
+on live/mutable GitHub deployment state): a real repository with a
+publisher-managed live deployment. Manual verification below exercises this
+against `The-peephole/peephole` (declared homepage only, no live deployment)
+as the false-positive regression case.
+
+Manual unpacked-extension verification:
+
+1. `The-peephole/peephole` (declared homepage only, currently a Chrome Web
+   Store listing): Repository homepage shows that link separately; "Live
+   deployment" reads "Not detected" and is never labeled confirmed; Build
+   Preview behavior is unaffected by this section (unchanged by the WXT
+   `UNSUPPORTED_FRAMEWORK` blocker already present before this stage).
+2. A public repository with a confirmed GitHub deployment (production
+   environment, successful status, `environment_url` set): the Deployment
+   section shows environment/URL/ref/SHA and a matches/differs comparison
+   against the selected commit; "Open live site" opens a new tab and leaves
+   the Side Panel state intact; switching branches updates the comparison
+   text without claiming the deployment belongs to the newly selected
+   branch, and does not visibly re-run the deployment lookup.
+3. A public repository with only a `vercel.json`/`netlify.toml` marker and no
+   confirmed deployment: "Deployment configuration detected" appears with no
+   fabricated URL.
+4. Repository SPA navigation from a repository with a confirmed live
+   deployment to one without: no residue of the previous repository's
+   deployment URL/state remains visible.
+5. GitHub Light, Dark, and Dark Dimmed: the Deployment section remains
+   readable in each theme.
+6. Simulate (or wait for) a GitHub API rate limit while the Deployment
+   section is loading: it shows an isolated "unavailable" message while
+   Build Preview and repository analysis remain fully usable.
+
 ### Repository analysis
 
 Use bounded file-map fixtures for:
@@ -329,8 +432,10 @@ Add coverage in the same order as product development:
 2. branch selection, immutable resolution, stale branch movement, and cache keys (implemented)
 3. repository/application structure fixtures (implemented)
 4. generalized Build Adapter contract tests (implemented)
-5. frontend target/monorepo selection and isolation
-6. existing-site reachability, framing, navigation, and origin policy
+5. frontend target/monorepo selection and isolation (implemented)
+6. existing deployed-site Live Preview: deployment evidence hierarchy, bounded
+   GitHub Deployments API discovery, URL safety, mutable cache, and
+   comparison/navigation policy (implemented)
 7. backend detection evidence and false positives
 8. backend process lifecycle and isolation
 9. frontend/backend routing and cross-origin policy

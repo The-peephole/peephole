@@ -31,10 +31,12 @@ export const supportedAnalysis: RepositoryAnalysis = {
     secretLikeVariables: [],
   },
   deployment: {
-    status: "configured",
+    status: "declared",
     provider: "homepage",
     url: "https://example.com/",
-    evidence: ["Repository homepage metadata detected"],
+    evidence: [
+      "Repository declares a homepage URL; this is not verified as a live deployment",
+    ],
   },
   workspace: {
     monorepo: false,

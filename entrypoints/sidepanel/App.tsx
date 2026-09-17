@@ -5,6 +5,7 @@ import type {
   BuildTargetAnalysisLoader,
   RepositoryAnalysisLoader,
 } from "../../types/analysis"
+import type { RepositoryLiveDeploymentLoader } from "../../types/deployment"
 import type {
   RepositoryBranchesLoader,
   RepositoryIdentity,
@@ -15,6 +16,7 @@ interface SidePanelAppProps {
   loadRepositoryAnalysis: RepositoryAnalysisLoader
   loadBuildTargetAnalysis: BuildTargetAnalysisLoader
   loadRepositoryBranches: RepositoryBranchesLoader
+  loadRepositoryLiveDeployment: RepositoryLiveDeploymentLoader
   connectGitHub?: (() => Promise<void>) | null
   previewApi: PreviewApi | null
   previewArtifactBaseDomain?: string | null
@@ -26,6 +28,7 @@ export function SidePanelApp({
   loadRepositoryAnalysis,
   loadBuildTargetAnalysis,
   loadRepositoryBranches,
+  loadRepositoryLiveDeployment,
   connectGitHub = null,
   previewApi,
   previewConfigurationError = null,
@@ -45,6 +48,7 @@ export function SidePanelApp({
           loadRepositoryAnalysis={loadRepositoryAnalysis}
           loadBuildTargetAnalysis={loadBuildTargetAnalysis}
           loadRepositoryBranches={loadRepositoryBranches}
+          loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
           repository={repository}
           renderPreviewControls={(analysis) => (
             <PreviewJobPanel

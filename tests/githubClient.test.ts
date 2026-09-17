@@ -614,6 +614,170 @@ describe("GitHubClient", () => {
       expect(result.branches).toEqual(["main"])
     })
   })
+
+  describe("listRepositoryDeployments", () => {
+    it("lists bounded recent deployments and maps fields", async () => {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse([
+          {
+            id: 1,
+            sha: "a".repeat(40),
+            ref: "main",
+            environment: "production",
+            production_environment: true,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ]),
+      )
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.listRepositoryDeployments({ owner: "facebook", repo: "react" }),
+      ).resolves.toEqual({
+        deployments: [
+          {
+            id: 1,
+            sha: "a".repeat(40),
+            ref: "main",
+            environment: "production",
+            productionEnvironment: true,
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+        truncated: false,
+      })
+      expect(fetcher).toHaveBeenCalledWith(
+        "https://api.github.com/repos/facebook/react/deployments?per_page=10&page=1",
+        expect.any(Object),
+      )
+    })
+
+    it("defaults a missing production_environment to false", async () => {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse([
+          {
+            id: 1,
+            sha: "a".repeat(40),
+            ref: "main",
+            environment: "preview",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ]),
+      )
+      const client = new GitHubClient({ fetcher })
+
+      const result = await client.listRepositoryDeployments({
+        owner: "facebook",
+        repo: "react",
+      })
+
+      expect(result.deployments[0]?.productionEnvironment).toBe(false)
+    })
+
+    it("marks the result truncated when the bounded page is full", async () => {
+      const deployment = {
+        id: 1,
+        sha: "a".repeat(40),
+        ref: "main",
+        environment: "production",
+        created_at: "2026-01-01T00:00:00Z",
+      }
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(jsonResponse(new Array(10).fill(deployment)))
+      const client = new GitHubClient({ fetcher })
+
+      const result = await client.listRepositoryDeployments({
+        owner: "facebook",
+        repo: "react",
+      })
+
+      expect(result.truncated).toBe(true)
+    })
+
+    it("rejects a malformed deployment list response", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(jsonResponse([{ id: "not-a-number" }]))
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.listRepositoryDeployments({ owner: "facebook", repo: "react" }),
+      ).rejects.toMatchObject({ code: "invalid-response" })
+    })
+  })
+
+  describe("listDeploymentStatuses", () => {
+    it("lists bounded statuses for one deployment", async () => {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse([
+          {
+            state: "success",
+            environment_url: "https://example.vercel.app",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ]),
+      )
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.listDeploymentStatuses({ owner: "facebook", repo: "react" }, 42),
+      ).resolves.toEqual({
+        statuses: [
+          {
+            state: "success",
+            environmentUrl: "https://example.vercel.app",
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+        truncated: false,
+      })
+      expect(fetcher).toHaveBeenCalledWith(
+        "https://api.github.com/repos/facebook/react/deployments/42/statuses?per_page=30&page=1",
+        expect.any(Object),
+      )
+    })
+
+    it("rejects an invalid deployment id before making a request", async () => {
+      const fetcher = vi.fn<typeof fetch>()
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.listDeploymentStatuses({ owner: "facebook", repo: "react" }, -1),
+      ).rejects.toMatchObject({ code: "invalid-response" })
+      expect(fetcher).not.toHaveBeenCalled()
+    })
+
+    it("marks the result truncated when the bounded page is full", async () => {
+      const status = {
+        state: "success",
+        environment_url: "https://example.vercel.app",
+        created_at: "2026-01-01T00:00:00Z",
+      }
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(jsonResponse(new Array(30).fill(status)))
+      const client = new GitHubClient({ fetcher })
+
+      const result = await client.listDeploymentStatuses(
+        { owner: "facebook", repo: "react" },
+        42,
+      )
+
+      expect(result.truncated).toBe(true)
+    })
+
+    it("rejects a malformed status list response", async () => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(jsonResponse([{ state: 1 }]))
+      const client = new GitHubClient({ fetcher })
+
+      await expect(
+        client.listDeploymentStatuses({ owner: "facebook", repo: "react" }, 42),
+      ).rejects.toMatchObject({ code: "invalid-response" })
+    })
+  })
 })
 
 function jsonResponse(value: unknown): Response {

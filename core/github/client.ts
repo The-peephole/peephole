@@ -10,6 +10,10 @@ import { isRepositoryBranchName } from "./repositoryRef"
 const DEFAULT_API_BASE_URL = "https://api.github.com"
 const GITHUB_API_VERSION = "2026-03-10"
 export const MAX_REPOSITORY_BRANCHES = 100
+/** Bounded, single-page deployment list; never paginated further. */
+export const MAX_REPOSITORY_DEPLOYMENTS = 10
+/** Bounded, single-page status list per deployment; never paginated further. */
+export const MAX_DEPLOYMENT_STATUSES_PER_PAGE = 30
 
 export type GitHubApiErrorCode =
   "not-found" | "rate-limited" | "network" | "invalid-response" | "unavailable"
@@ -49,6 +53,48 @@ interface GitHubBranchListEntry extends GitHubBranchResponse {
 
 interface GitHubCommitResponse {
   sha: string
+}
+
+interface GitHubDeploymentResponse {
+  id: number
+  sha: string
+  ref: string
+  environment: string
+  production_environment?: boolean
+  created_at: string
+}
+
+interface GitHubDeploymentStatusResponse {
+  state: string
+  environment_url?: string | null
+  created_at: string
+}
+
+export interface GitHubDeploymentSummary {
+  id: number
+  sha: string
+  ref: string
+  environment: string
+  productionEnvironment: boolean
+  createdAt: string
+}
+
+export interface GitHubDeploymentStatusSummary {
+  state: string
+  environmentUrl: string | null
+  createdAt: string
+}
+
+export interface GitHubDeploymentsPage {
+  deployments: GitHubDeploymentSummary[]
+  /** True when the bounded list may be missing older deployments. */
+  truncated: boolean
+}
+
+export interface GitHubDeploymentStatusesPage {
+  statuses: GitHubDeploymentStatusSummary[]
+  /** True when the bounded list may be missing older statuses. */
+  truncated: boolean
 }
 
 export interface GitHubContentEntry {
@@ -338,6 +384,73 @@ export class GitHubClient {
     return decodeBase64Utf8(response.content, path, maxBytes)
   }
 
+  /**
+   * Lists this repository's most recent deployments, newest bound applied
+   * (`MAX_REPOSITORY_DEPLOYMENTS`, single page, never paginated further).
+   * `production_environment`/`environment`/`ref`/`sha` come straight from
+   * GitHub; none of this proves a deployment is actually live -- callers
+   * still need a successful status with a valid `environment_url` from
+   * `listDeploymentStatuses`.
+   */
+  async listRepositoryDeployments(
+    repository: RepositoryIdentity,
+    signal?: AbortSignal,
+  ): Promise<GitHubDeploymentsPage> {
+    const repositoryPath = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}`
+    const page = await this.requestJson(
+      `${repositoryPath}/deployments?per_page=${MAX_REPOSITORY_DEPLOYMENTS}&page=1`,
+      isGitHubDeploymentListResponse,
+      signal,
+    )
+
+    return {
+      deployments: page.map((entry) => ({
+        id: entry.id,
+        sha: entry.sha,
+        ref: entry.ref,
+        environment: entry.environment,
+        productionEnvironment: entry.production_environment === true,
+        createdAt: entry.created_at,
+      })),
+      truncated: page.length >= MAX_REPOSITORY_DEPLOYMENTS,
+    }
+  }
+
+  /**
+   * Lists one deployment's statuses, bounded to a single page
+   * (`MAX_DEPLOYMENT_STATUSES_PER_PAGE`, never paginated further). Statuses
+   * are not guaranteed to arrive in any particular order, so callers must
+   * pick the most recent by `createdAt` rather than assuming position.
+   */
+  async listDeploymentStatuses(
+    repository: RepositoryIdentity,
+    deploymentId: number,
+    signal?: AbortSignal,
+  ): Promise<GitHubDeploymentStatusesPage> {
+    if (!Number.isInteger(deploymentId) || deploymentId <= 0) {
+      throw new GitHubApiError(
+        "invalid-response",
+        "The requested deployment id is invalid.",
+      )
+    }
+
+    const repositoryPath = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}`
+    const page = await this.requestJson(
+      `${repositoryPath}/deployments/${deploymentId}/statuses?per_page=${MAX_DEPLOYMENT_STATUSES_PER_PAGE}&page=1`,
+      isGitHubDeploymentStatusListResponse,
+      signal,
+    )
+
+    return {
+      statuses: page.map((entry) => ({
+        state: entry.state,
+        environmentUrl: entry.environment_url ?? null,
+        createdAt: entry.created_at,
+      })),
+      truncated: page.length >= MAX_DEPLOYMENT_STATUSES_PER_PAGE,
+    }
+  }
+
   private async buildHeaders(): Promise<Record<string, string>> {
     const token = await this.getToken()
 
@@ -569,6 +682,55 @@ function isGitHubCommitResponse(value: unknown): value is GitHubCommitResponse {
     isObject(value) &&
     typeof value.sha === "string" &&
     /^[a-f\d]{40}$/i.test(value.sha)
+  )
+}
+
+function isGitHubDeploymentListResponse(
+  value: unknown,
+): value is GitHubDeploymentResponse[] {
+  return Array.isArray(value) && value.every(isGitHubDeploymentResponse)
+}
+
+function isGitHubDeploymentResponse(
+  value: unknown,
+): value is GitHubDeploymentResponse {
+  return (
+    isObject(value) &&
+    Number.isInteger(value.id) &&
+    typeof value.sha === "string" &&
+    /^[a-f\d]{40}$/i.test(value.sha) &&
+    typeof value.ref === "string" &&
+    value.ref.length > 0 &&
+    value.ref.length <= 512 &&
+    typeof value.environment === "string" &&
+    value.environment.length > 0 &&
+    value.environment.length <= 255 &&
+    (value.production_environment === undefined ||
+      typeof value.production_environment === "boolean") &&
+    typeof value.created_at === "string" &&
+    !Number.isNaN(Date.parse(value.created_at))
+  )
+}
+
+function isGitHubDeploymentStatusListResponse(
+  value: unknown,
+): value is GitHubDeploymentStatusResponse[] {
+  return Array.isArray(value) && value.every(isGitHubDeploymentStatusResponse)
+}
+
+function isGitHubDeploymentStatusResponse(
+  value: unknown,
+): value is GitHubDeploymentStatusResponse {
+  return (
+    isObject(value) &&
+    typeof value.state === "string" &&
+    value.state.length > 0 &&
+    value.state.length <= 64 &&
+    (value.environment_url === undefined ||
+      value.environment_url === null ||
+      typeof value.environment_url === "string") &&
+    typeof value.created_at === "string" &&
+    !Number.isNaN(Date.parse(value.created_at))
   )
 }
 

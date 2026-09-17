@@ -53,9 +53,9 @@ Production execution is deliberately narrower than analysis:
 
 Vue/Svelte Vite, other package managers, shared-root workspace orchestration,
 backends, persistent servers, secrets, and temporary databases are not current
-runner capabilities. Existing deployment evidence currently exposes a
-normalized repository-homepage link in a new tab; it is not yet an embedded
-deployed-site Live Preview.
+runner capabilities. A repository's declared homepage and current GitHub
+Deployment status are both external-link evidence, opened in a new tab; there
+is no embedded deployed-site iframe or arbitrary remote proxy.
 
 ## Architecture to Preserve
 
@@ -145,7 +145,7 @@ changes it:
 3. Repository / application structure detection (implemented)
 4. Build Adapter generalization (implemented)
 5. frontend target selection / bounded frontend monorepo support (implemented)
-6. existing deployed-site Live Preview
+6. existing deployed-site Live Preview (implemented)
 7. backend detection
 8. backend execution
 9. frontend ↔ backend routing
@@ -240,6 +240,44 @@ the plan through `static-v2`: safe nested `sourceRoot` values are included in
 cache/idempotency/UI identity and drive target-local cwd/output resolution.
 This does not add Vue/Svelte, pnpm/yarn/bun, shared-root orchestration, or
 backends.
+
+Existing deployed-site Live Preview separates three previously conflated
+concepts. `repository.homepage` is renamed at the type level to local
+deployment *evidence* (`RepositoryAnalysis.deployment.status`:
+`"declared" | "configured" | "unknown"`) -- `detectDeployment` no longer
+returns `"confirmed"` for a homepage, since a declared homepage is not proof
+of a live deployment (this repository's own homepage is a Chrome Web Store
+listing, not a deployed app). `analyzeRepository`'s `preview.mode` formula is
+fixed so a genuinely buildable target always resolves to
+`native-static-build`; local deployment evidence can no longer override
+buildability, only serve as the `existing-deployment` fallback label when a
+build is not possible. A confirmed live deployment now requires an
+independent, bounded GitHub Deployments API lookup:
+`GitHubClient.listRepositoryDeployments` (`per_page=10`, one page) and
+`GitHubClient.listDeploymentStatuses` (`per_page=30`, one page, at most 5
+deployments ever looked up, ranked `production_environment` first, then a
+production-like environment name, then everything else) feed the pure
+selector in `core/analyzer/liveDeploymentSelector.ts`, which only ever
+selects a deployment with a `success` status and a validated, safe HTTPS
+`environment_url` (`core/github/externalUrlPolicy.ts`: HTTPS-only scheme
+allowlist, no credentials, no loopback/private/link-local/CGNAT IP literal in
+IPv4 or IPv6 form, no control characters, bounded length). This result
+(`types/deployment.ts`) is deliberately mutable, short-TTL (45s,
+`core/github/liveDeploymentCache.ts`) state keyed by repository identity
+only -- never folded into the immutable `repositoryId:commitSha:analyzerVersion`
+analysis cache, and never compared against a mutable branch name, only the
+selected commit SHA. It reaches the Side Panel through its own bounded
+background message (`LOAD_REPOSITORY_DEPLOYMENTS`,
+`core/github/liveDeploymentMessages.ts`), not a generic fetch/proxy
+primitive, and a lookup failure renders its own isolated error text in
+`RepositoryAnalysisView`'s new "Deployment" section without affecting
+repository analysis or Build Preview. There is still no embedded iframe or
+server-side fetch of the deployment URL: "Open live site" is a plain
+`target="_blank"` link, exactly like the pre-existing homepage link, and no
+manifest permission or CSP changed (the Deployments API is under the
+already-permitted `api.github.com` host). Live deployment stays a
+repository-level concept; selecting a nested frontend target never implies
+the discovered live deployment belongs to that target.
 
 ## Fixture Registry
 

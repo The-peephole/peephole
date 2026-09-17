@@ -12,7 +12,7 @@ later full-stack roadmap.
 3. [x] Repository / application structure detection
 4. [x] Build Adapter generalization
 5. [x] frontend target selection / bounded frontend monorepo support
-6. [ ] existing deployed-site Live Preview
+6. [x] existing deployed-site Live Preview
 7. [ ] backend detection
 8. [ ] backend execution
 9. [ ] frontend ↔ backend routing
@@ -198,6 +198,68 @@ target. It is not evidence that any of stages 7-11 are implemented.
       that `peephole-fixture-fullstack` resolves to `multi-project` with
       `frontend`/`backend` candidates while remaining `unsupported` for
       production execution
+
+## Existing Deployed-Site Live Preview
+
+- [x] Remove the false-positive homepage-as-confirmed-deployment: a declared
+      `repository.homepage` is now `RepositoryAnalysis.deployment.status:
+      "declared"`, never `"confirmed"`; `vercel.json`/`netlify.toml` alone
+      remains `"configured"`; neither is proof of a live deployment
+- [x] Fix `analyzeRepository`'s `preview.mode` formula so buildability is
+      checked first: `native-static-build` whenever the target has no
+      blockers, regardless of any declared/configured deployment evidence
+      (previously a homepage could force `existing-deployment` even for a
+      genuinely buildable repository, hiding Build Preview entirely);
+      `existing-deployment` is now only the fallback when a build is not
+      possible but local evidence exists
+- [x] Bump `ANALYZER_VERSION` (`0.1.3` -> `0.1.4`) for the `deployment.status`
+      semantic change
+- [x] Add bounded `GitHubClient.listRepositoryDeployments` (`per_page=10`, one
+      page) and `GitHubClient.listDeploymentStatuses` (`per_page=30`, one
+      page per deployment) -- both fixed, validated operations on the
+      existing background-owned client; no new Chrome permission or
+      content-script fetch primitive
+- [x] Add a pure ranking/selection module
+      (`core/analyzer/liveDeploymentSelector.ts`): ranks
+      `production_environment` deployments first, then a production-like
+      environment name, then everything else; bounds status lookups to
+      `MAX_DEPLOYMENT_STATUS_LOOKUPS` (5); only ever selects a deployment
+      with a `success` status and a validated, safe `environment_url`
+- [x] Add a bounded loader (`core/github/repositoryDeploymentsLoader.ts`)
+      that performs the actual GitHub reads, picks each deployment's most
+      recent status by `createdAt` (never assuming API response order), and
+      degrades a single deployment's failed status lookup to an unknown
+      status instead of failing the whole lookup (an abort still propagates)
+- [x] Add a common untrusted-URL safety validator
+      (`core/github/externalUrlPolicy.ts`): HTTPS-only allowlist (rejects
+      `javascript:`/`data:`/`file:`/`blob:`/`chrome-extension:` implicitly),
+      no embedded credentials, no loopback/RFC 1918/link-local/CGNAT IPv4 or
+      loopback/link-local/unique-local IPv6 literal (including IPv4-mapped
+      IPv6), no control characters, bounded length; an `allowHttp` option
+      preserves the repository homepage's pre-existing HTTP(S) contract
+      while still gaining every other check
+- [x] Add a short-TTL (45s), repository-identity-keyed cache
+      (`core/github/liveDeploymentCache.ts`) kept entirely separate from the
+      immutable `repositoryId:commitSha:analyzerVersion` analysis cache
+- [x] Add a fixed, bounded background message
+      (`LOAD_REPOSITORY_DEPLOYMENTS`/`CANCEL_REPOSITORY_DEPLOYMENTS`,
+      `core/github/liveDeploymentMessages.ts`) mirroring the existing
+      `branchMessages.ts` contract; no generic `FETCH_URL`/proxy endpoint
+      was added
+- [x] Add a "Deployment" section to `RepositoryAnalysisView.tsx`, separate
+      from Build Preview: Live Deployment status/URL/ref/SHA and its
+      comparison to the selected preview commit, local deployment
+      configuration evidence, and the repository homepage (moved out of the
+      identity details block) -- each rendered independently, so a
+      deployment lookup failure shows its own isolated message without
+      affecting repository analysis or Build Preview
+- [x] "Open live site"/"Open homepage" are plain `target="_blank"` anchors to
+      a validated URL; no embedded remote iframe, no server-side fetch of
+      the deployment URL, and no new manifest permission or CSP change (the
+      Deployments API is under the already-permitted `api.github.com` host)
+- [x] Keep live deployment a repository-level concept: selecting a nested
+      frontend target never implies the discovered live deployment belongs
+      to that target
 
 ## Analyzer
 
