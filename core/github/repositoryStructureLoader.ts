@@ -96,6 +96,7 @@ export class RepositoryStructureLoader {
     )
     let directoryListingsTruncated =
       plan.wildcardParents.length > boundedWildcardParents.length
+    let directoryListingFailed = false
 
     for (const parentDir of boundedWildcardParents) {
       let entries: GitHubContentEntry[]
@@ -111,6 +112,7 @@ export class RepositoryStructureLoader {
         warnings.push(
           `${parentDir} could not be listed: ${getErrorMessage(error)}`,
         )
+        directoryListingFailed = true
         continue
       }
 
@@ -134,7 +136,9 @@ export class RepositoryStructureLoader {
     let byteBudgetExceeded = false
 
     for (const path of boundedPaths) {
-      if (totalBytes >= MAX_STRUCTURE_TOTAL_BYTES) {
+      const remainingBytes = MAX_STRUCTURE_TOTAL_BYTES - totalBytes
+
+      if (remainingBytes <= 0) {
         byteBudgetExceeded = true
         break
       }
@@ -145,7 +149,7 @@ export class RepositoryStructureLoader {
         content = await this.githubClient.getRepositoryTextFile(
           repository,
           `${path}/package.json`,
-          MAX_NESTED_PACKAGE_JSON_BYTES,
+          Math.min(MAX_NESTED_PACKAGE_JSON_BYTES, remainingBytes),
           signal,
         )
       } catch (error) {
@@ -181,6 +185,7 @@ export class RepositoryStructureLoader {
       candidates,
       candidatePathsTruncated: candidatePathsExceeded || byteBudgetExceeded,
       directoryListingsTruncated,
+      directoryListingFailed,
     })
   }
 }

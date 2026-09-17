@@ -76,6 +76,7 @@ export function analyzeRepository(
       candidates: [],
       candidatePathsTruncated: false,
       directoryListingsTruncated: false,
+      directoryListingFailed: false,
     })
   const blockers: PreviewBlocker[] = [...packageManager.blockers]
   const runnerBlocker = runnerSupportBlocker(

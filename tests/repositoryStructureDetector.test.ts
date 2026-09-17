@@ -151,16 +151,17 @@ describe("classifyWorkspacePattern", () => {
 })
 
 describe("planStructureCandidatePaths", () => {
-  it("dedups a conventional directory already covered by a wildcard parent", () => {
+  it("treats a wildcard-declared conventional directory as a container, not a bare literal", () => {
     const plan = planStructureCandidatePaths({
       workspacePatterns: ["apps/*"],
       rootDirectories: ["apps", "packages"],
     })
 
-    expect(plan.wildcardParents).toEqual(["apps"])
-    // "apps" itself is a wildcard container, not probed as a bare literal;
-    // "packages" is a conventional directory not covered by any pattern.
-    expect(plan.literalPaths).toEqual(["packages"])
+    // "apps" comes from the declared wildcard; "packages" is folded into the
+    // same container set purely from the conventional root directory name.
+    // Neither is probed as a bare literal package.json.
+    expect(plan.wildcardParents.sort()).toEqual(["apps", "packages"])
+    expect(plan.literalPaths).toEqual([])
   })
 
   it("combines literal workspace declarations with conventional directories", () => {
@@ -192,6 +193,26 @@ describe("planStructureCandidatePaths", () => {
     })
 
     expect(plan.literalPaths).toEqual([])
+    expect(plan.wildcardParents).toEqual([])
+  })
+
+  it("treats apps/packages as containers without any workspace declaration", () => {
+    const plan = planStructureCandidatePaths({
+      workspacePatterns: [],
+      rootDirectories: ["apps", "packages", "frontend"],
+    })
+
+    expect(plan.wildcardParents.sort()).toEqual(["apps", "packages"])
+    expect(plan.literalPaths).toEqual(["frontend"])
+  })
+
+  it("does not duplicate a container already declared as a workspace wildcard", () => {
+    const plan = planStructureCandidatePaths({
+      workspacePatterns: ["apps/*"],
+      rootDirectories: ["apps"],
+    })
+
+    expect(plan.wildcardParents).toEqual(["apps"])
   })
 })
 
@@ -206,6 +227,7 @@ describe("detectRepositoryStructure", () => {
       candidates: [] as StructureCandidateProbe[],
       candidatePathsTruncated: false,
       directoryListingsTruncated: false,
+      directoryListingFailed: false,
       ...overrides,
     }
   }
@@ -404,6 +426,39 @@ describe("detectRepositoryStructure", () => {
 
     expect(listingTruncated.truncated).toBe(true)
     expect(pathsTruncated.truncated).toBe(true)
+  })
+
+  it("marks the result incomplete (not just truncated) when a directory listing itself failed", () => {
+    const structure = detectRepositoryStructure(
+      baseInput({ directoryListingFailed: true }),
+    )
+
+    expect(structure.complete).toBe(false)
+    // A listing failure alone is not the same signal as hitting a bound.
+    expect(structure.truncated).toBe(false)
+  })
+
+  it("keeps other candidates when only one directory listing failed", () => {
+    const structure = detectRepositoryStructure(
+      baseInput({
+        directoryListingFailed: true,
+        warnings: ["apps could not be listed: not found"],
+        candidates: [
+          {
+            path: "packages/ui",
+            packageJson: packageJson({ name: "@acme/ui" }),
+            parseError: null,
+            requestError: null,
+          },
+        ],
+      }),
+    )
+
+    expect(structure.complete).toBe(false)
+    expect(structure.projects.map((p) => p.path)).toEqual([".", "packages/ui"])
+    expect(
+      structure.warnings.some((w) => w.includes("apps could not be listed")),
+    ).toBe(true)
   })
 
   it("bounds the surfaced project list and reports truncation", () => {

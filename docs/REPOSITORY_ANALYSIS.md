@@ -280,26 +280,42 @@ Candidate discovery combines two sources, both bounded:
    1-2 segment literal path (`"frontend"`, `"apps/web"`) or a single-level
    `dir/*` wildcard is supported; negation, `**`, mid-pattern wildcards,
    absolute paths, and `..` are reported as a warning, never guessed.
-2. **Conventional root directory names** -- a small, fixed set (`apps`,
-   `packages`, `frontend`, `backend`, `client`, `web`) read from the same
-   bounded root directory listing analysis already performs. A directory name
-   alone is never sufficient; a candidate is only surfaced once a
-   `package.json` is actually found at that path.
+2. **Conventional root directory names**, read from the same bounded root
+   directory listing analysis already performs, split into two kinds:
+   - **Direct** (`frontend`, `backend`, `client`, `web`) -- probed for their
+     own `package.json` directly, exactly like a declared literal path. A
+     directory name alone is never sufficient; a candidate is only surfaced
+     once a `package.json` is actually found at that path.
+   - **Container** (`apps`, `packages`) -- never probed for their own
+     `package.json`. Instead they are bounded-listed exactly like a declared
+     `dir/*` wildcard, so `apps/web` or `packages/ui` can be discovered even
+     when no workspace tool declares them. A workspace pattern that already
+     declares the same directory as a wildcard (e.g. `apps/*`) shares the
+     same listing rather than listing it twice.
 
-A `dir/*` wildcard is resolved with exactly one bounded directory listing of
-`dir` (`GitHubClient.getRepositoryDirectoryEntries`, a fixed, validated,
-path-checked operation); only `type: "dir"` entries become candidates, so
-symlinks and submodules are never recursively followed, and no listing is
-ever performed on a discovered subdirectory. Every read uses the same
-resolved `commitSha` as the rest of analysis, never a mutable branch name.
+A `dir/*` wildcard or container directory is resolved with exactly one
+bounded directory listing of `dir` (`GitHubClient.getRepositoryDirectoryEntries`,
+a fixed, validated, path-checked operation); only `type: "dir"` entries
+become candidates, so symlinks and submodules are never recursively followed,
+and no listing is ever performed on a discovered subdirectory (`apps/web` is
+never itself listed). Every read uses the same resolved `commitSha` as the
+rest of analysis, never a mutable branch name.
 
-Bounds: at most 8 wildcard directory listings, 200 entries considered per
-listing, 20 candidate `package.json` probes, and 512 KB of nested
-`package.json` bytes read in total. Hitting any bound sets `truncated: true`
-rather than silently returning a partial result as complete. A per-candidate
-GitHub failure is recorded as a warning and sets `complete: false` for the
-whole result, but does not fail analysis; a malformed nested `package.json`
-is kept as an `unknown`-role candidate carrying its parse error as a warning.
+Bounds: at most 8 directory listings (wildcard and container parents share
+this budget), 200 entries considered per listing, 20 candidate `package.json`
+probes, and 512 KB of nested `package.json` bytes read in total, strictly
+enforced -- each nested read's byte cap is `min(256 KB, bytes remaining in
+the 512 KB budget)`, so no single read can push the total past the bound; once
+the remaining budget reaches zero, no further candidate is read at all.
+Hitting any of these bounds sets `truncated: true` rather than silently
+returning a partial result as complete. A per-candidate GitHub read failure
+(including a candidate that no longer fits the remaining byte budget) or a
+directory listing failure is recorded as a warning and sets `complete: false`
+for the whole result -- distinct from `truncated`, which means a bound was
+reached by design, not that a read failed -- but does not fail analysis;
+sibling candidates and listings are still discovered normally. A malformed
+nested `package.json` is kept as an `unknown`-role candidate carrying its
+parse error as a warning.
 
 Detecting `frontend`/`backend`-shaped candidates never changes preview
 eligibility by itself: the existing `AMBIGUOUS_WORKSPACE` blocker still

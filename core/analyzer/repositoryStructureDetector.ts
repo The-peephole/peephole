@@ -21,14 +21,23 @@ export const MAX_NESTED_PACKAGE_JSON_BYTES = 256 * 1024
 /** Bounded total bytes read across every nested package.json probe. */
 export const MAX_STRUCTURE_TOTAL_BYTES = 512 * 1024
 
-const CONVENTIONAL_ROOT_DIRECTORIES = [
-  "apps",
-  "packages",
+/**
+ * Conventional directory names probed directly for their own package.json.
+ */
+const DIRECT_CONVENTIONAL_DIRECTORIES = [
   "frontend",
   "backend",
   "client",
   "web",
 ] as const
+
+/**
+ * Conventional directory names treated as containers rather than projects:
+ * never probed for their own package.json, but bounded-listed exactly like a
+ * declared `dir/*` wildcard so their immediate `type: "dir"` children can be
+ * discovered even without a workspace declaration.
+ */
+const CONTAINER_CONVENTIONAL_DIRECTORIES = ["apps", "packages"] as const
 
 const FRONTEND_FRAMEWORK_DEPENDENCIES = [
   "vite",
@@ -215,9 +224,19 @@ export function planStructureCandidatePaths(options: {
     }
   }
 
-  for (const name of CONVENTIONAL_ROOT_DIRECTORIES) {
+  for (const name of DIRECT_CONVENTIONAL_DIRECTORIES) {
     if (options.rootDirectories.includes(name) && !wildcardParents.has(name)) {
       literalPaths.add(name)
+    }
+  }
+
+  // Container directories are never probed directly; they are listed like a
+  // `dir/*` wildcard so their immediate children become candidates instead.
+  // Adding to the same Set a workspace pattern may have already populated
+  // naturally dedupes a repeated listing.
+  for (const name of CONTAINER_CONVENTIONAL_DIRECTORIES) {
+    if (options.rootDirectories.includes(name)) {
+      wildcardParents.add(name)
     }
   }
 
@@ -249,6 +268,13 @@ export interface StructureDiscoveryInput {
   candidatePathsTruncated: boolean
   /** True when a directory listing hit its own bound. */
   directoryListingsTruncated: boolean
+  /**
+   * True when a wildcard/container directory listing itself failed (e.g. a
+   * GitHub request error), as opposed to hitting a size bound. This is an
+   * explicit I/O-outcome signal computed by the loader; the detector never
+   * infers it from warning text.
+   */
+  directoryListingFailed: boolean
 }
 
 /**
@@ -259,7 +285,7 @@ export function detectRepositoryStructure(
   input: StructureDiscoveryInput,
 ): RepositoryStructure {
   const warnings = [...input.warnings]
-  let complete = true
+  let complete = !input.directoryListingFailed
 
   const rootHasEvidence = input.rootFramework !== "unknown"
   const rootCandidate: RepositoryProjectCandidate = {

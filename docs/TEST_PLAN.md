@@ -143,16 +143,34 @@ Deterministic tests split detection logic from GitHub access, per
   (including `packages/*` staying `package-candidate` even with a frontend
   dependency); malformed nested `package.json` kept as a warning-carrying
   candidate; a failed candidate read marking the result `complete: false`;
-  and the bounded project-candidate/truncation limits;
+  the bounded project-candidate/truncation limits; `apps`/`packages`
+  resolving as containers (never a bare literal probe) whether declared as a
+  workspace wildcard or only present as a conventional root directory name,
+  with the two sources deduping into a single listing; and a directory
+  listing failure marking the result `complete: false` (a distinct signal
+  from `truncated`, which means a bound was reached by design) while sibling
+  candidates from other listings are kept;
 - the bounded GitHub loader against a fake client
   (`tests/repositoryStructureLoader.test.ts`): resolving `apps/*` and
   `pnpm-workspace.yaml` patterns by listing exactly the wildcard parent
-  directory (never a discovered subdirectory); conventional
-  `frontend`/`web`/`backend` directory candidates with no workspace manager
-  present; candidate dedup between a workspace declaration and a conventional
-  directory name; excluding symlink/submodule listing entries; the directory
-  listing count, per-listing entry count, and candidate-probe count bounds;
-  and an abort propagating instead of being swallowed as a warning;
+  directory (never a discovered subdirectory); conventional direct
+  `frontend`/`web`/`backend` candidates with no workspace manager present;
+  conventional container `apps`/`packages` discovery with no workspace
+  manager present, including multiple children, a package-candidate role, and
+  a bare `apps`/`packages` directory never itself probed for a package.json;
+  candidate dedup between a workspace declaration and a conventional
+  directory name (both direct and container); excluding symlink/submodule
+  listing entries; the directory listing count (shared across wildcard and
+  container parents), per-listing entry count, and candidate-probe count
+  bounds; the total nested-byte budget strictly enforced by capping each
+  read's byte limit to `min(256 KB, bytes remaining)` -- covering multiple
+  reads summing within the budget, a read whose maxBytes reflects the actual
+  remaining budget (not the flat per-file cap), a candidate too large for
+  what remains failing without crashing, and exhausting the budget skipping
+  the next candidate entirely and reporting `truncated: true`; a directory
+  listing failure keeping candidates from a sibling listing that succeeded
+  while marking the result `complete: false`; and an abort propagating
+  instead of being swallowed as a warning;
 - `GitHubClient.getRepositoryDirectoryEntries`
   (`tests/githubClient.test.ts`): resolving a nested directory at the
   resolved commit SHA, and rejecting an absolute path, `..` traversal,

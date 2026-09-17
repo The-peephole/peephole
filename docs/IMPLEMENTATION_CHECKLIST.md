@@ -146,21 +146,35 @@ evidence that any of stages 7-11 are implemented.
       `**`, mid-pattern wildcards, absolute paths, `..`, deeper patterns) --
       unsupported patterns are warned about, never guessed
 - [x] Combine declared workspace patterns with a small, fixed set of
-      conventional root directory names (`apps`, `packages`, `frontend`,
-      `backend`, `client`, `web`) read from the same bounded root listing
-      `KnownRepositoryFilesLoader` already performs (`rootDirectories`); a
-      directory name alone is never treated as proof of an application
+      conventional root directory names read from the same bounded root
+      listing `KnownRepositoryFilesLoader` already performs
+      (`rootDirectories`); direct names (`frontend`, `backend`, `client`,
+      `web`) are probed for their own package.json, while container names
+      (`apps`, `packages`) are never probed directly but bounded-listed like
+      a `dir/*` wildcard so `apps/web`/`packages/ui` are found without any
+      workspace declaration, sharing the same listing (deduped) when a
+      wildcard already covers the same directory; a directory name alone is
+      never treated as proof of an application
 - [x] Add `GitHubClient.getRepositoryDirectoryEntries`, a fixed, validated,
       bounded directory-listing operation (`core/github/repositoryPath.ts`
       rejects absolute paths, `..` traversal, backslash traversal, and
       malformed segments before any request is made); `getRepositoryRootEntries`
       now delegates to it. No new Chrome permission or content-script fetch
       primitive was added
-- [x] Bound every read: at most 8 wildcard directory listings, 200 entries
-      considered per listing, 20 candidate package.json probes, and 512 KB of
-      nested package.json bytes total; hitting a bound sets `truncated: true`
-      instead of hiding it, and only `type: "dir"` listing entries are
-      expanded (symlinks/submodules are never recursively followed)
+- [x] Bound every read: at most 8 directory listings (wildcard and container
+      parents share this budget), 200 entries considered per listing, 20
+      candidate package.json probes, and 512 KB of nested package.json bytes
+      total, strictly enforced -- each nested read's byte cap is `min(256 KB,
+      bytes remaining in the 512 KB budget)`, so no single read can push the
+      running total past the bound, and once the remaining budget reaches
+      zero no further candidate is even requested; hitting any of these
+      bounds sets `truncated: true` instead of hiding it, and only
+      `type: "dir"` listing entries are expanded (symlinks/submodules are
+      never recursively followed)
+- [x] Treat a directory listing failure (as opposed to hitting a bound) as an
+      explicit, loader-computed I/O signal that sets `complete: false` for
+      the whole result while sibling listings and candidates are still
+      discovered normally -- the detector never infers this from warning text
 - [x] Use the same already-resolved `repository.commitSha` as the rest of
       analysis for every structure read -- never a mutable branch name --
       inheriting Branch Preview's existing abort/cache-key contract, so a

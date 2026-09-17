@@ -4,9 +4,11 @@ import { GitHubApiError, type GitHubContentEntry } from "../core/github/client"
 import type { RepositoryFileSnapshot } from "../core/github/knownFiles"
 import { RepositoryStructureLoader } from "../core/github/repositoryStructureLoader"
 import {
+  MAX_NESTED_PACKAGE_JSON_BYTES,
   MAX_STRUCTURE_CANDIDATE_PROBES,
   MAX_STRUCTURE_DIRECTORY_ENTRIES,
   MAX_STRUCTURE_DIRECTORY_LISTINGS,
+  MAX_STRUCTURE_TOTAL_BYTES,
 } from "../core/analyzer/repositoryStructureDetector"
 import type { RepositoryMetadata } from "../types/repository"
 
@@ -47,6 +49,15 @@ function packageJson(value: Record<string, unknown>): string {
   return JSON.stringify(value)
 }
 
+/** Builds a package.json string of exactly `byteSize` UTF-8 bytes. */
+function packageJsonOfSize(byteSize: number): string {
+  const template = (padding: string) =>
+    JSON.stringify({ dependencies: { vite: "x" }, padding })
+  const overhead = template("").length
+  const padLength = Math.max(0, byteSize - overhead)
+  return template("x".repeat(padLength))
+}
+
 function createFakeClient(
   overrides: {
     directories?: Record<string, GitHubContentEntry[]>
@@ -63,9 +74,18 @@ function createFakeClient(
     },
   )
   const getRepositoryTextFile = vi.fn(
-    async (_repository: RepositoryMetadata, path: string) => {
+    async (_repository: RepositoryMetadata, path: string, maxBytes: number) => {
       if (overrides.fileErrors?.[path]) throw overrides.fileErrors[path]
-      return overrides.files?.[path] ?? null
+      const content = overrides.files?.[path] ?? null
+      if (content === null) return null
+      const byteLength = new TextEncoder().encode(content).byteLength
+      if (byteLength > maxBytes) {
+        throw new GitHubApiError(
+          "invalid-response",
+          `${path} exceeds Peephole's ${maxBytes}-byte analysis limit.`,
+        )
+      }
+      return content
     },
   )
 
@@ -478,5 +498,306 @@ describe("RepositoryStructureLoader", () => {
     const loader = new RepositoryStructureLoader(client)
 
     await expect(loader.load(repository, files)).rejects.toBe(abortError)
+  })
+
+  describe("total byte budget", () => {
+    it("reads multiple nested package.json files whose combined size stays within the total budget", async () => {
+      // Two reads that individually stay under the per-file cap but together
+      // push the remaining budget below that cap, so the third read's
+      // maxBytes is provably bound by what remains, not the flat per-file cap.
+      const sizeA = 150 * 1024
+      const sizeB = 150 * 1024
+      const sizeC = 100 * 1024
+      const files = snapshot({}, [], ["frontend", "backend", "client"])
+      const client = createFakeClient({
+        files: {
+          "frontend/package.json": packageJsonOfSize(sizeA),
+          "backend/package.json": packageJsonOfSize(sizeB),
+          "client/package.json": packageJsonOfSize(sizeC),
+        },
+      })
+      const loader = new RepositoryStructureLoader(client)
+
+      const structure = await loader.load(repository, files)
+
+      expect(structure.projects.map((p) => p.path).sort()).toEqual([
+        ".",
+        "backend",
+        "client",
+        "frontend",
+      ])
+      expect(structure.truncated).toBe(false)
+      expect(structure.complete).toBe(true)
+      expect(client.getRepositoryTextFile).toHaveBeenNthCalledWith(
+        3,
+        repository,
+        "client/package.json",
+        MAX_STRUCTURE_TOTAL_BYTES - sizeA - sizeB,
+        undefined,
+      )
+    })
+
+    it("does not let a candidate larger than the remaining budget exceed it, and does not crash", async () => {
+      // Two prior reads that stay within the per-file cap leave only ~1KB of
+      // remaining total budget; the third candidate is small enough to pass
+      // the per-file cap but too large for what remains.
+      const firstSize = MAX_NESTED_PACKAGE_JSON_BYTES
+      const secondSize = MAX_NESTED_PACKAGE_JSON_BYTES - 1024
+      const thirdSize = 4096
+      const files = snapshot({}, [], ["frontend", "backend", "client"])
+      const client = createFakeClient({
+        files: {
+          "frontend/package.json": packageJsonOfSize(firstSize),
+          "backend/package.json": packageJsonOfSize(secondSize),
+          "client/package.json": packageJsonOfSize(thirdSize),
+        },
+      })
+      const loader = new RepositoryStructureLoader(client)
+
+      const structure = await loader.load(repository, files)
+
+      expect(structure.projects.map((p) => p.path).sort()).toEqual([
+        ".",
+        "backend",
+        "frontend",
+      ])
+      expect(structure.complete).toBe(false)
+      expect(
+        structure.warnings.some((w) => w.includes("client/package.json")),
+      ).toBe(true)
+    })
+
+    it("stops reading once the total budget is exhausted and reports truncated, without exceeding the bound", async () => {
+      const files = snapshot({}, [], ["frontend", "backend", "client"])
+      const client = createFakeClient({
+        files: {
+          "frontend/package.json": packageJsonOfSize(
+            MAX_NESTED_PACKAGE_JSON_BYTES,
+          ),
+          "backend/package.json": packageJsonOfSize(
+            MAX_STRUCTURE_TOTAL_BYTES - MAX_NESTED_PACKAGE_JSON_BYTES,
+          ),
+          "client/package.json": packageJsonOfSize(1),
+        },
+      })
+      const loader = new RepositoryStructureLoader(client)
+
+      const structure = await loader.load(repository, files)
+
+      // The third candidate's remaining budget is exactly zero, so it is
+      // never even requested.
+      expect(client.getRepositoryTextFile).toHaveBeenCalledTimes(2)
+      expect(structure.projects.map((p) => p.path).sort()).toEqual([
+        ".",
+        "backend",
+        "frontend",
+      ])
+      expect(structure.truncated).toBe(true)
+      expect(structure.complete).toBe(true)
+    })
+  })
+
+  describe("directory listing failure", () => {
+    it("keeps candidates from a directory listing that succeeded when a sibling listing fails", async () => {
+      const files = snapshot(
+        {
+          "package.json": packageJson({
+            workspaces: ["apps/*", "packages/*"],
+          }),
+        },
+        ["package.json"],
+        ["apps", "packages"],
+      )
+      const client = createFakeClient({
+        directories: { packages: [dirEntry("packages/ui")] },
+        files: {
+          "packages/ui/package.json": packageJson({ name: "@acme/ui" }),
+        },
+      })
+      const loader = new RepositoryStructureLoader(client)
+
+      const structure = await loader.load(repository, files)
+
+      expect(structure.projects.map((p) => p.path).sort()).toEqual([
+        ".",
+        "packages/ui",
+      ])
+      expect(
+        structure.warnings.some((w) => w.includes("apps could not be listed")),
+      ).toBe(true)
+      expect(structure.complete).toBe(false)
+    })
+  })
+
+  describe("conventional container directories (apps, packages)", () => {
+    it("discovers a project nested under apps without any workspace declaration", async () => {
+      const files = snapshot({}, [], ["apps"])
+      const client = createFakeClient({
+        directories: { apps: [dirEntry("apps/web")] },
+        files: {
+          "apps/web/package.json": packageJson({ dependencies: { vite: "x" } }),
+        },
+      })
+      const loader = new RepositoryStructureLoader(client)
+
+      const structure = await loader.load(repository, files)
+
+      expect(structure.projects.map((p) => p.path)).toEqual([".", "apps/web"])
+      expect(structure.projects.find((p) => p.path === "apps/web")?.role).toBe(
+        "project-candidate",
+      )
+      expect(client.getRepositoryTextFile).not.toHaveBeenCalledWith(
+        repository,
+        "apps/package.json",
+        expect.anything(),
+        expect.anything(),
+      )
+    })
+
+    it("discovers multiple apps children without any workspace declaration", async () => {
+      const files = snapshot({}, [], ["apps"])
+      const client = createFakeClient({
+        directories: {
+          apps: [dirEntry("apps/admin"), dirEntry("apps/web")],
+        },
+        files: {
+          "apps/admin/package.json": packageJson({
+            dependencies: { react: "x" },
+          }),
+          "apps/web/package.json": packageJson({ dependencies: { vite: "x" } }),
+        },
+      })
+      const loader = new RepositoryStructureLoader(client)
+
+      const structure = await loader.load(repository, files)
+
+      expect(structure.projects.map((p) => p.path).sort()).toEqual([
+        ".",
+        "apps/admin",
+        "apps/web",
+      ])
+      expect(structure.layout).toBe("multi-project")
+    })
+
+    it("discovers a packages child as a package candidate without any workspace declaration", async () => {
+      const files = snapshot({}, [], ["packages"])
+      const client = createFakeClient({
+        directories: { packages: [dirEntry("packages/ui")] },
+        files: {
+          "packages/ui/package.json": packageJson({ name: "@acme/ui" }),
+        },
+      })
+      const loader = new RepositoryStructureLoader(client)
+
+      const structure = await loader.load(repository, files)
+
+      expect(
+        structure.projects.find((p) => p.path === "packages/ui"),
+      ).toMatchObject({ role: "package-candidate", packageName: "@acme/ui" })
+    })
+
+    it("excludes symlink and submodule entries from a conventional apps container listing", async () => {
+      const files = snapshot({}, [], ["apps"])
+      const client = createFakeClient({
+        directories: {
+          apps: [
+            dirEntry("apps/web", "dir"),
+            dirEntry("apps/vendored", "symlink"),
+            dirEntry("apps/embedded", "submodule"),
+            dirEntry("apps/README.md", "file"),
+          ],
+        },
+        files: {
+          "apps/web/package.json": packageJson({ dependencies: { vite: "x" } }),
+        },
+      })
+      const loader = new RepositoryStructureLoader(client)
+
+      const structure = await loader.load(repository, files)
+
+      expect(structure.projects.map((p) => p.path)).toEqual([".", "apps/web"])
+    })
+
+    it("does not duplicate the apps listing when a workspace wildcard and the conventional container both apply", async () => {
+      const files = snapshot(
+        { "package.json": packageJson({ workspaces: ["apps/*"] }) },
+        ["package.json"],
+        ["apps"],
+      )
+      const client = createFakeClient({
+        directories: { apps: [dirEntry("apps/web")] },
+        files: {
+          "apps/web/package.json": packageJson({ dependencies: { vite: "x" } }),
+        },
+      })
+      const loader = new RepositoryStructureLoader(client)
+
+      const structure = await loader.load(repository, files)
+
+      expect(client.getRepositoryDirectoryEntries).toHaveBeenCalledTimes(1)
+      expect(structure.projects.map((p) => p.path)).toEqual([".", "apps/web"])
+    })
+
+    it("counts conventional container directories toward the shared directory-listing bound", async () => {
+      const wildcardPatterns = Array.from(
+        { length: MAX_STRUCTURE_DIRECTORY_LISTINGS },
+        (_, index) => `dir${index}/*`,
+      )
+      const files = snapshot(
+        { "package.json": packageJson({ workspaces: wildcardPatterns }) },
+        ["package.json"],
+        ["apps", "packages"],
+      )
+      const client = createFakeClient({
+        directories: Object.fromEntries(
+          wildcardPatterns.map((pattern) => {
+            const dir = pattern.replace("/*", "")
+            return [dir, [dirEntry(`${dir}/one`)]]
+          }),
+        ),
+      })
+      const loader = new RepositoryStructureLoader(client)
+
+      const structure = await loader.load(repository, files)
+
+      expect(client.getRepositoryDirectoryEntries).toHaveBeenCalledTimes(
+        MAX_STRUCTURE_DIRECTORY_LISTINGS,
+      )
+      expect(structure.truncated).toBe(true)
+    })
+
+    it("bounds the number of entries considered from a conventional container listing", async () => {
+      const entries = Array.from(
+        { length: MAX_STRUCTURE_DIRECTORY_ENTRIES + 10 },
+        (_, index) => dirEntry(`apps/app-${index}`),
+      )
+      const files = snapshot({}, [], ["apps"])
+      const client = createFakeClient({ directories: { apps: entries } })
+      const loader = new RepositoryStructureLoader(client)
+
+      const structure = await loader.load(repository, files)
+
+      expect(structure.truncated).toBe(true)
+    })
+
+    it("never recursively lists a directory discovered under a conventional container", async () => {
+      const files = snapshot({}, [], ["apps"])
+      const client = createFakeClient({
+        directories: { apps: [dirEntry("apps/web")] },
+        files: {
+          "apps/web/package.json": packageJson({ dependencies: { vite: "x" } }),
+        },
+      })
+      const loader = new RepositoryStructureLoader(client)
+
+      await loader.load(repository, files)
+
+      expect(client.getRepositoryDirectoryEntries).toHaveBeenCalledTimes(1)
+      expect(client.getRepositoryDirectoryEntries).not.toHaveBeenCalledWith(
+        repository,
+        "apps/web",
+        expect.anything(),
+      )
+    })
   })
 })

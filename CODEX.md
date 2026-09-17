@@ -196,15 +196,25 @@ the actual GitHub reads through `GitHubClient.getRepositoryDirectoryEntries`
 `getRepositoryTextFile`) and `GitHubClient.getRepositoryRootEntries`. Discovery
 combines declared workspace patterns (`package.json` `workspaces`, a bounded
 `pnpm-workspace.yaml` `packages:` subset -- not a YAML parser) with a small,
-fixed set of conventional root directory names; only an exact 1-2 segment
-literal path or a single-level `dir/*` wildcard is supported, so depth never
-exceeds one level of listing beneath the root. Every read is bounded (at most
-8 wildcard directory listings, 200 entries per listing, 20 candidate
-package.json probes, 512 KB of nested package.json bytes total) and reads
-`repository.commitSha` -- the same already-resolved metadata Branch Preview
-produces, never a mutable branch name. Hitting a bound sets `truncated: true`
-instead of hiding it; a failed read on one candidate sets `complete: false`
-and continues with the rest rather than failing the whole analysis. This adds
+fixed set of conventional root directory names, split into direct names
+(`frontend`, `backend`, `client`, `web`, each probed for its own
+package.json) and container names (`apps`, `packages`, never probed
+directly but bounded-listed exactly like a declared `dir/*` wildcard so
+`apps/web`/`packages/ui` are found even without a workspace declaration,
+deduped against the same directory if a wildcard already covers it); only an
+exact 1-2 segment literal path or a single-level `dir/*` wildcard is
+supported, so depth never exceeds one level of listing beneath the root.
+Every read is bounded (at most 8 directory listings -- wildcard and
+container parents share this budget --, 200 entries per listing, 20
+candidate package.json probes, 512 KB of nested package.json bytes total,
+strictly enforced by capping each nested read's byte limit to `min(256 KB,
+bytes remaining in the 512 KB budget)` so no single read can push the total
+past the bound) and reads `repository.commitSha` -- the same already-resolved
+metadata Branch Preview produces, never a mutable branch name. Hitting a
+bound sets `truncated: true` instead of hiding it; a failed candidate read or
+a failed directory listing sets `complete: false` (an explicit,
+loader-computed I/O signal distinct from `truncated`) and continues with the
+rest rather than failing the whole analysis. This adds
 a `structure` field to `RepositoryAnalysis`, so `ANALYZER_VERSION` moved to
 `0.1.2` to invalidate old cached analyses; `PREVIEW_CONTRACT_VERSION` is
 unchanged. The Side Panel's read-only "Structure" section
