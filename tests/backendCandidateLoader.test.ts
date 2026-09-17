@@ -122,19 +122,90 @@ describe("BackendCandidateLoader", () => {
     expect(result.warnings.join(" ")).toContain("rate limited")
   })
 
-  it("does not fail the whole load when a single env-template read fails", async () => {
+  it("keeps the candidate but marks the result incomplete when an env-template read fails", async () => {
     const getRepositoryTextFile = vi
       .fn()
       .mockImplementation(async (_repo, path: string) => {
         if (path === "backend/package.json") return expressPackageJson()
-        throw new Error("boom")
+        if (path === "backend/.env.example") throw new Error("rate limited")
+        return null
       })
     const loader = new BackendCandidateLoader({ getRepositoryTextFile })
 
     const result = await loader.load(repository, ["backend"])
 
     expect(result.status).toBe("detected")
+    expect(result.candidates).toMatchObject([
+      { sourceRoot: "backend", framework: "express" },
+    ])
     expect(result.candidates[0]?.environmentRequirements).toEqual([])
+    expect(result.complete).toBe(false)
+    expect(result.truncated).toBe(false)
+    expect(result.warnings).toContain(
+      "backend/.env.example could not be inspected: rate limited",
+    )
+  })
+
+  it("keeps both candidates' normal backend evidence when only one candidate's env-template read fails", async () => {
+    const getRepositoryTextFile = vi
+      .fn()
+      .mockImplementation(async (_repo, path: string) => {
+        if (path === "backend/package.json") return expressPackageJson()
+        if (path === "backend/.env.example") throw new Error("rate limited")
+        if (path === "api/package.json") {
+          return JSON.stringify({
+            name: "api",
+            dependencies: { fastify: "latest" },
+          })
+        }
+        if (path === "api/.env.example") return "PORT=3000\n"
+        return null
+      })
+    const loader = new BackendCandidateLoader({ getRepositoryTextFile })
+
+    const result = await loader.load(repository, ["backend", "api"])
+
+    expect(result.status).toBe("detected")
+    expect(result.candidates).toMatchObject([
+      { sourceRoot: "backend", framework: "express" },
+      { sourceRoot: "api", framework: "fastify" },
+    ])
+    expect(result.candidates[1]?.environmentRequirements).toMatchObject([
+      { name: "PORT", sourceRoot: "api" },
+    ])
+    expect(result.complete).toBe(false)
+    expect(result.warnings).toContain(
+      "backend/.env.example could not be inspected: rate limited",
+    )
+  })
+
+  it("does not mark the result incomplete when an env template is simply absent", async () => {
+    const getRepositoryTextFile = vi
+      .fn()
+      .mockImplementation(async (_repo, path: string) => {
+        if (path === "backend/package.json") return expressPackageJson()
+        return null
+      })
+    const loader = new BackendCandidateLoader({ getRepositoryTextFile })
+
+    const result = await loader.load(repository, ["backend"])
+
+    expect(result.status).toBe("detected")
+    expect(result.complete).toBe(true)
+    expect(result.warnings).toEqual([])
+  })
+
+  it("propagates an abort raised while fetching an env template", async () => {
+    const abortError = new DOMException("aborted", "AbortError")
+    const getRepositoryTextFile = vi
+      .fn()
+      .mockImplementation(async (_repo, path: string) => {
+        if (path === "backend/package.json") return expressPackageJson()
+        throw abortError
+      })
+    const loader = new BackendCandidateLoader({ getRepositoryTextFile })
+
+    await expect(loader.load(repository, ["backend"])).rejects.toBe(abortError)
   })
 
   it("reports not-detected/complete:false with the parse-error warning for a malformed nested package.json only", async () => {

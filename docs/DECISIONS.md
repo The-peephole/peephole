@@ -544,3 +544,19 @@ never fabricates a candidate for a parse failure -- it receives
 sibling candidates are still probed and reported normally, and a real,
 successfully-parsed database/server-only dependency still yields a valid
 `framework: "unknown"` candidate exactly as before.
+
+**Second update:** `BackendCandidateLoader`'s env-template read caught a
+non-abort error and silently discarded it -- the candidate was still
+reported (correct), but nothing recorded that a bounded read had failed, so
+`BackendDetection.complete` could stay `true` even though
+`backend/.env.example` (say) failed with a rate limit. This broke
+`complete`'s contract: a bounded read failing must always be reflected, not
+just a package.json read failing. Fixed so an env-template request failure
+(not a parse issue -- there is no env-template "parse", only a raw text
+read) now also pushes a warning naming the exact path
+(`{sourceRoot}/{templateName} could not be inspected: <message>`) and sets
+`complete: false`, while the candidate itself is kept with whatever env
+evidence it did manage to read, sibling candidates are still probed, and an
+abort still propagates instead of being caught. `truncated` is untouched by
+this -- a read failure and a bound being reached remain distinct signals,
+exactly as elsewhere in this codebase.

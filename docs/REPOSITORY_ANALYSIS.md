@@ -665,11 +665,18 @@ separate bounded loader, `core/github/backendCandidateLoader.ts`:
   env-template read for this pass (matching structure detection's own total
   byte bound, since this probes a comparably small candidate set).
 
-Hitting any bound sets `truncated: true` rather than hiding it. A single
-candidate's package.json read failing (not a parse error -- an actual
-request failure) records a warning and sets `complete: false` for the whole
-result, but sibling candidates are still probed; only an abort propagates
-instead of being swallowed. `RepositoryAnalysisService` wraps the entire
+Hitting any bound sets `truncated: true` rather than hiding it -- this is
+tracked entirely separately from a read *failing*, which sets
+`complete: false` instead. A single candidate's package.json request
+failing (not a parse error, an actual request failure) or an env-template
+request failing records a warning naming the failed path (e.g.
+`backend/.env.example could not be inspected: rate limited`) and sets
+`complete: false` for the whole result, but the candidate itself is kept
+(with whatever env evidence it did manage to read) and sibling candidates
+are still probed; only an abort propagates instead of being swallowed. An
+env template that is simply absent (`getRepositoryTextFile` resolving
+`null`, not throwing) is not a failure at all and never touches `complete`.
+`RepositoryAnalysisService` wraps the entire
 nested-backend loader call so that *its* failure (anything but an abort)
 degrades to an "unavailable" `BackendDetection` rather than failing
 repository analysis or disabling Build Preview for the selected frontend

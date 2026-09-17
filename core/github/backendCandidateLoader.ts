@@ -143,8 +143,14 @@ export class BackendCandidateLoader {
         } catch (error) {
           if (isAbortError(error)) throw error
           // A single env-template read failure is a non-fatal gap in
-          // env-requirement evidence for this candidate, not a backend
-          // detection failure -- the candidate can still be reported.
+          // env-requirement evidence for this candidate -- the candidate
+          // itself is still reported -- but it is still a bounded read that
+          // failed, so it must set complete: false like every other read
+          // failure in this loader, not be silently swallowed.
+          warnings.push(
+            `${joinRepositoryPath(path, templateName)} could not be inspected: ${getErrorMessage(error)}`,
+          )
+          complete = false
         }
       }
 
