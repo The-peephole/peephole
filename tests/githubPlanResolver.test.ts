@@ -45,6 +45,32 @@ describe("GitHubPreviewPlanResolver", () => {
     )
   })
 
+  it("derives the package-free static plan at the pinned commit", async () => {
+    const github = {
+      getRepositoryMetadataAtCommit: vi.fn().mockResolvedValue(metadata),
+    } as unknown as GitHubClient
+    const knownFiles = {
+      load: vi.fn().mockResolvedValue({
+        presentPaths: ["index.html"],
+        textFiles: {},
+        warnings: [],
+        complete: true,
+      }),
+    } as unknown as KnownRepositoryFilesLoader
+    const resolver = new GitHubPreviewPlanResolver(github, knownFiles)
+
+    await expect(resolver.resolve(repository, "static-v1")).resolves.toEqual({
+      contractVersion: "static-v1",
+      repository,
+      sourceRoot: ".",
+      packageManager: "none",
+      installCommand: null,
+      buildCommand: null,
+      outputDirectory: ".",
+    })
+    expect(knownFiles.load).toHaveBeenCalledWith(metadata)
+  })
+
   it("rejects contracts and runner targets not implemented in v0.1", async () => {
     const github = {
       getRepositoryMetadataAtCommit: vi.fn().mockResolvedValue(metadata),
@@ -64,6 +90,45 @@ describe("GitHubPreviewPlanResolver", () => {
     const resolver = new GitHubPreviewPlanResolver(github, knownFiles)
 
     await expect(resolver.resolve(repository, "future-v2")).resolves.toBeNull()
+    await expect(resolver.resolve(repository, "static-v1")).resolves.toBeNull()
+  })
+
+  it("rejects recognized package managers without a registered adapter", async () => {
+    const github = {
+      getRepositoryMetadataAtCommit: vi.fn().mockResolvedValue(metadata),
+    } as unknown as GitHubClient
+    const files = viteReactFiles()
+    const knownFiles = {
+      load: vi.fn().mockResolvedValue({
+        ...files,
+        presentPaths: files.presentPaths
+          .filter((path) => path !== "package-lock.json")
+          .concat("pnpm-lock.yaml"),
+      }),
+    } as unknown as KnownRepositoryFilesLoader
+    const resolver = new GitHubPreviewPlanResolver(github, knownFiles)
+
+    await expect(resolver.resolve(repository, "static-v1")).resolves.toBeNull()
+  })
+
+  it("does not promote nested full-stack candidates into a root build", async () => {
+    const github = {
+      getRepositoryMetadataAtCommit: vi.fn().mockResolvedValue(metadata),
+    } as unknown as GitHubClient
+    const knownFiles = {
+      load: vi.fn().mockResolvedValue({
+        presentPaths: ["package.json", "package-lock.json"],
+        textFiles: {
+          "package.json": JSON.stringify({
+            workspaces: ["frontend", "backend"],
+          }),
+        },
+        warnings: [],
+        complete: true,
+      }),
+    } as unknown as KnownRepositoryFilesLoader
+    const resolver = new GitHubPreviewPlanResolver(github, knownFiles)
+
     await expect(resolver.resolve(repository, "static-v1")).resolves.toBeNull()
   })
 })

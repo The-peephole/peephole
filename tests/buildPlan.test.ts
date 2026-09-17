@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest"
 
 import {
-  InvalidBuildPlanError,
-  createBuildCacheKey,
   createBuildPlanFromAnalysis,
   validateBuildPlan,
+} from "../core/preview/buildAdapters"
+import {
+  InvalidBuildPlanError,
+  createBuildCacheKey,
+  validateBuildPlanShape,
 } from "../core/preview/buildPlan"
 import type { BuildPlan } from "../types/preview"
 import { supportedAnalysis } from "./analysisFixture"
@@ -89,18 +92,21 @@ describe("build plan", () => {
     ).toMatchObject({ packageManager: "none", outputDirectory: "." })
   })
 
-  it("accepts the immutable Yarn install selected by package metadata", () => {
-    expect(
-      validateBuildPlan({
-        ...plan,
-        packageManager: "yarn",
-        installCommand: "yarn install --immutable",
-        buildCommand: "yarn build",
-      }),
-    ).toMatchObject({
+  it("rejects package-manager and command combinations without an adapter", () => {
+    const unsupportedPlan: BuildPlan = {
+      ...plan,
       packageManager: "yarn",
       installCommand: "yarn install --immutable",
-    })
+      buildCommand: "yarn build",
+    }
+
+    expect(validateBuildPlanShape(unsupportedPlan)).toEqual(unsupportedPlan)
+    expect(() => validateBuildPlan(unsupportedPlan)).toThrow(
+      "No registered build adapter",
+    )
+    expect(() =>
+      validateBuildPlan({ ...plan, installCommand: "npm install" }),
+    ).toThrow(InvalidBuildPlanError)
   })
 
   it("keys artifacts by commit, normalized plan, and runner version", async () => {
@@ -123,5 +129,8 @@ describe("build plan", () => {
     await expect(createBuildCacheKey(plan, "runner-v2")).resolves.not.toBe(
       first,
     )
+    await expect(
+      createBuildCacheKey({ ...plan, outputDirectory: "build" }, "runner-v1"),
+    ).resolves.not.toBe(first)
   })
 })

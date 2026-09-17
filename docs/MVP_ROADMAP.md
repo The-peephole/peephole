@@ -88,7 +88,7 @@ because a fixture or interface for it exists.
 1. [x] GitHub theme synchronization
 2. [x] Branch Preview
 3. [x] Repository / application structure detection
-4. [ ] Build Adapter generalization
+4. [x] Build Adapter generalization
 5. [ ] frontend target selection / frontend monorepo support
 6. [ ] existing deployed-site Live Preview
 7. [ ] backend detection
@@ -96,6 +96,13 @@ because a fixture or interface for it exists.
 9. [ ] frontend ↔ backend routing
 10. [ ] ephemeral env / secrets
 11. [ ] temporary database support
+
+Build Adapter generalization is complete as an architecture change: an
+explicit resolver selects `static-html-v1` or `vite-react-npm-v1`, detects
+ambiguous matches, and assigns command/output validation to the selected
+adapter. It does **not** mean more frameworks or runners are supported.
+Vue/Svelte, pnpm/yarn/bun, nested candidates, and the full-stack fixture remain
+non-runnable. Frontend target selection starts only in stage 5.
 
 Theme synchronization uses computed GitHub/Primer semantic colors rather than
 a theme-name palette table. Theme changes update the injected action through

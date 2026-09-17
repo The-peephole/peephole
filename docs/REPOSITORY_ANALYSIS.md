@@ -133,7 +133,7 @@ yarn -> version-specific immutable/frozen install
 bun  -> bun install --frozen-lockfile
 ```
 
-The current runner narrows actual support to npm with a root
+The Build Adapter registry narrows actual support to npm with a root
 `package-lock.json`, even though the analyzer recognizes more managers.
 
 ## 6. Runtime and Build Detection
@@ -340,8 +340,10 @@ interface PreviewEligibility {
 }
 ```
 
-`native-static-build` requires all compatibility checks plus
-`core/preview/runnerSupport.ts` to admit the framework/package-manager pair.
+`native-static-build` requires all compatibility checks plus a match in the
+`core/preview/buildAdapters.ts` registry. `runnerSupport.ts` derives analyzer
+blockers from that same registry rather than maintaining a second capability
+table.
 `existing-deployment` currently requires normalized HTTP(S) homepage metadata.
 All other cases return `unsupported`; no StackBlitz fallback exists.
 
@@ -406,3 +408,10 @@ The analyzer output is safe to display and cache. It contains variable names and
 The analyzer is intentionally broader than the current runner. Vue/Svelte and
 non-npm evidence may appear in this output while
 `RUNNER_TARGET_UNAVAILABLE` prevents a preview build.
+
+Build Adapter resolution occurs after analysis and remains root-only. The
+registered `static-html-v1` and `vite-react-npm-v1` adapters match the current
+root evidence, create deterministic plans, and validate their exact execution
+invariants. Zero matches is unsupported; multiple matches are an explicit
+configuration error. `RepositoryStructure.projects` is not consulted to select
+a nested target in this stage.

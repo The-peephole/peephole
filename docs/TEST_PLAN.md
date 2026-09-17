@@ -224,6 +224,15 @@ Use bounded file-map fixtures for:
 Analysis tests must not imply that every recognized framework or package
 manager is executable.
 
+### Build Adapter resolution
+
+Cover the exact static and React-Vite-npm matches and plans, no-match behavior
+for Vue/Svelte and pnpm/yarn/bun, the required root package lock, blocked
+analysis, explicit overlapping-match failure, root-only source validation,
+unsafe output rejection, command mutation, unsupported plan admission, and
+cache-key determinism/separation. Structure candidates must not cause nested
+target selection, and the full-stack fixture remains non-runnable.
+
 ### Preview control plane
 
 Cover create/status/cancel, authenticated requester ownership, server-side
@@ -255,7 +264,9 @@ With `PEEPHOLE_REAL_NETWORK_TESTS=1`, exercise:
 
 - pinned static HTML archive fetch and publication;
 - the official Vite + React fixture through real `npm ci`, `npm run build`,
-  output resolution, and publication.
+  output resolution, and publication;
+- the pinned full-stack fixture through server-side root reanalysis, confirming
+  that no Build Adapter matches and no nested target is selected.
 
 The scheduled/manual `.github/workflows/golden-path.yml` workflow provides this
 environment. It does not have production credentials or host visibility and
@@ -314,7 +325,7 @@ Add coverage in the same order as product development:
 1. GitHub light/dark/dimmed theme synchronization and navigation changes (implemented)
 2. branch selection, immutable resolution, stale branch movement, and cache keys (implemented)
 3. repository/application structure fixtures (implemented)
-4. generalized Build Adapter contract tests
+4. generalized Build Adapter contract tests (implemented)
 5. frontend target/monorepo selection and isolation
 6. existing-site reachability, framing, navigation, and origin policy
 7. backend detection evidence and false positives

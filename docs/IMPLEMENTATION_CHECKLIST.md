@@ -10,7 +10,7 @@ later full-stack roadmap.
 1. [x] GitHub theme synchronization
 2. [x] Branch Preview
 3. [x] Repository / application structure detection
-4. [ ] Build Adapter generalization
+4. [x] Build Adapter generalization
 5. [ ] frontend target selection / frontend monorepo support
 6. [ ] existing deployed-site Live Preview
 7. [ ] backend detection
@@ -213,6 +213,12 @@ evidence that any of stages 7-11 are implemented.
 - [x] Detect monorepo ambiguity and unsupported tooling
 - [x] Return evidence, warnings, and blockers
 - [x] Return a versioned preview-eligibility result
+- [x] Centralize implemented build capability in an explicit typed Build
+      Adapter registry (`static-html-v1`, `vite-react-npm-v1`)
+- [x] Resolve zero matches as unsupported and reject overlapping matches
+      instead of relying on registry order
+- [x] Keep root-only source selection and the existing runner capability while
+      separating plan shape validation from adapter execution invariants
 
 ## Preview Control Plane
 
@@ -230,6 +236,8 @@ evidence that any of stages 7-11 are implemented.
 - [x] Add a PostgreSQL schema and persistent job/artifact-cache/quota adapters
 - [x] Add a PostgreSQL leased queue with expired-lease recovery
 - [x] Revalidate repository identity, commit, and build plan server-side
+- [x] Reanalyze the exact commit and independently reconstruct the BuildPlan
+      through the server-owned Build Adapter registry
 - [x] Compose the API with production-persistent job, queue, cache, quota,
       and authentication adapters in `services/production/server.ts`, replacing
       the previous fixed dev identity with GitHub App identity:

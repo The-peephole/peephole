@@ -8,7 +8,7 @@ import {
 } from "react"
 
 import { PreviewApiError, type PreviewApi } from "../core/preview/apiClient"
-import { createBuildPlanFromAnalysis } from "../core/preview/buildPlan"
+import { createBuildPlanFromAnalysis } from "../core/preview/buildAdapters"
 import { isTrustedPreviewArtifactUrl } from "../core/preview/config"
 import {
   clearStoredPreviewSession,

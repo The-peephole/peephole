@@ -246,6 +246,25 @@ describe("PreviewControlPlane", () => {
     ).rejects.toMatchObject({ code: "CONFLICT", status: 409 })
   })
 
+  it("rejects a resolver plan not accepted by a registered build adapter", async () => {
+    const harness = createHarness({
+      resolvedPlan: {
+        ...plan,
+        packageManager: "pnpm",
+        installCommand: "pnpm install --frozen-lockfile",
+        buildCommand: "pnpm run build",
+      },
+    })
+
+    await expect(
+      harness.control.create(request, "request-0000000001", requester),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_REPOSITORY",
+      status: 422,
+    })
+    expect(harness.queue.size).toBe(0)
+  })
+
   it("atomically collapses concurrent idempotent creates", async () => {
     const harness = createHarness()
     const [first, second] = await Promise.all([

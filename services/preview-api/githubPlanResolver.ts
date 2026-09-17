@@ -1,6 +1,5 @@
 import { analyzeRepository } from "../../core/analyzer/analyzeRepository"
-import { createBuildPlanFromAnalysis } from "../../core/preview/buildPlan"
-import { isImplementedRunnerTarget } from "../../core/preview/runnerSupport"
+import { createBuildPlanFromAnalysis } from "../../core/preview/buildAdapters"
 import type { GitHubClient } from "../../core/github/client"
 import type { KnownRepositoryFilesLoader } from "../../core/github/knownFiles"
 import { PREVIEW_CONTRACT_VERSION } from "../../types/analysis"
@@ -24,16 +23,6 @@ export class GitHubPreviewPlanResolver implements PreviewPlanResolver {
     const metadata = await this.github.getRepositoryMetadataAtCommit(repository)
     const files = await this.knownFiles.load(metadata)
     const analysis = analyzeRepository(metadata, files)
-
-    if (
-      analysis.preview.mode !== "native-static-build" ||
-      !isImplementedRunnerTarget(
-        analysis.technologies.framework,
-        analysis.packageManager,
-      )
-    ) {
-      return null
-    }
 
     return createBuildPlanFromAnalysis(analysis)
   }

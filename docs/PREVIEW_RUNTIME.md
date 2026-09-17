@@ -42,7 +42,8 @@ Therefore:
 ```text
 1. Extension resolves owner/repo and requests analysis
 2. Analyzer resolves repository id + commit SHA
-3. Eligibility produces a normalized build plan
+3. The Build Adapter resolver produces a normalized build plan when exactly
+   one registered capability matches
 4. User explicitly selects Build preview
 5. Control API revalidates and creates/idempotently finds a job
 6. Queue assigns the job to an isolated worker
@@ -54,15 +55,19 @@ Therefore:
 
 ## 5. Build Plan
 
-The analyzer proposes a plan; the server validates it against the current contract.
+The client proposes only the repository/commit and contract identity needed to
+request a job. The server reads the exact commit, reruns analysis, resolves a
+server-owned Build Adapter, and reconstructs the plan independently.
 
 ```ts
 interface BuildPlan {
   contractVersion: string
-  repositoryId: number
-  owner: string
-  name: string
-  commitSha: string
+  repository: {
+    repositoryId: number
+    owner: string
+    name: string
+    commitSha: string
+  }
   sourceRoot: "."
   packageManager: "npm" | "pnpm" | "yarn" | "bun" | "none"
   installCommand: string | null
@@ -72,10 +77,18 @@ interface BuildPlan {
 ```
 
 The API does not accept arbitrary client-supplied shell commands, source roots,
-output paths, base images, or environment values. Values come from recognized
-server-side rules. Although the shared type can represent several package
-managers, `core/preview/runnerSupport.ts` currently admits only `none` for
-static roots and `npm` for root-level Vite + React.
+output paths, base images, or environment values. Values come from the explicit
+`core/preview/buildAdapters.ts` registry. Its two adapters are
+`static-html-v1` and `vite-react-npm-v1`. Shape validation covers repository
+identity, the full SHA, root-only source, basic types, and a safe output path;
+adapter validation covers the exact package manager, commands, and output
+semantics. A plan for pnpm/yarn/bun cannot become runnable through shape
+validation alone.
+
+Adapter identity is intentionally not part of `BuildPlan`. The current two
+adapters have fully distinct executable plan semantics, client and server
+resolve from analysis deterministically, and the server never trusts a
+client-selected adapter or commands. `sourceRoot` remains the literal `"."`.
 
 ## 6. Job Lifecycle
 
@@ -186,6 +199,10 @@ repository-id
 + contract-version
 + runner-image-version
 ```
+
+The cache key continues to include every executable plan field. Adapter ids are
+not added because they provide no execution identity beyond those fields; two
+semantically different executable plans therefore still cannot share a key.
 
 Cache hits skip execution but still return a new authorized/expiring job reference if needed. Never reuse mutable workspaces. Dependency caches, if introduced, are read-only or content-addressed and must not allow one job to poison another.
 
