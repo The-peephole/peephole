@@ -293,7 +293,7 @@ function isBuildPlan(value: unknown): value is BuildPlan {
     isObject(value) &&
     typeof value.contractVersion === "string" &&
     isRepositoryRef(value.repository) &&
-    value.sourceRoot === "." &&
+    typeof value.sourceRoot === "string" &&
     typeof value.packageManager === "string" &&
     (typeof value.installCommand === "string" ||
       value.installCommand === null) &&

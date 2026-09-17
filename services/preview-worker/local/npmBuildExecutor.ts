@@ -39,6 +39,7 @@ export class NpmBuildExecutor implements BuildExecutor {
       ["run", "build"],
       {
         signal,
+        workingDirectory: plan.sourceRoot,
         timeoutMs: effectiveTimeoutMs(
           local,
           this.options.timeoutMs ?? DEFAULT_RUNNER_TIMEOUTS.buildTimeoutMs,

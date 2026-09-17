@@ -45,7 +45,7 @@ Peephole performs bounded repository analysis first. It identifies the framework
 | Capability | What Peephole does |
 | --- | --- |
 | Repository analysis | Detects framework, package manager, build plan, blockers, and warnings from known repository files. |
-| Repository structure detection | Describes the repository's layout (single project, workspace, or multiple projects) and lists bounded project candidate paths, without selecting or building any of them. |
+| Repository structure detection | Describes layout and bounded project candidates; explicit frontend selection triggers separate target analysis before any build. |
 | Branch selection | Lets you pick any branch from a bounded list; the selection is resolved to its exact commit SHA before analysis. |
 | Commit-pinned previews | Resolves and builds an exact Git commit instead of trusting a mutable branch tip. |
 | Clear eligibility | Distinguishes previewable repositories from unsupported projects before execution. |
@@ -145,12 +145,12 @@ smoke described in [Production smoke verification](docs/PRODUCTION_SMOKE.md).
 
 | Level | Current scope |
 | --- | --- |
-| Production execution | Static HTML; root-level Vite + React using npm and a root `package-lock.json` |
+| Production execution | Static HTML at the repository root; root or explicitly selected nested Vite + React targets using npm and a target-local `package-lock.json` |
 | Analysis recognition only | Vue/Svelte Vite, other package managers, backend hints, and monorepo ambiguity; these do not produce runnable plans |
 | Existing deployment handling | Displays a normalized GitHub repository-homepage link in a new tab; embedded deployed-site Live Preview is not implemented |
 | Branch selection | Any branch from a bounded (up to 100) list can be selected; it is resolved to an exact commit SHA before analysis, build plan, and preview job creation |
-| Repository structure detection | Reports layout and bounded project-candidate paths (e.g. `frontend`, `apps/web`) for read-only display; no candidate can be selected or built |
-| Not implemented | Frontend target selection, full-stack execution/routing, secret injection, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
+| Repository structure detection | Reports layout and bounded project-candidate paths; detected frontend candidates can be explicitly selected and receive a separate exact-SHA target analysis |
+| Not implemented | Shared-root workspace orchestration, full-stack execution/routing, secret injection, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
 
 Analysis support is broader than production execution support. The official
 Vite + React golden path is
@@ -158,9 +158,10 @@ Vite + React golden path is
 at commit `4a2c3b78e15d90865ed565c3d38c4045b5a5235f` (repository id
 `1371620276`). The separate
 [`peephole-fixture-fullstack`](https://github.com/The-peephole/peephole-fixture-fullstack)
-at `eae411a288b212201933cebb206126dd5bb0d93e` is a future roadmap fixture,
-not a supported capability, though repository structure detection now
-verifies against its `frontend`/`backend` layout as a detection-only target.
+at `eae411a288b212201933cebb206126dd5bb0d93e` proves the bounded
+frontend-only nested target path. Its `frontend` directory is independently
+installable and buildable; its backend is neither started nor routed, so the
+rendered `/api/hello` request may fail by design.
 
 ## Local development
 
@@ -186,13 +187,13 @@ The local preview worker is deliberately unsandboxed and must only build source 
 ## Project status
 
 The production static-preview foundation, GitHub theme synchronization,
-Branch Preview, repository/application structure detection, and the explicit
-Build Adapter architecture are implemented. Build Adapter generalization
-preserves the deliberately narrow runner capability; it does not add framework
-or package-manager support. Product expansion continues in this order:
+Branch Preview, repository/application structure detection, the explicit
+Build Adapter architecture, and bounded frontend target selection are
+implemented. Nested execution remains limited to independently installable
+React + Vite + npm targets with a target-local lockfile.
 
 4. Build Adapter generalization (implemented)
-5. frontend target selection / frontend monorepo support
+5. frontend target selection / bounded frontend monorepo support (implemented)
 6. existing deployed-site Live Preview
 7. backend detection
 8. backend execution

@@ -1,8 +1,11 @@
 import type { RepositoryMetadata, RepositoryRevisionTarget } from "./repository"
 import type { RepositoryStructure } from "./structure"
+import type { PreviewTarget } from "./target"
 
-export const ANALYZER_VERSION = "0.1.2"
-export const PREVIEW_CONTRACT_VERSION = "static-v1"
+export const ANALYZER_VERSION = "0.1.3"
+export const TARGET_ANALYZER_VERSION = "0.1.0"
+export const LEGACY_PREVIEW_CONTRACT_VERSION = "static-v1"
+export const PREVIEW_CONTRACT_VERSION = "static-v2"
 
 export type Framework =
   | "static"
@@ -94,3 +97,28 @@ export type RepositoryAnalysisLoader = (
   target: RepositoryRevisionTarget,
   options?: RepositoryAnalysisLoadOptions,
 ) => Promise<RepositoryAnalysis>
+
+export type BuildTargetAnalysis = Pick<
+  RepositoryAnalysis,
+  | "repository"
+  | "technologies"
+  | "packageManager"
+  | "runtime"
+  | "environment"
+  | "preview"
+  | "inspectedFiles"
+  | "warnings"
+> & {
+  targetAnalyzerVersion: string
+  target: PreviewTarget
+}
+
+export interface BuildTargetAnalysisLoadOptions {
+  signal?: AbortSignal
+}
+
+export type BuildTargetAnalysisLoader = (
+  repository: RepositoryMetadata,
+  target: PreviewTarget,
+  options?: BuildTargetAnalysisLoadOptions,
+) => Promise<BuildTargetAnalysis>

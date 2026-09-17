@@ -76,7 +76,7 @@ export function createPreviewHttpHandler(
 function parseCreateRequest(value: unknown): CreatePreviewJobRequest {
   if (
     !isObject(value) ||
-    !hasOnlyKeys(value, ["repository", "contractVersion"]) ||
+    !hasOnlyKeys(value, ["repository", "contractVersion", "target"]) ||
     !isObject(value.repository) ||
     !hasOnlyKeys(value.repository, [
       "repositoryId",
@@ -88,7 +88,11 @@ function parseCreateRequest(value: unknown): CreatePreviewJobRequest {
     typeof value.repository.owner !== "string" ||
     typeof value.repository.name !== "string" ||
     typeof value.repository.commitSha !== "string" ||
-    typeof value.contractVersion !== "string"
+    typeof value.contractVersion !== "string" ||
+    (value.target !== undefined &&
+      (!isObject(value.target) ||
+        !hasOnlyKeys(value.target, ["sourceRoot"]) ||
+        typeof value.target.sourceRoot !== "string"))
   ) {
     throw new PreviewControlError(
       "INVALID_REQUEST",
@@ -105,6 +109,9 @@ function parseCreateRequest(value: unknown): CreatePreviewJobRequest {
       commitSha: value.repository.commitSha,
     },
     contractVersion: value.contractVersion,
+    ...(value.target === undefined
+      ? {}
+      : { target: { sourceRoot: value.target.sourceRoot as string } }),
   }
 }
 

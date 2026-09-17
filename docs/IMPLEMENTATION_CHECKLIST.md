@@ -11,7 +11,7 @@ later full-stack roadmap.
 2. [x] Branch Preview
 3. [x] Repository / application structure detection
 4. [x] Build Adapter generalization
-5. [ ] frontend target selection / frontend monorepo support
+5. [x] frontend target selection / bounded frontend monorepo support
 6. [ ] existing deployed-site Live Preview
 7. [ ] backend detection
 8. [ ] backend execution
@@ -19,8 +19,8 @@ later full-stack roadmap.
 10. [ ] ephemeral env / secrets
 11. [ ] temporary database support
 
-The separate full-stack fixture is preparation for these later stages, not
-evidence that any of stages 7-11 are implemented.
+The full-stack fixture proves only its independently installable frontend
+target. It is not evidence that any of stages 7-11 are implemented.
 
 ## Bootstrap
 
@@ -217,8 +217,11 @@ evidence that any of stages 7-11 are implemented.
       Adapter registry (`static-html-v1`, `vite-react-npm-v1`)
 - [x] Resolve zero matches as unsupported and reject overlapping matches
       instead of relying on registry order
-- [x] Keep root-only source selection and the existing runner capability while
-      separating plan shape validation from adapter execution invariants
+- [x] Keep `static-v1` root-only; add explicit `static-v2` target identity,
+      exact-SHA target analysis, and independently installable nested React +
+      Vite + npm execution
+- [x] Include source root in analysis, UI, idempotency, and artifact cache identity
+- [x] Resolve install/build/output paths with lexical, symlink, and realpath containment
 
 ## Preview Control Plane
 

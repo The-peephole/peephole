@@ -5,6 +5,7 @@ import {
   type CommandRunOptions,
 } from "./commandRunner"
 import type { LocalPreviewWorkspace } from "./localWorkspace"
+import { resolveWorkspaceSourceRoot } from "./workspacePath"
 
 /** Development only: host execution has no sandbox or network isolation. */
 export class HostCommandRunner implements CommandRunner {
@@ -16,7 +17,10 @@ export class HostCommandRunner implements CommandRunner {
   ): Promise<void> {
     const result = await new NodeProcessRunner().run(command, args, {
       ...options,
-      cwd: workspace.rootDir,
+      cwd: await resolveWorkspaceSourceRoot(
+        workspace.rootDir,
+        options.workingDirectory ?? ".",
+      ),
       // Only fixed npm.cmd commands require a shell on Windows.
       shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(command),
     })

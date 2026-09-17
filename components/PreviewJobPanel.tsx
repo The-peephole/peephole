@@ -8,14 +8,18 @@ import {
 } from "react"
 
 import { PreviewApiError, type PreviewApi } from "../core/preview/apiClient"
-import { createBuildPlanFromAnalysis } from "../core/preview/buildAdapters"
+import {
+  createBuildPlanFromTargetAnalysis,
+  toRootBuildTargetAnalysis,
+} from "../core/preview/buildAdapters"
 import { isTrustedPreviewArtifactUrl } from "../core/preview/config"
 import {
   clearStoredPreviewSession,
   getStoredPreviewSession,
   type StoredPreviewSession,
 } from "../core/preview/sessionStorage"
-import type { RepositoryAnalysis } from "../types/analysis"
+import type { BuildTargetAnalysis, RepositoryAnalysis } from "../types/analysis"
+import { LEGACY_PREVIEW_CONTRACT_VERSION } from "../types/analysis"
 import type { CreatePreviewJobRequest, PreviewJob } from "../types/preview"
 
 const TERMINAL_STATUSES = new Set(["ready", "failed", "cancelled", "expired"])
@@ -37,7 +41,7 @@ type PreviewUiState =
     }
 
 interface PreviewJobPanelProps {
-  analysis: RepositoryAnalysis
+  analysis: BuildTargetAnalysis | RepositoryAnalysis
   previewApi: PreviewApi | null
   previewArtifactBaseDomain?: string | null
   configurationError?: string | null
@@ -57,13 +61,15 @@ export function PreviewJobPanel({
   previewArtifactBaseDomain = null,
   pollIntervalMs = 1_500,
 }: PreviewJobPanelProps) {
+  const targetAnalysis =
+    "target" in analysis ? analysis : toRootBuildTargetAnalysis(analysis)
   const [state, setState] = useState<PreviewUiState>({ status: "idle" })
   const [authenticationStatus, setAuthenticationStatus] =
     useState<AuthenticationStatus>("checking")
   const activeRequest = useRef<AbortController | null>(null)
   const createKey = useRef<string | null>(null)
-  const request = createRequest(analysis)
-  const repositoryKey = `${analysis.repository.repositoryId}:${analysis.repository.commitSha}`
+  const request = createRequest(targetAnalysis)
+  const repositoryKey = `${targetAnalysis.repository.repositoryId}:${targetAnalysis.repository.commitSha}:${targetAnalysis.target.sourceRoot}`
 
   useEffect(() => {
     let active = true
@@ -433,16 +439,22 @@ function JobProgress({ label }: { label: string }) {
 }
 
 function createRequest(
-  analysis: RepositoryAnalysis,
+  analysis: BuildTargetAnalysis,
 ): CreatePreviewJobRequest | null {
   if (analysis.preview.mode !== "native-static-build") {
     return null
   }
 
-  const plan = createBuildPlanFromAnalysis(analysis)
+  const plan = createBuildPlanFromTargetAnalysis(analysis)
 
   return plan
-    ? { repository: plan.repository, contractVersion: plan.contractVersion }
+    ? {
+        repository: plan.repository,
+        contractVersion: plan.contractVersion,
+        ...(plan.contractVersion === LEGACY_PREVIEW_CONTRACT_VERSION
+          ? {}
+          : { target: { sourceRoot: plan.sourceRoot } }),
+      }
     : null
 }
 

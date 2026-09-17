@@ -160,7 +160,7 @@ describe("analyzeRepository", () => {
     expect(analysis.preview.blockers).toContainEqual({
       code: "UNSUPPORTED_FRAMEWORK",
       message:
-        "WXT browser extensions require browser extension APIs and are outside the static v0.1 preview contract.",
+        "WXT browser extensions require browser extension APIs and are outside the static preview contract.",
     })
   })
 
@@ -268,7 +268,7 @@ describe("analyzeRepository", () => {
     expect(analysis.preview.blockers).toContainEqual({
       code: "AMBIGUOUS_WORKSPACE",
       message:
-        "Applications were detected, but target selection is not implemented yet.",
+        "Applications were detected, but a preview target must be selected.",
     })
   })
 

@@ -50,7 +50,8 @@ update.
 > displays the resulting static site from a separate HTTPS artifact origin.
 >
 > v0.1 supports public repositories only. The production-verified build paths
-> are static HTML and root-level Vite + React projects using npm. Peephole can
+> are static HTML and root or selected nested Vite + React projects using npm
+> with a target-local lockfile. Peephole can
 > recognize additional project shapes, but Vue and Svelte do not currently
 > produce an executable runner plan. A repository may be
 > unsupported or fail to build if it requires a backend, private dependency,

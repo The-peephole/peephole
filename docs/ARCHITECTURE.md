@@ -26,9 +26,10 @@ Dedicated preview origin --------------------+
 The extension integrates with GitHub and presents results. The control plane validates and schedules. The execution plane handles hostile repository code. The delivery plane serves only published artifacts.
 
 This architecture is implemented for commit-pinned static previews. The
-current execution targets are package-free static HTML and root-level Vite +
-React with npm. Full-stack execution is a future architecture extension, not a
-property of the current system.
+current execution targets are package-free root static HTML and root or
+explicitly selected, independently installable nested Vite + React with npm.
+Full-stack execution is a future architecture extension, not a property of the
+current system.
 
 ## 2. Primary Design Rules
 
@@ -160,11 +161,13 @@ truth. `BuildAdapterResolver` evaluates the explicit in-repository registry:
 
 The registered adapters are `static-html-v1` and `vite-react-npm-v1`. Common
 validation checks the wire shape, repository identity, full commit SHA,
-root-only source, and safe output path. Each adapter checks its exact package
+contract-compatible safe source root, and safe output path. Each adapter checks its exact package
 manager, install/build commands, and output semantics. The adapter id is not
 serialized: the complete executable plan already identifies execution
 semantics, and client and server independently resolve the same analysis.
-Generalizing this architecture does not generalize runner capability.
+`static-v1` remains root-only; `static-v2` enables target-aware React + Vite +
+npm plans after independent server authorization. This does not generalize
+framework, package-manager, backend, or workspace-orchestration capability.
 
 StackBlitz is not a preview mode.
 
@@ -290,10 +293,12 @@ Deployable service boundaries may live in separate repositories later. Their con
 ## 13. Planned Architecture Expansion
 
 GitHub theme synchronization, Branch Preview, repository/application structure
-detection, and Build Adapter generalization are implemented. The remaining
-ordered expansion is frontend target selection and monorepo support, existing
-deployed-site Live Preview, backend detection, backend execution, frontend ↔
-backend routing, ephemeral environment/secrets, and temporary databases.
+detection, Build Adapter generalization, and bounded frontend target selection
+are implemented. A selected nested target is reanalyzed at the exact commit,
+authorized again by the server, and executed with target-local npm install,
+build, and output roots. Shared-root workspace orchestration remains outside
+this contract. The remaining expansion starts with existing deployed-site Live
+Preview, then backend detection and execution, routing, secrets, and databases.
 
 The generalized Build Adapter boundary preserves the worker ports and adds no
 fixture-specific production branches. Backend execution requires a separate

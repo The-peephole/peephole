@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { RepositoryAnalysisService } from "../core/analyzer/repositoryAnalysisService"
+import { BuildTargetAnalysisService } from "../core/analyzer/buildTargetAnalysisService"
 import type { RepositoryFileSnapshot } from "../core/github/knownFiles"
 import { DEFAULT_REPOSITORY_REF } from "../core/github/repositoryRef"
 import type { RepositoryMetadata } from "../types/repository"
@@ -182,5 +183,36 @@ describe("RepositoryAnalysisService", () => {
     await service.load(target)
 
     expect(loadStructure).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("BuildTargetAnalysisService", () => {
+  it("keys target analysis by repository id, exact SHA, source root, and analyzer version", async () => {
+    const loadFiles = vi.fn().mockResolvedValue({
+      presentPaths: [
+        "index.html",
+        "package.json",
+        "package-lock.json",
+        "vite.config.ts",
+      ],
+      textFiles: {
+        "package.json": JSON.stringify({
+          scripts: { build: "vite build" },
+          dependencies: { react: "latest", vite: "latest" },
+        }),
+        "vite.config.ts": "export default {}",
+      },
+      warnings: [],
+      complete: true,
+    })
+    const service = new BuildTargetAnalysisService({ load: loadFiles })
+
+    const first = await service.load(metadata, { sourceRoot: "apps/web" })
+    const cached = await service.load(metadata, { sourceRoot: "apps/web" })
+    const other = await service.load(metadata, { sourceRoot: "apps/admin" })
+
+    expect(cached).toBe(first)
+    expect(other.target.sourceRoot).toBe("apps/admin")
+    expect(loadFiles).toHaveBeenCalledTimes(2)
   })
 })

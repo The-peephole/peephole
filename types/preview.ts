@@ -1,4 +1,5 @@
 import type { PackageManager } from "./analysis"
+import type { PreviewTarget } from "./target"
 
 export type RunnablePackageManager = Exclude<PackageManager, "unknown">
 
@@ -12,7 +13,7 @@ export interface PreviewRepositoryRef {
 export interface BuildPlan {
   contractVersion: string
   repository: PreviewRepositoryRef
-  sourceRoot: "."
+  sourceRoot: string
   packageManager: RunnablePackageManager
   installCommand: string | null
   buildCommand: string | null
@@ -63,6 +64,8 @@ export interface PreviewJob {
 export interface CreatePreviewJobRequest {
   repository: PreviewRepositoryRef
   contractVersion: string
+  /** Required by static-v2; omitted only by legacy static-v1 root requests. */
+  target?: PreviewTarget
 }
 
 export type PreviewApiErrorCode =

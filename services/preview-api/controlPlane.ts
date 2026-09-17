@@ -1,4 +1,7 @@
-import { PREVIEW_CONTRACT_VERSION } from "../../types/analysis"
+import {
+  LEGACY_PREVIEW_CONTRACT_VERSION,
+  PREVIEW_CONTRACT_VERSION,
+} from "../../types/analysis"
 import type {
   BuildPlan,
   CreatePreviewJobRequest,
@@ -8,12 +11,14 @@ import type {
   PreviewRequester,
   PreviewRepositoryRef,
 } from "../../types/preview"
+import type { PreviewTarget } from "../../types/target"
 import { validateBuildPlan } from "../../core/preview/buildAdapters"
 import {
   InvalidBuildPlanError,
   createBuildCacheKey,
   validateRepositoryRef,
 } from "../../core/preview/buildPlan"
+import { isSafePreviewSourceRoot } from "../../core/preview/sourceRoot"
 import { PreviewControlError } from "./errors"
 import type {
   PreviewArtifactCache,
@@ -100,8 +105,8 @@ export class PreviewControlPlane {
     idempotencyKey: string,
     requester: PreviewRequester,
   ): Promise<CreatePreviewJobResult> {
-    validateCreateInput(request, idempotencyKey, requester)
-    const requestFingerprint = await createRequestFingerprint(request)
+    const target = validateCreateInput(request, idempotencyKey, requester)
+    const requestFingerprint = await createRequestFingerprint(request, target)
     const existing = await this.store.getByIdempotencyKey(
       requester.subject,
       idempotencyKey,
@@ -133,6 +138,7 @@ export class PreviewControlPlane {
     const resolvedPlan = await this.planResolver.resolve(
       structuredClone(request.repository),
       request.contractVersion,
+      structuredClone(target),
     )
 
     if (!resolvedPlan) {
@@ -143,7 +149,7 @@ export class PreviewControlPlane {
       )
     }
 
-    const plan = validateResolvedPlan(resolvedPlan, request)
+    const plan = validateResolvedPlan(resolvedPlan, request, target)
     const cacheKey = await createBuildCacheKey(plan, this.options.runnerVersion)
     const cachedArtifact = await this.artifactCache.get(cacheKey, now)
     const id = this.createId()
@@ -414,7 +420,7 @@ function validateCreateInput(
   request: CreatePreviewJobRequest,
   idempotencyKey: string,
   requester: PreviewRequester,
-): void {
+): PreviewTarget {
   validateRequester(requester)
 
   if (!/^[\x21-\x7e]{16,128}$/.test(idempotencyKey)) {
@@ -431,13 +437,37 @@ function validateCreateInput(
     throw asInvalidRequest(error)
   }
 
-  if (request.contractVersion !== PREVIEW_CONTRACT_VERSION) {
+  if (
+    request.contractVersion !== PREVIEW_CONTRACT_VERSION &&
+    request.contractVersion !== LEGACY_PREVIEW_CONTRACT_VERSION
+  ) {
     throw new PreviewControlError(
       "INVALID_REQUEST",
       "Unsupported preview contract version.",
       400,
     )
   }
+
+  if (request.contractVersion === LEGACY_PREVIEW_CONTRACT_VERSION) {
+    if (request.target !== undefined) {
+      throw new PreviewControlError(
+        "INVALID_REQUEST",
+        "Legacy static-v1 requests must omit the preview target.",
+        400,
+      )
+    }
+    return { sourceRoot: "." }
+  }
+
+  if (!request.target || !isSafePreviewSourceRoot(request.target.sourceRoot)) {
+    throw new PreviewControlError(
+      "INVALID_REQUEST",
+      "static-v2 requests require a safe explicit preview target.",
+      400,
+    )
+  }
+
+  return structuredClone(request.target)
 }
 
 function validateRequester(requester: PreviewRequester): void {
@@ -458,6 +488,7 @@ function validateRequester(requester: PreviewRequester): void {
 function validateResolvedPlan(
   value: BuildPlan,
   request: CreatePreviewJobRequest,
+  target: PreviewTarget,
 ): BuildPlan {
   let plan: BuildPlan
 
@@ -477,7 +508,8 @@ function validateResolvedPlan(
 
   if (
     plan.contractVersion !== request.contractVersion ||
-    !sameRepository(plan.repository, request.repository)
+    !sameRepository(plan.repository, request.repository) ||
+    plan.sourceRoot !== target.sourceRoot
   ) {
     throw new PreviewControlError(
       "CONFLICT",
@@ -491,6 +523,7 @@ function validateResolvedPlan(
 
 async function createRequestFingerprint(
   request: CreatePreviewJobRequest,
+  target: PreviewTarget,
 ): Promise<string> {
   const canonical = JSON.stringify({
     repositoryId: request.repository.repositoryId,
@@ -498,6 +531,7 @@ async function createRequestFingerprint(
     name: request.repository.name.toLowerCase(),
     commitSha: request.repository.commitSha.toLowerCase(),
     contractVersion: request.contractVersion,
+    sourceRoot: target.sourceRoot,
   })
   const digest = await crypto.subtle.digest(
     "SHA-256",

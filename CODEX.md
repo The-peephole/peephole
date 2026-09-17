@@ -47,10 +47,11 @@ artifact publication, production deployment, and real golden-path tests.
 Production execution is deliberately narrower than analysis:
 
 - package-free static HTML rooted at the repository root;
-- root-level Vite + React with npm, a root `package-lock.json`, `npm ci`, the
-  `build` script, and a deterministic static output directory.
+- root or explicitly selected nested Vite + React with npm, a target-local
+  `package-lock.json`, `npm ci`, the `build` script, and a deterministic static
+  output directory.
 
-Vue/Svelte Vite, other package managers, selected monorepo applications,
+Vue/Svelte Vite, other package managers, shared-root workspace orchestration,
 backends, persistent servers, secrets, and temporary databases are not current
 runner capabilities. Existing deployment evidence currently exposes a
 normalized repository-homepage link in a new tab; it is not yet an embedded
@@ -84,8 +85,9 @@ deployed-site Live Preview.
   resolve a selected branch to a full commit SHA before analysis or execution.
 - Repository/application structure detection is bounded and capability-driven:
   it reads a small, fixed set of workspace declarations and conventional
-  directory names, never an unbounded or recursive repository crawl, and it
-  never selects or executes a nested candidate.
+  directory names, never an unbounded or recursive repository crawl. Selection
+  is explicit; the selected candidate is reanalyzed and independently
+  authorized at the exact commit before execution.
 
 ### Control and execution planes
 
@@ -142,7 +144,7 @@ changes it:
 2. Branch Preview (implemented)
 3. Repository / application structure detection (implemented)
 4. Build Adapter generalization (implemented)
-5. frontend target selection / frontend monorepo support
+5. frontend target selection / bounded frontend monorepo support (implemented)
 6. existing deployed-site Live Preview
 7. backend detection
 8. backend execution
@@ -218,16 +220,12 @@ bound sets `truncated: true` instead of hiding it; a failed candidate read or
 a failed directory listing sets `complete: false` (an explicit,
 loader-computed I/O signal distinct from `truncated`) and continues with the
 rest rather than failing the whole analysis. This adds
-a `structure` field to `RepositoryAnalysis`, so `ANALYZER_VERSION` moved to
-`0.1.2` to invalidate old cached analyses; `PREVIEW_CONTRACT_VERSION` is
-unchanged. The Side Panel's read-only "Structure" section
-(`components/RepositoryAnalysisView.tsx`) never adds a target selector, app
-picker, or per-app preview control -- selecting a discovered candidate belongs
-to the separate Build Adapter/target-selection stage. Detecting
-`frontend`/`backend` in `The-peephole/peephole-fixture-fullstack` does not
-change the existing `AMBIGUOUS_WORKSPACE`/`UNSUPPORTED_FRAMEWORK` blockers or
-make any nested candidate buildable; the Preview API/worker contract still
-receives only a resolved root commit SHA.
+a `structure` field to `RepositoryAnalysis`. Target selection later moved
+`ANALYZER_VERSION` to `0.1.3` and introduced `static-v2`. The Side Panel keeps
+the repository Structure section distinct from selected-target Stack and Build
+Plan sections. Detecting `frontend`/`backend` is not execution authority; only
+an explicitly selected `project-candidate` receives target-scoped analysis,
+and the server independently rediscovers and authorizes it at the exact SHA.
 
 Build Adapter generalization adds the explicit `BuildAdapter` registry and
 `BuildAdapterResolver` in `core/preview/buildAdapters.ts`. The only registered
@@ -237,10 +235,11 @@ than first-match dispatch. Shape/security validation remains separate from
 adapter-owned command and output invariants. Both client planning and
 `GitHubPreviewPlanResolver` derive a plan from the registry, while the server
 still fetches and analyzes the requested exact commit independently. The
-worker pipeline, gVisor boundary, `BuildPlan` wire shape, root-only
-`sourceRoot: "."`, cache-key inputs, analyzer version, preview contract
-version, and runner version are unchanged. This architecture generalization
-does not add Vue/Svelte, pnpm/yarn/bun, nested targets, monorepos, or backends.
+worker pipeline and gVisor boundary remain adapter-independent. Stage 5 extends
+the plan through `static-v2`: safe nested `sourceRoot` values are included in
+cache/idempotency/UI identity and drive target-local cwd/output resolution.
+This does not add Vue/Svelte, pnpm/yarn/bun, shared-root orchestration, or
+backends.
 
 ## Fixture Registry
 

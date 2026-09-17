@@ -111,6 +111,62 @@ describe("PreviewControlPlane", () => {
     ).rejects.toMatchObject({ code: "CONFLICT", status: 409 })
   })
 
+  it("includes the selected source root in idempotency identity", async () => {
+    const nestedPlan: BuildPlan = {
+      ...plan,
+      contractVersion: "static-v2",
+      sourceRoot: "apps/web",
+    }
+    const harness = createHarness({ resolvedPlan: nestedPlan })
+    const nestedRequest: CreatePreviewJobRequest = {
+      repository,
+      contractVersion: "static-v2",
+      target: { sourceRoot: "apps/web" },
+    }
+    await harness.control.create(nestedRequest, "request-0000000001", requester)
+
+    await expect(
+      harness.control.create(
+        { ...nestedRequest, target: { sourceRoot: "apps/admin" } },
+        "request-0000000001",
+        requester,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT", status: 409 })
+  })
+
+  it("requires explicit static-v2 targets and keeps static-v1 root-only", async () => {
+    const harness = createHarness()
+    await expect(
+      harness.control.create(
+        { repository, contractVersion: "static-v2" },
+        "request-0000000001",
+        requester,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_REQUEST", status: 400 })
+    await expect(
+      harness.control.create(
+        {
+          repository,
+          contractVersion: "static-v1",
+          target: { sourceRoot: "." },
+        },
+        "request-0000000002",
+        requester,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_REQUEST", status: 400 })
+    await expect(
+      harness.control.create(
+        {
+          repository,
+          contractVersion: "static-v2",
+          target: { sourceRoot: "../backend" },
+        },
+        "request-0000000003",
+        requester,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_REQUEST", status: 400 })
+  })
+
   it("runs the complete lifecycle through a fake runner and caches artifacts", async () => {
     const harness = createHarness()
     const created = await harness.control.create(

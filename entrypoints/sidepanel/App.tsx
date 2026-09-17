@@ -1,7 +1,10 @@
 import { RepositoryAnalysisView } from "../../components/RepositoryAnalysisView"
 import { PreviewJobPanel } from "../../components/PreviewJobPanel"
 import type { PreviewApi } from "../../core/preview/apiClient"
-import type { RepositoryAnalysisLoader } from "../../types/analysis"
+import type {
+  BuildTargetAnalysisLoader,
+  RepositoryAnalysisLoader,
+} from "../../types/analysis"
 import type {
   RepositoryBranchesLoader,
   RepositoryIdentity,
@@ -10,6 +13,7 @@ import type {
 interface SidePanelAppProps {
   repository: RepositoryIdentity | null
   loadRepositoryAnalysis: RepositoryAnalysisLoader
+  loadBuildTargetAnalysis: BuildTargetAnalysisLoader
   loadRepositoryBranches: RepositoryBranchesLoader
   connectGitHub?: (() => Promise<void>) | null
   previewApi: PreviewApi | null
@@ -20,6 +24,7 @@ interface SidePanelAppProps {
 export function SidePanelApp({
   repository,
   loadRepositoryAnalysis,
+  loadBuildTargetAnalysis,
   loadRepositoryBranches,
   connectGitHub = null,
   previewApi,
@@ -38,6 +43,7 @@ export function SidePanelApp({
       {repository ? (
         <RepositoryAnalysisView
           loadRepositoryAnalysis={loadRepositoryAnalysis}
+          loadBuildTargetAnalysis={loadBuildTargetAnalysis}
           loadRepositoryBranches={loadRepositoryBranches}
           repository={repository}
           renderPreviewControls={(analysis) => (
@@ -45,7 +51,7 @@ export function SidePanelApp({
               analysis={analysis}
               configurationError={previewConfigurationError}
               connectGitHub={connectGitHub}
-              key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}`}
+              key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
               previewApi={previewApi}
               previewArtifactBaseDomain={previewArtifactBaseDomain}
             />

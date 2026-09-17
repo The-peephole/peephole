@@ -89,7 +89,7 @@ because a fixture or interface for it exists.
 2. [x] Branch Preview
 3. [x] Repository / application structure detection
 4. [x] Build Adapter generalization
-5. [ ] frontend target selection / frontend monorepo support
+5. [x] frontend target selection / bounded frontend monorepo support
 6. [ ] existing deployed-site Live Preview
 7. [ ] backend detection
 8. [ ] backend execution
@@ -101,8 +101,11 @@ Build Adapter generalization is complete as an architecture change: an
 explicit resolver selects `static-html-v1` or `vite-react-npm-v1`, detects
 ambiguous matches, and assigns command/output validation to the selected
 adapter. It does **not** mean more frameworks or runners are supported.
-Vue/Svelte, pnpm/yarn/bun, nested candidates, and the full-stack fixture remain
-non-runnable. Frontend target selection starts only in stage 5.
+Vue/Svelte and pnpm/yarn/bun remain non-runnable. Stage 5 supports only an
+explicitly selected, independently installable nested React + Vite + npm target
+with its own package.json and package-lock.json. Shared-root workspace
+orchestration remains deferred. The full-stack fixture proves frontend-only
+static build output; its backend and `/api/hello` route remain unavailable.
 
 Theme synchronization uses computed GitHub/Primer semantic colors rather than
 a theme-name palette table. Theme changes update the injected action through

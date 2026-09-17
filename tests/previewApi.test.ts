@@ -91,6 +91,31 @@ describe("preview HTTP contract", () => {
     })
   })
 
+  it("accepts only the target identity for static-v2 requests", async () => {
+    const nestedPlan: BuildPlan = {
+      ...plan,
+      contractVersion: "static-v2",
+      sourceRoot: "frontend",
+    }
+    const handle = createHandler({ resolvedPlan: nestedPlan })
+    const response = await handle({
+      method: "POST",
+      path: "/v1/preview-jobs",
+      headers: { "idempotency-key": "request-frontend-0001" },
+      requester,
+      body: {
+        repository,
+        contractVersion: "static-v2",
+        target: { sourceRoot: "frontend" },
+      },
+    })
+
+    expect(response).toMatchObject({
+      status: 202,
+      body: { job: { plan: { sourceRoot: "frontend" } } },
+    })
+  })
+
   it("returns structured errors and Retry-After without internal details", async () => {
     const handle = createHandler({ perUser: 0 })
     const missingKey = await handle({
@@ -144,9 +169,11 @@ describe("preview HTTP contract", () => {
   })
 })
 
-function createHandler(options: { perUser?: number } = {}) {
+function createHandler(
+  options: { perUser?: number; resolvedPlan?: BuildPlan } = {},
+) {
   const control = new PreviewControlPlane(
-    { resolve: async () => plan },
+    { resolve: async () => options.resolvedPlan ?? plan },
     new InMemoryPreviewJobStore(),
     new InMemoryPreviewQueue(),
     new InMemoryPreviewArtifactCache(),

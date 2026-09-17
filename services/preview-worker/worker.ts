@@ -1,4 +1,5 @@
 import type { PreviewJobErrorCode, QueuedPreviewJob } from "../../types/preview"
+import { validateBuildPlan } from "../../core/preview/buildAdapters"
 import { RunnerDiskLimitError } from "./local/commandRunner"
 import {
   DEFAULT_ARCHIVE_LIMITS,
@@ -97,9 +98,13 @@ export class PreviewJobWorker {
     }
     schedule()
     try {
+      const plan = validateBuildPlan(queued.plan)
+      if (!sameRepository(queued.repository, plan.repository)) {
+        throw new Error("Queued repository and build plan do not match.")
+      }
       workspace = await this.sandbox.allocate(queued.jobId)
       signal.throwIfAborted()
-      await this.runPipeline(queued, workspace, signal)
+      await this.runPipeline({ ...queued, plan }, workspace, signal)
     } catch (error) {
       // Propagate persistence failures to the queue so they are retried, never silently acknowledged.
       await this.controlPlane.failWorkerJob(
@@ -169,6 +174,18 @@ export class PreviewJobWorker {
     signal.throwIfAborted()
     await this.controlPlane.complete(jobId, published.artifactId)
   }
+}
+
+function sameRepository(
+  left: QueuedPreviewJob["repository"],
+  right: QueuedPreviewJob["repository"],
+): boolean {
+  return (
+    left.repositoryId === right.repositoryId &&
+    left.owner.toLowerCase() === right.owner.toLowerCase() &&
+    left.name.toLowerCase() === right.name.toLowerCase() &&
+    left.commitSha.toLowerCase() === right.commitSha.toLowerCase()
+  )
 }
 
 class RunnerPhaseError extends Error {

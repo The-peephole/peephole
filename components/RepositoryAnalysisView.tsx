@@ -1,7 +1,10 @@
-import { useEffect, useId, useState, type ReactNode } from "react"
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react"
 
 import { DEFAULT_REPOSITORY_REF } from "../core/github/repositoryRef"
+import { toRootBuildTargetAnalysis } from "../core/preview/buildAdapters"
 import type {
+  BuildTargetAnalysis,
+  BuildTargetAnalysisLoader,
   Framework,
   PreviewMode,
   RepositoryAnalysis,
@@ -18,8 +21,11 @@ import type { RepositoryStructureLayout } from "../types/structure"
 interface RepositoryAnalysisViewProps {
   repository: RepositoryIdentity
   loadRepositoryAnalysis: RepositoryAnalysisLoader
+  loadBuildTargetAnalysis?: BuildTargetAnalysisLoader
   loadRepositoryBranches: RepositoryBranchesLoader
-  renderPreviewControls?: (analysis: RepositoryAnalysis) => ReactNode
+  renderPreviewControls?: (
+    analysis: BuildTargetAnalysis & RepositoryAnalysis,
+  ) => ReactNode
 }
 
 type AnalysisState =
@@ -45,6 +51,7 @@ export function RepositoryAnalysisView(props: RepositoryAnalysisViewProps) {
 function RepositoryAnalysisSession({
   repository,
   loadRepositoryAnalysis,
+  loadBuildTargetAnalysis = unavailableTargetLoader,
   loadRepositoryBranches,
   renderPreviewControls,
 }: RepositoryAnalysisViewProps) {
@@ -171,6 +178,7 @@ function RepositoryAnalysisSession({
         analysisState={analysisState}
         onRetry={() => setAnalysisRequestVersion((version) => version + 1)}
         renderPreviewControls={renderPreviewControls}
+        loadBuildTargetAnalysis={loadBuildTargetAnalysis}
         selectedBranch={selectedBranch}
       />
     </>
@@ -304,11 +312,15 @@ function AnalysisContent({
   analysisState,
   onRetry,
   renderPreviewControls,
+  loadBuildTargetAnalysis,
   selectedBranch,
 }: {
   analysisState: AnalysisState
   onRetry: () => void
-  renderPreviewControls?: (analysis: RepositoryAnalysis) => ReactNode
+  renderPreviewControls?: (
+    analysis: BuildTargetAnalysis & RepositoryAnalysis,
+  ) => ReactNode
+  loadBuildTargetAnalysis: BuildTargetAnalysisLoader
   selectedBranch: string
 }) {
   const preservedAnalysis = getPreservedAnalysis(analysisState)
@@ -336,6 +348,8 @@ function AnalysisContent({
         <div hidden={!ready}>
           <AnalysisResults
             analysis={preservedAnalysis}
+            key={`${preservedAnalysis.repository.repositoryId}:${preservedAnalysis.repository.commitSha}:${selectedBranch}`}
+            loadBuildTargetAnalysis={loadBuildTargetAnalysis}
             renderPreviewControls={renderPreviewControls}
           />
         </div>
@@ -346,132 +360,270 @@ function AnalysisContent({
 
 function AnalysisResults({
   analysis,
+  loadBuildTargetAnalysis,
   renderPreviewControls,
 }: {
   analysis: RepositoryAnalysis
-  renderPreviewControls?: (analysis: RepositoryAnalysis) => ReactNode
+  loadBuildTargetAnalysis: BuildTargetAnalysisLoader
+  renderPreviewControls?: (
+    analysis: BuildTargetAnalysis & RepositoryAnalysis,
+  ) => ReactNode
 }) {
+  const rootAnalysis = useMemo(
+    () => toRootBuildTargetAnalysis(analysis),
+    [analysis],
+  )
+  const targets = analysis.structure.projects.filter(
+    (project) => !project.isRoot && project.role === "project-candidate",
+  )
+  const [selectedSourceRoot, setSelectedSourceRoot] = useState(".")
+  const [targetState, setTargetState] = useState<
+    | { status: "ready"; value: BuildTargetAnalysis }
+    | { status: "loading" }
+    | { status: "error"; message: string }
+  >({ status: "ready", value: rootAnalysis })
+  const [targetRequestVersion, setTargetRequestVersion] = useState(0)
+
+  useEffect(() => {
+    if (selectedSourceRoot === ".") {
+      setTargetState({ status: "ready", value: rootAnalysis })
+      return
+    }
+
+    const abortController = new AbortController()
+    setTargetState({ status: "loading" })
+    void loadBuildTargetAnalysis(
+      analysis.repository,
+      { sourceRoot: selectedSourceRoot },
+      { signal: abortController.signal },
+    ).then(
+      (value) => {
+        if (!abortController.signal.aborted) {
+          setTargetState({ status: "ready", value })
+        }
+      },
+      (error: unknown) => {
+        if (!abortController.signal.aborted) {
+          setTargetState({
+            status: "error",
+            message: getErrorMessage(
+              error,
+              "The selected preview target could not be analyzed.",
+            ),
+          })
+        }
+      },
+    )
+    return () => abortController.abort()
+  }, [
+    analysis.repository,
+    loadBuildTargetAnalysis,
+    rootAnalysis,
+    selectedSourceRoot,
+    targetRequestVersion,
+  ])
+
+  const targetAnalysis =
+    targetState.status === "ready" ? targetState.value : null
+
   return (
     <div className="peephole__analysis">
-      <PreviewStatus mode={analysis.preview.mode} />
-      {renderPreviewControls?.(analysis)}
-
-      <section className="peephole__section">
-        <h3>Stack</h3>
-        <dl className="peephole__facts">
-          <Detail
-            label="Framework"
-            value={formatFramework(analysis.technologies.framework)}
-          />
-          <Detail
-            label="TypeScript"
-            value={
-              analysis.technologies.typescript ? "Detected" : "Not detected"
-            }
-          />
-          <Detail label="Package" value={analysis.packageManager} />
-        </dl>
-      </section>
-
-      <section className="peephole__section">
-        <h3>Build plan</h3>
-        <dl className="peephole__facts">
-          <Detail
-            label="Native build"
-            value={
-              analysis.preview.blockers.length === 0 ? "Compatible" : "Blocked"
-            }
-          />
-          <Detail
-            label="Install"
-            value={analysis.runtime.installCommand ?? "Not required"}
-          />
-          <Detail
-            label="Build"
-            value={analysis.runtime.buildCommand ?? "Not required"}
-          />
-          <Detail
-            label="Output"
-            value={analysis.runtime.outputDirectory ?? "Unknown"}
-          />
-        </dl>
-      </section>
-
-      <section className="peephole__section">
-        <h3>Structure</h3>
-        <dl className="peephole__facts">
-          <Detail
-            label="Layout"
-            value={formatStructureLayout(analysis.structure.layout)}
-          />
-        </dl>
-        {analysis.structure.projects.length > 0 && (
-          <ul aria-label="Detected projects" className="peephole__list">
-            {analysis.structure.projects.map((project) => (
-              <li key={project.path}>
-                <code>{project.path}</code>
-                {project.packageName ? ` — ${project.packageName}` : ""}
-              </li>
-            ))}
-          </ul>
-        )}
-        {(analysis.structure.truncated || !analysis.structure.complete) && (
-          <p className="peephole__muted">
-            {!analysis.structure.complete &&
-              "Structure analysis is incomplete. "}
-            {analysis.structure.truncated &&
-              "Additional projects may exist beyond Peephole's bounded scan."}
-          </p>
-        )}
-      </section>
-
-      <section className="peephole__section">
-        <h3>Environment</h3>
-        {analysis.environment.variables.length > 0 ? (
-          <ul aria-label="Environment variables" className="peephole__chips">
-            {analysis.environment.variables.map((variable) => (
-              <li key={variable}>{variable}</li>
-            ))}
-          </ul>
-        ) : (
-          <p className="peephole__muted">No template variables detected.</p>
-        )}
-      </section>
-
-      {analysis.preview.blockers.length > 0 && (
-        <section className="peephole__section peephole__section--blocked">
-          <h3>Blockers</h3>
-          <ul className="peephole__list">
-            {analysis.preview.blockers.map((blocker) => (
-              <li key={`${blocker.code}:${blocker.message}`}>
-                {blocker.message}
-              </li>
-            ))}
-          </ul>
-        </section>
+      {targets.length > 0 && (
+        <TargetSelector
+          onSelect={setSelectedSourceRoot}
+          selectedSourceRoot={selectedSourceRoot}
+          targets={targets}
+        />
       )}
-
-      {analysis.warnings.length > 0 && (
-        <section className="peephole__section">
-          <h3>Warnings</h3>
-          <ul className="peephole__list">
-            {analysis.warnings.map((warning) => (
-              <li key={warning}>{warning}</li>
-            ))}
-          </ul>
-        </section>
+      {targetState.status === "loading" && (
+        <div className="peephole__status" role="status">
+          <span aria-hidden="true" className="peephole__spinner" />
+          Inspecting selected preview target...
+        </div>
       )}
+      {targetState.status === "error" && (
+        <div className="peephole__status peephole__status--error" role="alert">
+          <p>{targetState.message}</p>
+          <button
+            className="peephole__retry"
+            onClick={() => setTargetRequestVersion((version) => version + 1)}
+            type="button"
+          >
+            Retry target analysis
+          </button>
+        </div>
+      )}
+      {targetAnalysis && (
+        <>
+          <PreviewStatus mode={targetAnalysis.preview.mode} />
+          {renderPreviewControls?.({ ...analysis, ...targetAnalysis })}
 
-      <details className="peephole__evidence">
-        <summary>Evidence ({analysis.preview.evidence.length})</summary>
-        <ul className="peephole__list">
-          {analysis.preview.evidence.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-        <p>{analysis.inspectedFiles.length} known files detected</p>
-      </details>
+          <section className="peephole__section">
+            <h3>Stack</h3>
+            <dl className="peephole__facts">
+              <Detail
+                label="Framework"
+                value={formatFramework(targetAnalysis.technologies.framework)}
+              />
+              <Detail
+                label="TypeScript"
+                value={
+                  targetAnalysis.technologies.typescript
+                    ? "Detected"
+                    : "Not detected"
+                }
+              />
+              <Detail label="Package" value={targetAnalysis.packageManager} />
+            </dl>
+          </section>
+
+          <section className="peephole__section">
+            <h3>Build plan</h3>
+            <dl className="peephole__facts">
+              <Detail
+                label="Native build"
+                value={
+                  targetAnalysis.preview.blockers.length === 0
+                    ? "Compatible"
+                    : "Blocked"
+                }
+              />
+              <Detail
+                label="Install"
+                value={targetAnalysis.runtime.installCommand ?? "Not required"}
+              />
+              <Detail
+                label="Build"
+                value={targetAnalysis.runtime.buildCommand ?? "Not required"}
+              />
+              <Detail
+                label="Output"
+                value={targetAnalysis.runtime.outputDirectory ?? "Unknown"}
+              />
+            </dl>
+          </section>
+
+          <section className="peephole__section">
+            <h3>Structure</h3>
+            <dl className="peephole__facts">
+              <Detail
+                label="Layout"
+                value={formatStructureLayout(analysis.structure.layout)}
+              />
+            </dl>
+            {analysis.structure.projects.length > 0 && (
+              <ul aria-label="Detected projects" className="peephole__list">
+                {analysis.structure.projects.map((project) => (
+                  <li key={project.path}>
+                    <code>{project.path}</code>
+                    {project.packageName ? ` — ${project.packageName}` : ""}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {(analysis.structure.truncated || !analysis.structure.complete) && (
+              <p className="peephole__muted">
+                {!analysis.structure.complete &&
+                  "Structure analysis is incomplete. "}
+                {analysis.structure.truncated &&
+                  "Additional projects may exist beyond Peephole's bounded scan."}
+              </p>
+            )}
+          </section>
+
+          <section className="peephole__section">
+            <h3>Environment</h3>
+            {targetAnalysis.environment.variables.length > 0 ? (
+              <ul
+                aria-label="Environment variables"
+                className="peephole__chips"
+              >
+                {targetAnalysis.environment.variables.map((variable) => (
+                  <li key={variable}>{variable}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="peephole__muted">No template variables detected.</p>
+            )}
+          </section>
+
+          {targetAnalysis.preview.blockers.length > 0 && (
+            <section className="peephole__section peephole__section--blocked">
+              <h3>Blockers</h3>
+              <ul className="peephole__list">
+                {targetAnalysis.preview.blockers.map((blocker) => (
+                  <li key={`${blocker.code}:${blocker.message}`}>
+                    {blocker.message}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {targetAnalysis.warnings.length > 0 && (
+            <section className="peephole__section">
+              <h3>Warnings</h3>
+              <ul className="peephole__list">
+                {targetAnalysis.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          <details className="peephole__evidence">
+            <summary>
+              Evidence ({targetAnalysis.preview.evidence.length})
+            </summary>
+            <ul className="peephole__list">
+              {targetAnalysis.preview.evidence.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+            <p>{targetAnalysis.inspectedFiles.length} known files detected</p>
+          </details>
+        </>
+      )}
     </div>
+  )
+}
+
+function TargetSelector({
+  onSelect,
+  selectedSourceRoot,
+  targets,
+}: {
+  onSelect: (sourceRoot: string) => void
+  selectedSourceRoot: string
+  targets: RepositoryAnalysis["structure"]["projects"]
+}) {
+  const selectId = useId()
+  const descriptionId = useId()
+  return (
+    <section className="peephole__branch">
+      <label className="peephole__branch-label" htmlFor={selectId}>
+        Preview target
+      </label>
+      <select
+        aria-describedby={descriptionId}
+        className="peephole__branch-select"
+        id={selectId}
+        name="preview-target"
+        onChange={(event) => onSelect(event.currentTarget.value)}
+        value={selectedSourceRoot}
+      >
+        <option value=".">Repository root</option>
+        {targets.map((target) => (
+          <option key={target.path} value={target.path}>
+            {target.path}
+          </option>
+        ))}
+      </select>
+      <p className="peephole__branch-help" id={descriptionId}>
+        Detected application candidates are re-analyzed before a build is
+        offered.
+      </p>
+    </section>
   )
 }
 
@@ -479,7 +631,7 @@ function PreviewStatus({ mode }: { mode: PreviewMode }) {
   const content = {
     "native-static-build": {
       title: "Native preview compatible",
-      description: "The repository matches Peephole's static-v1 contract.",
+      description: "The selected target matches Peephole's static-v2 contract.",
       modifier: "ready",
     },
     "existing-deployment": {
@@ -530,6 +682,10 @@ function getPreservedAnalysis(state: AnalysisState): RepositoryAnalysis | null {
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
+}
+
+const unavailableTargetLoader: BuildTargetAnalysisLoader = async () => {
+  throw new Error("Preview target analysis is unavailable.")
 }
 
 function formatStructureLayout(layout: RepositoryStructureLayout): string {
