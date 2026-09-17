@@ -639,6 +639,31 @@ describe("RepositoryAnalysisView", () => {
     expect(container.textContent).toContain("Not detected")
   })
 
+  it("renders the repository homepage separately even when Vercel configuration evidence also exists", async () => {
+    const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
+      ...supportedAnalysis,
+      repository: {
+        ...supportedAnalysis.repository,
+        homepage: "https://example.com/",
+      },
+      deployment: {
+        status: "configured",
+        provider: "vercel",
+        url: null,
+        evidence: ["Vercel configuration detected"],
+      },
+    })
+    const container = await renderView(loader, roots, {
+      loadRepositoryLiveDeployment: () =>
+        Promise.resolve(notDetectedDeployment),
+    })
+
+    expect(container.textContent).toContain("Repository homepage")
+    expect(container.textContent).toContain("Open homepage")
+    expect(container.textContent).toContain("Deployment configuration")
+    expect(container.textContent).toContain("Vercel configuration detected")
+  })
+
   it("never labels a homepage-only repository as a confirmed live deployment", async () => {
     const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
       ...supportedAnalysis,

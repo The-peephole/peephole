@@ -348,6 +348,34 @@ describe("analyzeRepository", () => {
     expect(analysis.preview.mode).toBe("native-static-build")
   })
 
+  it("prefers Vercel configuration evidence over a declared homepage when both are present", () => {
+    const analysis = analyzeRepository(
+      { ...repository, homepage: "https://example.com/" },
+      viteSnapshot({}, {}, ["vercel.json"]),
+    )
+
+    expect(analysis.deployment).toMatchObject({
+      status: "configured",
+      provider: "vercel",
+      url: null,
+    })
+    expect(analysis.preview.mode).toBe("native-static-build")
+  })
+
+  it("prefers Netlify configuration evidence over a declared homepage when both are present", () => {
+    const analysis = analyzeRepository(
+      { ...repository, homepage: "https://example.com/" },
+      viteSnapshot({}, {}, ["netlify.toml"]),
+    )
+
+    expect(analysis.deployment).toMatchObject({
+      status: "configured",
+      provider: "netlify",
+      url: null,
+    })
+    expect(analysis.preview.mode).toBe("native-static-build")
+  })
+
   it("reports unknown deployment evidence when nothing is declared or configured", () => {
     const analysis = analyzeRepository(repository, viteSnapshot())
 

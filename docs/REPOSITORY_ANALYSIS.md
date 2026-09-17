@@ -190,6 +190,15 @@ this repository) a Chrome Web Store listing. `configured` means a
 `vercel.json` or `netlify.toml` file was found with no known URL. Neither
 value is ever treated as "confirmed" within this analysis.
 
+`detectDeployment` checks provider configuration first and only falls back
+to a declared homepage when no config file is present, so a repository with
+both a homepage and a `vercel.json`/`netlify.toml` still reports
+`"configured"`. This only governs which single value this evidence field
+carries; the repository homepage itself is always shown separately in the
+Side Panel (`RepositoryAnalysisView`'s "Deployment" section reads
+`repository.homepage` directly, not `deployment.provider`), so it is never
+hidden by the presence of provider configuration.
+
 A genuinely confirmed live deployment requires a separate, bounded GitHub
 Deployments API lookup -- see section 15 below. That lookup's result is
 mutable, short-TTL state kept entirely out of this immutable,

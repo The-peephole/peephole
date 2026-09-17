@@ -22,17 +22,9 @@ export function detectDeployment(
   repository: RepositoryMetadata,
   presentPaths: readonly string[],
 ): DeploymentDetection {
-  if (repository.homepage) {
-    return {
-      status: "declared",
-      provider: "homepage",
-      url: repository.homepage,
-      evidence: [
-        "Repository declares a homepage URL; this is not verified as a live deployment",
-      ],
-    }
-  }
-
+  // Provider configuration is checked first so a declared homepage (a
+  // separate repository-metadata/UI concern, always shown on its own) never
+  // shadows genuine configuration evidence when both are present.
   if (presentPaths.includes("vercel.json")) {
     return {
       status: "configured",
@@ -48,6 +40,17 @@ export function detectDeployment(
       provider: "netlify",
       url: null,
       evidence: ["Netlify configuration detected"],
+    }
+  }
+
+  if (repository.homepage) {
+    return {
+      status: "declared",
+      provider: "homepage",
+      url: repository.homepage,
+      evidence: [
+        "Repository declares a homepage URL; this is not verified as a live deployment",
+      ],
     }
   }
 
