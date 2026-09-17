@@ -5,7 +5,10 @@ import { createBuildTargetAnalysisMessageHandler } from "../core/analyzer/target
 import { GitHubClient } from "../core/github/client"
 import { createRepositoryBranchesMessageHandler } from "../core/github/branchMessages"
 import { KnownRepositoryFilesLoader } from "../core/github/knownFiles"
+import { RepositoryLiveDeploymentCache } from "../core/github/liveDeploymentCache"
+import { createLiveDeploymentMessageHandler } from "../core/github/liveDeploymentMessages"
 import { RepositoryMetadataCache } from "../core/github/repositoryMetadataCache"
+import { RepositoryDeploymentsLoader } from "../core/github/repositoryDeploymentsLoader"
 import { RepositoryStructureLoader } from "../core/github/repositoryStructureLoader"
 import { TargetKnownFilesLoader } from "../core/github/targetKnownFiles"
 import { clearLegacyStoredGitHubToken } from "../core/github/tokenStorage"
@@ -25,6 +28,9 @@ export default defineBackground(() => {
   const targetAnalysisService = new BuildTargetAnalysisService(
     new TargetKnownFilesLoader(githubClient),
   )
+  const liveDeploymentCache = new RepositoryLiveDeploymentCache(
+    new RepositoryDeploymentsLoader(githubClient),
+  )
   const handleMessage = createRepositoryAnalysisMessageHandler(
     analysisService.load,
   )
@@ -35,6 +41,9 @@ export default defineBackground(() => {
     createRepositoryBranchesMessageHandler((repository, options = {}) =>
       githubClient.listRepositoryBranches(repository, options.signal),
     )
+  const handleLiveDeploymentMessage = createLiveDeploymentMessageHandler(
+    liveDeploymentCache.load,
+  )
   const handleSidePanelMessage = createSidePanelMessageHandler(
     browser.sidePanel,
   )
@@ -48,6 +57,7 @@ export default defineBackground(() => {
       handleGitHubThemeMessage(message, sender) ??
       handleSidePanelMessage(message, sender) ??
       handleRepositoryBranchesMessage(message) ??
+      handleLiveDeploymentMessage(message) ??
       handleTargetAnalysisMessage(message) ??
       handleMessage(message),
   )

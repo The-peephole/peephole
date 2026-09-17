@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react"
 
+import { isSafeExternalUrl } from "../core/github/externalUrlPolicy"
 import { DEFAULT_REPOSITORY_REF } from "../core/github/repositoryRef"
 import { toRootBuildTargetAnalysis } from "../core/preview/buildAdapters"
 import type {
@@ -10,6 +11,11 @@ import type {
   RepositoryAnalysis,
   RepositoryAnalysisLoader,
 } from "../types/analysis"
+import type {
+  LiveDeploymentCandidate,
+  RepositoryLiveDeployment,
+  RepositoryLiveDeploymentLoader,
+} from "../types/deployment"
 import type {
   RepositoryBranchList,
   RepositoryBranchesLoader,
@@ -23,6 +29,7 @@ interface RepositoryAnalysisViewProps {
   loadRepositoryAnalysis: RepositoryAnalysisLoader
   loadBuildTargetAnalysis?: BuildTargetAnalysisLoader
   loadRepositoryBranches: RepositoryBranchesLoader
+  loadRepositoryLiveDeployment?: RepositoryLiveDeploymentLoader
   renderPreviewControls?: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
   ) => ReactNode
@@ -53,6 +60,7 @@ function RepositoryAnalysisSession({
   loadRepositoryAnalysis,
   loadBuildTargetAnalysis = unavailableTargetLoader,
   loadRepositoryBranches,
+  loadRepositoryLiveDeployment = unavailableLiveDeploymentLoader,
   renderPreviewControls,
 }: RepositoryAnalysisViewProps) {
   const [analysisState, setAnalysisState] = useState<AnalysisState>({
@@ -174,6 +182,13 @@ function RepositoryAnalysisSession({
         }}
         selectedBranch={selectedBranch}
       />
+      <DeploymentSection
+        homepage={preservedAnalysis?.repository.homepage ?? null}
+        loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
+        localEvidence={preservedAnalysis?.deployment ?? null}
+        repository={repository}
+        selectedCommitSha={preservedAnalysis?.repository.commitSha ?? null}
+      />
       <AnalysisContent
         analysisState={analysisState}
         onRetry={() => setAnalysisRequestVersion((version) => version + 1)}
@@ -267,33 +282,14 @@ function RepositoryIdentityDetails({
       <Detail label="Owner" value={repository.owner} />
       <Detail label="Repository" value={repository.repo} />
       {analysis && (
-        <>
-          <div className="peephole__detail">
-            <dt>Commit</dt>
-            <dd>
-              <code title={analysis.repository.commitSha}>
-                {analysis.repository.commitSha.slice(0, 7)}
-              </code>
-            </dd>
-          </div>
-          <div className="peephole__detail">
-            <dt>Homepage</dt>
-            <dd>
-              {analysis.repository.homepage ? (
-                <a
-                  className="peephole__link"
-                  href={analysis.repository.homepage}
-                  rel="noopener noreferrer"
-                  target="_blank"
-                >
-                  Open site
-                </a>
-              ) : (
-                "Not declared"
-              )}
-            </dd>
-          </div>
-        </>
+        <div className="peephole__detail">
+          <dt>Commit</dt>
+          <dd>
+            <code title={analysis.repository.commitSha}>
+              {analysis.repository.commitSha.slice(0, 7)}
+            </code>
+          </dd>
+        </div>
       )}
     </dl>
   )
@@ -635,8 +631,9 @@ function PreviewStatus({ mode }: { mode: PreviewMode }) {
       modifier: "ready",
     },
     "existing-deployment": {
-      title: "Existing deployment available",
-      description: "A confirmed deployment is the fastest preview path.",
+      title: "Native preview not available",
+      description:
+        "This target cannot be natively built, but declared deployment evidence exists below.",
       modifier: "info",
     },
     unsupported: {
@@ -656,6 +653,197 @@ function PreviewStatus({ mode }: { mode: PreviewMode }) {
     </div>
   )
 }
+
+type LiveDeploymentState =
+  | { status: "loading" }
+  | { status: "ready"; value: RepositoryLiveDeployment }
+  | { status: "error"; message: string }
+
+/**
+ * Shows the repository's Live Deployment (from the separate, mutable
+ * GitHub Deployments API lookup), local deployment configuration evidence,
+ * and the repository homepage -- kept entirely separate from Build Preview.
+ * A lookup failure here never affects the rest of the panel: it renders its
+ * own local error message instead of throwing.
+ */
+function DeploymentSection({
+  repository,
+  loadRepositoryLiveDeployment,
+  homepage,
+  selectedCommitSha,
+  localEvidence,
+}: {
+  repository: RepositoryIdentity
+  loadRepositoryLiveDeployment: RepositoryLiveDeploymentLoader
+  homepage: string | null
+  selectedCommitSha: string | null
+  localEvidence: RepositoryAnalysis["deployment"] | null
+}) {
+  const [state, setState] = useState<LiveDeploymentState>({ status: "loading" })
+
+  useEffect(() => {
+    const abortController = new AbortController()
+    setState({ status: "loading" })
+
+    void loadRepositoryLiveDeployment(repository, {
+      signal: abortController.signal,
+    }).then(
+      (value) => {
+        if (!abortController.signal.aborted)
+          setState({ status: "ready", value })
+      },
+      (error: unknown) => {
+        if (!abortController.signal.aborted) {
+          setState({
+            status: "error",
+            message: getErrorMessage(
+              error,
+              "Deployment information is currently unavailable.",
+            ),
+          })
+        }
+      },
+    )
+
+    return () => abortController.abort()
+    // Repository identity is fixed for this component's lifetime: the parent
+    // `RepositoryAnalysisView` remounts this whole subtree on repository
+    // change, so branch/commit selection must not re-trigger this lookup.
+  }, [loadRepositoryLiveDeployment, repository.owner, repository.repo])
+
+  const homepageHref = isSafeExternalUrl(homepage, { allowHttp: true })
+    ? homepage
+    : null
+
+  return (
+    <section className="peephole__section">
+      <h3>Deployment</h3>
+
+      <div className="peephole__detail">
+        <dt>Live deployment</dt>
+        <dd>
+          {state.status === "loading" &&
+            "Checking recent GitHub deployments..."}
+          {state.status === "error" && state.message}
+          {state.status === "ready" &&
+            (state.value.status === "confirmed" ? "Confirmed" : "Not detected")}
+        </dd>
+      </div>
+
+      {state.status === "ready" &&
+        state.value.status === "confirmed" &&
+        state.value.candidate && (
+          <LiveDeploymentDetails
+            candidate={state.value.candidate}
+            selectedCommitSha={selectedCommitSha}
+            truncated={state.value.truncated}
+          />
+        )}
+
+      {localEvidence && localEvidence.status === "configured" && (
+        <div className="peephole__detail">
+          <dt>Deployment configuration</dt>
+          <dd>{formatConfiguredProvider(localEvidence.provider)}</dd>
+        </div>
+      )}
+
+      <div className="peephole__detail">
+        <dt>Repository homepage</dt>
+        <dd>
+          {homepage ? (
+            homepageHref ? (
+              <a
+                className="peephole__link"
+                href={homepageHref}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                Open homepage
+              </a>
+            ) : (
+              <span>{homepage}</span>
+            )
+          ) : (
+            "Not declared"
+          )}
+        </dd>
+      </div>
+    </section>
+  )
+}
+
+function LiveDeploymentDetails({
+  candidate,
+  selectedCommitSha,
+  truncated,
+}: {
+  candidate: LiveDeploymentCandidate
+  selectedCommitSha: string | null
+  truncated: boolean
+}) {
+  return (
+    <>
+      <dl className="peephole__facts">
+        <Detail
+          label="Environment"
+          value={
+            candidate.productionEnvironment
+              ? `${candidate.environment} (production)`
+              : candidate.environment
+          }
+        />
+        <Detail label="Live URL" value={candidate.url} />
+        {candidate.ref && (
+          <Detail label="Deployment ref" value={candidate.ref} />
+        )}
+        {candidate.sha && (
+          <Detail label="Deployment commit" value={candidate.sha.slice(0, 7)} />
+        )}
+        <Detail
+          label="Comparison"
+          value={formatShaComparison(candidate.sha, selectedCommitSha)}
+        />
+      </dl>
+      <a
+        className="peephole__link"
+        href={candidate.url}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        Open live site
+      </a>
+      {truncated && (
+        <p className="peephole__muted">
+          Peephole checked a bounded set of recent deployments; more may exist.
+        </p>
+      )}
+    </>
+  )
+}
+
+function formatShaComparison(
+  deploymentSha: string | null,
+  selectedSha: string | null,
+): string {
+  if (!deploymentSha) return "Deployment commit unknown"
+  if (!selectedSha) return "Selected commit unknown"
+  return deploymentSha.toLowerCase() === selectedSha.toLowerCase()
+    ? "Matches selected commit"
+    : "Deployment commit differs from selected preview commit"
+}
+
+function formatConfiguredProvider(
+  provider: RepositoryAnalysis["deployment"]["provider"],
+): string {
+  if (provider === "vercel") return "Vercel configuration detected"
+  if (provider === "netlify") return "Netlify configuration detected"
+  return "Deployment configuration detected"
+}
+
+const unavailableLiveDeploymentLoader: RepositoryLiveDeploymentLoader =
+  async () => {
+    throw new Error("Live deployment discovery is unavailable.")
+  }
 
 function getSelectedBranchName(
   selectedRef: RepositoryRefSelection,

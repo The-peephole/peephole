@@ -175,20 +175,25 @@ Never fetch `.env`, `.env.local`, or secret values from repository history.
 
 ## 8. Deployment Detection
 
-Deployment states:
+This section covers local, immutable, per-commit deployment *evidence* only
+-- the bounded live-evidence hierarchy that feeds
+`RepositoryAnalysis.deployment`. It never proves an actual live deployment.
 
 ```ts
-type DeploymentStatus = "confirmed" | "configured" | "unknown"
+type DeploymentStatus = "declared" | "configured" | "unknown"
 ```
 
-`confirmed` currently means that GitHub repository metadata contains a URL that
-normalizes to HTTP(S). It does not mean Peephole checked reachability, content,
-or framing policy. A `vercel.json` or `netlify.toml` file alone yields
-`configured`, not `confirmed`.
+`declared` means the repository's GitHub metadata declares a homepage URL
+that normalizes to HTTP(S). This is evidence of intent, not proof of a live
+deployment: a homepage can be a marketing site, documentation, or (as with
+this repository) a Chrome Web Store listing. `configured` means a
+`vercel.json` or `netlify.toml` file was found with no known URL. Neither
+value is ever treated as "confirmed" within this analysis.
 
-The implemented detector uses repository homepage metadata, `vercel.json`, and
-`netlify.toml`. Existing-site Live Preview, reachability checks, and framing
-checks are future work.
+A genuinely confirmed live deployment requires a separate, bounded GitHub
+Deployments API lookup -- see section 15 below. That lookup's result is
+mutable, short-TTL state kept entirely out of this immutable,
+`repositoryId:commitSha:analyzerVersion`-keyed analysis.
 
 ## 9. README Inspection
 
@@ -345,9 +350,13 @@ interface PreviewEligibility {
 `native-static-build` requires all compatibility checks plus a match in the
 `core/preview/buildAdapters.ts` registry. `runnerSupport.ts` derives analyzer
 blockers from that same registry rather than maintaining a second capability
-table.
-`existing-deployment` currently requires normalized HTTP(S) homepage metadata.
-All other cases return `unsupported`; no StackBlitz fallback exists.
+table. This check is evaluated first and always wins: local deployment
+evidence (a declared homepage or provider configuration) never overrides a
+genuinely buildable target, since it is not proof of an actual deployment.
+`existing-deployment` is only the fallback shown when a build is not
+possible but `deployment.status` is `"declared"` or `"configured"`. All other
+cases (no build and no local deployment evidence) return `unsupported`; no
+StackBlitz fallback exists.
 
 Common blocker codes:
 
@@ -383,7 +392,7 @@ interface RepositoryAnalysis {
     secretLikeVariables: string[]
   }
   deployment: {
-    status: "confirmed" | "configured" | "unknown"
+    status: "declared" | "configured" | "unknown"
     provider: string | null
     url: string | null
     evidence: string[]
@@ -400,11 +409,14 @@ interface RepositoryAnalysis {
 }
 ```
 
-Target selection changes analysis behavior, so `ANALYZER_VERSION` is `0.1.3`;
-target-scoped results have their own version and cache identity of repository
-id + exact commit SHA + source root + target analyzer version.
-`PREVIEW_CONTRACT_VERSION` is `static-v2`. Legacy `static-v1` remains accepted
-only when the target is omitted and therefore implicitly the repository root.
+Target selection changes analysis behavior, so `ANALYZER_VERSION` is `0.1.4`
+(bumped from `0.1.3` when `deployment.status` dropped its misleading
+`"confirmed"` value); target-scoped results have their own version and cache
+identity of repository id + exact commit SHA + source root + target analyzer
+version. `PREVIEW_CONTRACT_VERSION` is `static-v2`. Legacy `static-v1` remains
+accepted only when the target is omitted and therefore implicitly the
+repository root. Existing deployed-site Live Preview does not touch either
+version: it never changes the build contract.
 
 The analyzer output is safe to display and cache. It contains variable names and evidence, never secret values or executed output.
 
@@ -418,3 +430,123 @@ when the selected directory is independently installable with its own
 `package.json` and `package-lock.json`. Zero matches is unsupported; multiple
 matches are an explicit configuration error. Shared-root npm workspaces and
 pnpm/yarn/bun orchestration remain unsupported.
+
+## 15. Live Deployment Discovery (Mutable, Separate From Analysis)
+
+Unlike everything above, live deployment discovery is not part of
+`RepositoryAnalysis` and does not use its cache. It answers a different
+question -- "does this repository currently have an actual deployed site,
+and where" -- using mutable, short-lived state keyed by repository identity
+only (`types/deployment.ts`, `core/github/liveDeploymentCache.ts`, 45-second
+TTL). Folding it into the immutable `repositoryId:commitSha:analyzerVersion`
+analysis cache would leak stale live-deployment state across an unrelated
+axis (a repository's current deployment can change independently of any
+particular analyzed commit).
+
+```ts
+type LiveDeploymentStatus = "confirmed" | "not-detected"
+
+interface LiveDeploymentCandidate {
+  environment: string
+  productionEnvironment: boolean
+  url: string // already validated by core/github/externalUrlPolicy.ts
+  ref: string | null
+  sha: string | null
+  state: string
+}
+
+interface RepositoryLiveDeployment {
+  status: LiveDeploymentStatus
+  candidate: LiveDeploymentCandidate | null // non-null only when confirmed
+  candidateCount: number
+  truncated: boolean
+  evidence: string[]
+}
+```
+
+`"confirmed"` means the bounded lookup below found at least one deployment
+whose most recent status is `success` and whose `environment_url` passed the
+shared external-URL safety check. `"not-detected"` means the lookup
+completed with no such candidate -- it never means the lookup failed. A
+failed lookup (GitHub rate-limited, unreachable, or returning a malformed
+response) is instead a rejected loader promise / background message error,
+so the Side Panel's "Deployment" section can show "Deployment information is
+currently unavailable" without that state ever being confused with a
+genuine, verified absence of a live deployment.
+
+### Bounded GitHub reads
+
+`GitHubClient.listRepositoryDeployments` fetches `GET
+/repos/{owner}/{repo}/deployments?per_page=10&page=1` -- exactly one page,
+never paginated further; `truncated` is set when the page came back full.
+`GitHubClient.listDeploymentStatuses` fetches `GET
+.../deployments/{id}/statuses?per_page=30&page=1` for one deployment --
+again exactly one page. GitHub does not guarantee a particular status order,
+so the loader always picks the status with the latest `createdAt` from
+whatever the page returns rather than assuming position; `truncated` is set
+when that page came back full too. At most `MAX_DEPLOYMENT_STATUS_LOOKUPS`
+(5) deployments ever receive a status lookup, chosen by
+`core/analyzer/liveDeploymentSelector.ts#rankDeploymentsForStatusLookup`:
+`production_environment` deployments first, then an environment name that
+reads as production (matches `/prod/i`), then everything else, each tier
+keeping the GitHub API's relative order. A single deployment's status lookup
+failing (anything other than an abort) is recorded as an unknown status for
+that one deployment and does not fail the whole lookup; only an abort
+propagates.
+
+### Selection rule
+
+`core/analyzer/liveDeploymentSelector.ts#selectLiveDeployment` never guesses:
+a deployment is only ever actionable when its resolved status state is
+exactly `"success"` and it has a non-null `environment_url` that passes
+`core/github/externalUrlPolicy.ts#isSafeExternalUrl` (HTTPS only for this
+path -- see below). A `failure`/`error`/`inactive`/`pending`/`in_progress`/
+`queued` status, or a missing/unsafe URL, is never selected regardless of
+environment name. Among actionable candidates, the same tiering used for
+lookup ranking picks the single result: `production_environment` first, then
+a production-like environment name, then anything else. Ambiguous or
+multiple candidates are not surfaced as a list in this stage; only the
+single highest-tier actionable candidate is returned, with `candidateCount`
+and `evidence` describing how many deployments were actually inspected.
+
+### URL safety
+
+`isSafeExternalUrl` is the single validator shared by the repository homepage
+link and the live-deployment URL. For live deployments it requires `https:`
+strictly (no `allowHttp` override); for the pre-existing homepage link it
+additionally accepts `http:` to preserve that field's existing "normalized
+HTTP(S)" contract. In both modes it rejects: embedded credentials; loopback,
+RFC 1918 private, link-local, and CGNAT (100.64.0.0/10) IPv4 literals;
+loopback, link-local (`fe80::/10`), and unique-local (`fc00::/7`) IPv6
+literals (including an IPv4-mapped IPv6 literal resolving to one of the
+above); `localhost`/`*.localhost`; control characters; and an excessively
+long URL. Every other scheme (`javascript:`, `data:`, `file:`, `blob:`,
+`chrome-extension:`, and anything else) is rejected implicitly by the
+`https:`/`http:` allowlist rather than a scheme blocklist. GitHub Pages-style
+or local-development hosts receive no special allowance: this stage targets
+public deployed sites only.
+
+### Comparison to the selected preview commit
+
+The live deployment's `candidate.sha` (when GitHub reports one) is compared
+against the currently selected preview commit (`RepositoryAnalysis.repository.commitSha`)
+purely for display -- "Matches selected commit" or "Deployment commit differs
+from selected preview commit" -- never as a correctness signal for Build
+Preview. When `candidate.sha` is absent, the comparison reads "Deployment
+commit unknown" rather than assuming the repository's default branch HEAD is
+the deployment's commit. Selecting a different branch only ever changes which
+analyzed commit this comparison is made against; it does not retrigger the
+deployment lookup itself, and it never implies the live deployment belongs to
+that branch.
+
+### Why this is not an embedded preview
+
+The Side Panel never fetches, proxies, or renders the live deployment's HTML.
+"Open live site" is a plain `target="_blank"` anchor to the validated URL,
+identical in trust posture to the pre-existing homepage link. Building a
+generic trusted-iframe contract for arbitrary third-party origins would
+require relaxing the manifest CSP's `frame-src` beyond the Peephole-owned
+artifact origin (see [Architecture](ARCHITECTURE.md#8-delivery-plane-and-origins))
+and would run into the deployment's own `frame-ancestors`/`X-Frame-Options`/
+authentication cookies -- none of which this stage attempts to solve. No
+manifest permission or CSP change was made to support this feature.

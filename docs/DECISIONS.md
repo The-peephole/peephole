@@ -384,3 +384,75 @@ rejects symlinks and hard links.
 The full-stack fixture's `frontend` directory is the golden nested target. A
 successful static frontend build is not a full-stack preview: its `/api/hello`
 request may fail because the backend is intentionally not started or routed.
+
+## D-028 - Live Deployment is separate, mutable, evidence-graded state; never an embedded iframe or proxy
+
+**Status:** Accepted
+
+`deploymentDetector.ts` previously treated any `repository.homepage` as
+`status: "confirmed"`, and `analyzeRepository.ts` let that status override
+`preview.mode` even for a genuinely buildable target -- hiding Build Preview
+for any repository with a homepage set, regardless of whether it was
+buildable, and regardless of whether the homepage was actually a deployed
+application (this repository's own homepage is a Chrome Web Store listing,
+not a deployed app). Both problems are fixed:
+
+- `RepositoryAnalysis.deployment.status` drops `"confirmed"` entirely, in
+  favor of `"declared"` (homepage) / `"configured"` (provider config,
+  unchanged) / `"unknown"`. Neither value is proof of a live deployment.
+- `analyzeRepository`'s `preview.mode` formula now checks buildability first:
+  `native-static-build` whenever the target has no blockers, regardless of
+  deployment evidence; `existing-deployment` only as the fallback label when
+  a build is not possible but local evidence exists; `unsupported` otherwise.
+- `ANALYZER_VERSION` bumps `0.1.3` -> `0.1.4` for this schema/semantic change.
+
+A real confirmed live deployment now requires an independent, bounded GitHub
+Deployments API lookup: `GitHubClient.listRepositoryDeployments` (`per_page=10`,
+one page, no further pagination) and `GitHubClient.listDeploymentStatuses`
+(`per_page=30`, one page, at most `MAX_DEPLOYMENT_STATUS_LOOKUPS`=5
+deployments ever checked). The pure selector
+(`core/analyzer/liveDeploymentSelector.ts`) ranks `production_environment`
+deployments first, then a production-like environment name, then everything
+else, and only ever selects a deployment whose most recent status is
+`success` and whose `environment_url` passes the shared safety validator
+(`core/github/externalUrlPolicy.ts`: HTTPS-only for this path, no
+credentials, no loopback/private/link-local/CGNAT IPv4 or IPv6 literal, no
+control characters, bounded length; `localhost`/GitHub Pages-style
+local-development hosts are not special-cased in). Hitting either bound sets
+`truncated` rather than hiding it; a per-deployment status-lookup failure
+degrades that one deployment to an unknown status instead of failing the
+whole lookup.
+
+This result (`types/deployment.ts`) is deliberately mutable and short-TTL
+(45 seconds, `core/github/liveDeploymentCache.ts`), keyed by repository
+identity alone -- never by commit SHA or branch, and never folded into the
+immutable `repositoryId:commitSha:analyzerVersion` analysis cache, since a
+repository's live deployment can change independently of any analyzed
+commit. It reaches the Side Panel through its own fixed, bounded background
+message (`LOAD_REPOSITORY_DEPLOYMENTS`,
+`core/github/liveDeploymentMessages.ts`) mirroring the existing
+`branchMessages.ts` contract -- not a generic `FETCH_URL`/proxy primitive. A
+lookup failure (rate limit, network, malformed response) is surfaced as a
+rejected loader promise / message error and renders as an isolated message in
+the new "Deployment" section of `RepositoryAnalysisView`; it never fails
+repository analysis or disables Build Preview.
+
+The live deployment's reported `sha` (when present) is compared against the
+currently selected preview commit for display only ("Matches selected
+commit" / "Deployment commit differs from selected preview commit" /
+"Deployment commit unknown") -- never as a build-correctness signal, and
+never assumed to be the default branch HEAD when absent. Selecting a
+different branch changes which commit this comparison runs against but never
+re-triggers the deployment lookup itself, and the live deployment is never
+described as belonging to a selected nested frontend target -- it is
+reported as the repository's own live deployment.
+
+Peephole does not fetch, proxy, or embed the deployment's HTML: "Open live
+site" is a plain `target="_blank"` anchor to the validated URL, exactly like
+the pre-existing homepage link. No `services/preview-api/` endpoint fetches
+an arbitrary URL, no server-side screenshot/HTML-proxy service was added, and
+no manifest permission or CSP changed -- the Deployments API is reached
+through the already-permitted `api.github.com` host via the existing
+background-owned `GitHubClient`, per D-003's content-script restriction.
+Backend detection, execution, routing, secrets, and database support (roadmap
+stages 7-11) remain untouched by this decision.

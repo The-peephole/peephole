@@ -26,9 +26,10 @@ Collect bounded evidence and decide eligibility before starting a build.
 
 Offer Peephole's isolated static builder only when the implemented runner
 target resolves to exactly one registered Build Adapter and its compatibility
-contract is satisfied. A normalized repository homepage may be shown as an
-external link, but it is not treated as an availability-checked or embedded
-Live Preview.
+contract is satisfied. A normalized repository homepage and a confirmed
+GitHub deployment are both shown as external links, opened in a new tab; a
+declared homepage is never itself proof of a live deployment, and neither is
+embedded as a Live Preview iframe.
 
 ### 5.3 Evidence over confidence theater
 
@@ -53,8 +54,9 @@ Popularity, stars, and GitHub visibility do not reduce the runtime threat model.
 3. Clicking it opens the Peephole side panel.
 4. Peephole resolves repository identity and an immutable commit SHA.
 5. Bounded static analysis reports framework, package manager, commands, environment declarations, deployment evidence, repository structure, and blockers.
-6. If normalized repository-homepage metadata exists, Peephole exposes an
-   **Open site** link in a new tab; it does not probe or embed that deployment.
+6. A separate, bounded GitHub Deployments API lookup reports the repository's
+   current Live Deployment, if any, alongside its declared homepage; both are
+   external links opened in a new tab, never probed further or embedded.
 7. If the native static contract resolves to exactly one current Build Adapter,
    the user starts an isolated preview job.
 8. The panel shows job phases and then the static artifact from a dedicated
@@ -93,6 +95,12 @@ branch name.
   (single-project, workspace, multi-project, or unknown) and a bounded list
   of project candidate paths; detected frontend candidates can be explicitly
   selected for a separate exact-SHA build analysis
+- existing deployed-site Live Preview: a bounded GitHub Deployments API
+  lookup surfaces a repository's current confirmed live deployment (if any),
+  its comparison against the selected preview commit, local deployment
+  evidence (declared homepage or provider configuration), and the repository
+  homepage -- entirely separate from Build Preview, opened only as external
+  links, never embedded or proxied
 
 ### Recognized but not executable
 
@@ -105,7 +113,7 @@ branch name.
 ### Not implemented
 
 - shared-root npm/pnpm/yarn workspace orchestration
-- embedded existing deployed-site Live Preview
+- embedded remote deployed-site iframe or a proxy/fetch of a deployment URL
 - backend detection beyond the current bounded hints
 - backend or persistent server execution
 - frontend/backend routing
@@ -133,9 +141,12 @@ This contract is versioned. Changing it requires new fixtures and security tests
 Framework evidence includes declared dependencies, scripts, and framework
 config files. Package-manager evidence combines lock files with
 `packageManager` metadata. Environment evidence comes from root templates and
-never stores secret values. Deployment evidence currently distinguishes
-normalized HTTP(S) repository-homepage metadata from provider configuration
-alone; it does not perform a reachability or framing check.
+never stores secret values. Local, per-commit deployment evidence
+distinguishes a declared repository homepage from provider configuration
+alone; neither is proof of a live deployment. A confirmed live deployment
+comes only from a separate, bounded GitHub Deployments API lookup that
+requires a successful status and a validated environment URL; it does not
+perform a reachability or framing check of its own.
 
 Analysis details live in [Repository analysis](REPOSITORY_ANALYSIS.md).
 
@@ -175,7 +186,7 @@ silently guessing how a repository should run.
 3. Repository / application structure detection (implemented)
 4. Build Adapter generalization (implemented)
 5. frontend target selection / bounded frontend monorepo support (implemented)
-6. existing deployed-site Live Preview
+6. existing deployed-site Live Preview (implemented)
 7. backend detection
 8. backend execution
 9. frontend ↔ backend routing

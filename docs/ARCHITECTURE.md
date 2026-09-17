@@ -74,9 +74,11 @@ The side panel shows:
 - the resulting preview or a clear unsupported/failure state.
 
 Preview content is embedded only from the dedicated Peephole preview origin.
-Today, normalized repository-homepage metadata is displayed as an external link
-opened in a new tab. Peephole does not yet probe, proxy, or embed an existing
-deployed site.
+A repository's declared homepage and its current confirmed GitHub deployment
+(a separate, bounded, mutable lookup -- see
+[Repository analysis §15](REPOSITORY_ANALYSIS.md#15-live-deployment-discovery-mutable-separate-from-analysis))
+are both displayed as external links opened in a new tab. Peephole does not
+probe, proxy, or embed either as an iframe.
 
 Branch selection is a mutable UI ref, kept separate from both repository
 identity and the resolved immutable commit. The Side Panel lists a bounded set
@@ -139,16 +141,23 @@ An eligibility result includes evidence, blockers, a package manager, a build co
 
 Current behavior:
 
-1. normalized HTTP(S) repository-homepage metadata produces
-   `existing-deployment` and an external link;
-2. otherwise a native static build is offered only when the implemented runner
-   target resolves to exactly one registered Build Adapter and its
-   compatibility contract matches;
-3. otherwise the UI shows analysis and blockers only.
+1. a native static build is offered whenever the implemented runner target
+   resolves to exactly one registered Build Adapter and its compatibility
+   contract matches -- this check runs first and always wins;
+2. otherwise, if local deployment evidence exists (a declared homepage or
+   provider configuration), `mode` falls back to `existing-deployment`;
+3. otherwise the UI shows analysis and blockers only (`unsupported`).
 
-The `existing-deployment` label does not currently mean that Peephole checked
-reachability or framing policy. Embedded deployed-site Live Preview is a future
-roadmap stage.
+Local deployment evidence (`declared`/`configured`) never overrides a
+genuinely buildable target -- a declared homepage used to force
+`existing-deployment` even for a buildable repository, incorrectly hiding
+Build Preview; that is fixed. `existing-deployment` still does not mean
+Peephole checked reachability or framing policy: it is local evidence only.
+A separately loaded, mutable "Deployment" section (see
+[Repository analysis §15](REPOSITORY_ANALYSIS.md#15-live-deployment-discovery-mutable-separate-from-analysis))
+shows the repository's actual current live deployment, if a bounded GitHub
+Deployments API lookup confirms one -- this is not folded into `preview.mode`
+or the immutable analysis cache, and its failure never affects Build Preview.
 
 ### Build Adapter boundary
 
@@ -236,6 +245,19 @@ repository-id + commit-sha + normalized-build-plan + runner-version
 
 Branch names alone are not valid cache keys. Failed builds may use a short negative-cache TTL to prevent rapid repeated abuse, but users need a retry path after configuration changes.
 
+Live deployment cache key (deliberately separate, mutable, short-TTL --
+45 seconds):
+
+```text
+repository-id (or owner/repo)
+```
+
+This is intentionally *not* combined with commit SHA or analyzer version: a
+repository's live deployment can change independently of any particular
+analyzed commit, so folding it into the immutable analysis cache above would
+let a stale deployment state leak across commits. See
+[Repository analysis §15](REPOSITORY_ANALYSIS.md#15-live-deployment-discovery-mutable-separate-from-analysis).
+
 ## 10. GitHub SPA Navigation
 
 Navigation handling must combine GitHub navigation events with an idempotent reconciliation step. On every relevant transition:
@@ -293,12 +315,16 @@ Deployable service boundaries may live in separate repositories later. Their con
 ## 13. Planned Architecture Expansion
 
 GitHub theme synchronization, Branch Preview, repository/application structure
-detection, Build Adapter generalization, and bounded frontend target selection
-are implemented. A selected nested target is reanalyzed at the exact commit,
-authorized again by the server, and executed with target-local npm install,
-build, and output roots. Shared-root workspace orchestration remains outside
-this contract. The remaining expansion starts with existing deployed-site Live
-Preview, then backend detection and execution, routing, secrets, and databases.
+detection, Build Adapter generalization, bounded frontend target selection,
+and existing deployed-site Live Preview are implemented. A selected nested
+target is reanalyzed at the exact commit, authorized again by the server, and
+executed with target-local npm install, build, and output roots. Shared-root
+workspace orchestration remains outside this contract. Live Preview surfaces
+a repository's current confirmed GitHub deployment as a plain external link
+next to Build Preview (no embedded iframe, no server-side fetch of the
+deployment URL); it does not change the build contract. The remaining
+expansion starts with backend detection and execution, then routing, secrets,
+and databases.
 
 The generalized Build Adapter boundary preserves the worker ports and adds no
 fixture-specific production branches. Backend execution requires a separate

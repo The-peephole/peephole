@@ -54,11 +54,15 @@ export function analyzeRepository(
   }
 
   const uniqueBlockers = deduplicateBlockers(blockers)
+  // Native build eligibility always wins: local deployment evidence
+  // (declared homepage or provider config) is never proof of an actual live
+  // deployment, so it must never override a genuinely buildable target. It
+  // only downgrades the fallback message shown when a build is not possible.
   const mode =
-    deployment.status === "confirmed"
-      ? "existing-deployment"
-      : uniqueBlockers.length === 0
-        ? "native-static-build"
+    uniqueBlockers.length === 0
+      ? "native-static-build"
+      : deployment.status !== "unknown"
+        ? "existing-deployment"
         : "unsupported"
 
   return {

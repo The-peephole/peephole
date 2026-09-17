@@ -334,18 +334,92 @@ describe("analyzeRepository", () => {
     expect(analysis.preview.mode).toBe("native-static-build")
   })
 
-  it("uses a safe repository homepage as a confirmed deployment", () => {
+  it("marks a Netlify config without a URL as configured", () => {
+    const analysis = analyzeRepository(
+      repository,
+      viteSnapshot({}, {}, ["netlify.toml"]),
+    )
+
+    expect(analysis.deployment).toMatchObject({
+      status: "configured",
+      provider: "netlify",
+      url: null,
+    })
+    expect(analysis.preview.mode).toBe("native-static-build")
+  })
+
+  it("reports unknown deployment evidence when nothing is declared or configured", () => {
+    const analysis = analyzeRepository(repository, viteSnapshot())
+
+    expect(analysis.deployment).toMatchObject({
+      status: "unknown",
+      provider: null,
+      url: null,
+      evidence: [],
+    })
+  })
+
+  it("treats a declared homepage as evidence only, never a confirmed deployment", () => {
     const analysis = analyzeRepository(
       { ...repository, homepage: "https://example.vercel.app/" },
       viteSnapshot(),
     )
 
     expect(analysis.deployment).toMatchObject({
-      status: "confirmed",
+      status: "declared",
       provider: "homepage",
       url: "https://example.vercel.app/",
     })
+  })
+
+  it("does not let a declared homepage override native build eligibility", () => {
+    const analysis = analyzeRepository(
+      {
+        ...repository,
+        homepage: "https://chromewebstore.google.com/detail/example",
+      },
+      viteSnapshot(),
+    )
+
+    expect(analysis.deployment.status).toBe("declared")
+    expect(analysis.preview.mode).toBe("native-static-build")
+    expect(analysis.preview.blockers).toEqual([])
+  })
+
+  it("falls back to existing-deployment only when a build is not possible and deployment evidence exists", () => {
+    const analysis = analyzeRepository(
+      { ...repository, homepage: "https://example.vercel.app/" },
+      snapshot(
+        {
+          "package.json": packageJson({
+            dependencies: { next: "latest", react: "latest" },
+            scripts: { build: "next build" },
+          }),
+        },
+        ["package-lock.json", "next.config.js"],
+      ),
+    )
+
     expect(analysis.preview.mode).toBe("existing-deployment")
+    expect(blockerCodes(analysis)).toContain("PERSISTENT_SERVER_REQUIRED")
+  })
+
+  it("reports unsupported, not existing-deployment, when no deployment evidence exists and a build is not possible", () => {
+    const analysis = analyzeRepository(
+      repository,
+      snapshot(
+        {
+          "package.json": packageJson({
+            dependencies: { next: "latest", react: "latest" },
+            scripts: { build: "next build" },
+          }),
+        },
+        ["package-lock.json", "next.config.js"],
+      ),
+    )
+
+    expect(analysis.deployment.status).toBe("unknown")
+    expect(analysis.preview.mode).toBe("unsupported")
   })
 
   it.each([

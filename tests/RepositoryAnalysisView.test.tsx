@@ -13,10 +13,22 @@ import type {
   RepositoryAnalysisLoader,
 } from "../types/analysis"
 import type {
+  RepositoryLiveDeployment,
+  RepositoryLiveDeploymentLoader,
+} from "../types/deployment"
+import type {
   RepositoryBranchesLoader,
   RepositoryIdentity,
 } from "../types/repository"
 import { supportedAnalysis } from "./analysisFixture"
+
+const notDetectedDeployment: RepositoryLiveDeployment = {
+  status: "not-detected",
+  candidate: null,
+  candidateCount: 0,
+  truncated: false,
+  evidence: [],
+}
 
 ;(
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -607,6 +619,207 @@ describe("RepositoryAnalysisView", () => {
       expect.anything(),
     )
   })
+
+  it("renders the repository homepage separately from live deployment status", async () => {
+    const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
+      ...supportedAnalysis,
+      repository: {
+        ...supportedAnalysis.repository,
+        homepage: "https://chromewebstore.google.com/detail/example",
+      },
+    })
+    const container = await renderView(loader, roots, {
+      loadRepositoryLiveDeployment: () =>
+        Promise.resolve(notDetectedDeployment),
+    })
+
+    expect(container.textContent).toContain("Repository homepage")
+    expect(container.textContent).toContain("Open homepage")
+    expect(container.textContent).toContain("Live deployment")
+    expect(container.textContent).toContain("Not detected")
+  })
+
+  it("never labels a homepage-only repository as a confirmed live deployment", async () => {
+    const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
+      ...supportedAnalysis,
+      repository: {
+        ...supportedAnalysis.repository,
+        homepage: "https://chromewebstore.google.com/detail/example",
+      },
+    })
+    const container = await renderView(loader, roots, {
+      loadRepositoryLiveDeployment: () =>
+        Promise.resolve(notDetectedDeployment),
+    })
+
+    expect(container.textContent).not.toContain("Open live site")
+    expect(container.querySelector("iframe")).toBeNull()
+  })
+
+  it("renders a confirmed live deployment with its comparison to the selected commit", async () => {
+    const loader = vi
+      .fn<RepositoryAnalysisLoader>()
+      .mockResolvedValue(supportedAnalysis)
+    const container = await renderView(loader, roots, {
+      loadRepositoryLiveDeployment: () =>
+        Promise.resolve({
+          status: "confirmed",
+          candidate: {
+            environment: "production",
+            productionEnvironment: true,
+            url: "https://myapp.vercel.app",
+            ref: "main",
+            sha: supportedAnalysis.repository.commitSha,
+            state: "success",
+          },
+          candidateCount: 1,
+          truncated: false,
+          evidence: [],
+        }),
+    })
+
+    expect(container.textContent).toContain("Confirmed")
+    expect(container.textContent).toContain("https://myapp.vercel.app")
+    expect(container.textContent).toContain("Matches selected commit")
+    const link = Array.from(container.querySelectorAll("a")).find(
+      (anchor) => anchor.textContent === "Open live site",
+    )
+    expect(link?.getAttribute("href")).toBe("https://myapp.vercel.app")
+    expect(link?.getAttribute("target")).toBe("_blank")
+    expect(link?.getAttribute("rel")).toBe("noopener noreferrer")
+    expect(container.querySelector("iframe")).toBeNull()
+  })
+
+  it("shows a commit mismatch when the deployment SHA differs from the selected commit", async () => {
+    const loader = vi
+      .fn<RepositoryAnalysisLoader>()
+      .mockResolvedValue(supportedAnalysis)
+    const container = await renderView(loader, roots, {
+      loadRepositoryLiveDeployment: () =>
+        Promise.resolve({
+          status: "confirmed",
+          candidate: {
+            environment: "production",
+            productionEnvironment: true,
+            url: "https://myapp.vercel.app",
+            ref: "main",
+            sha: "f".repeat(40),
+            state: "success",
+          },
+          candidateCount: 1,
+          truncated: false,
+          evidence: [],
+        }),
+    })
+
+    expect(container.textContent).toContain(
+      "Deployment commit differs from selected preview commit",
+    )
+  })
+
+  it("isolates a deployment lookup failure without affecting Build Preview or analysis", async () => {
+    const loader = vi
+      .fn<RepositoryAnalysisLoader>()
+      .mockResolvedValue(supportedAnalysis)
+    const container = await renderView(loader, roots, {
+      loadRepositoryLiveDeployment: () =>
+        Promise.reject(
+          new Error("Deployment information is currently unavailable."),
+        ),
+    })
+
+    expect(container.textContent).toContain(
+      "Deployment information is currently unavailable.",
+    )
+    expect(container.textContent).toContain("Native preview compatible")
+  })
+
+  it("does not refetch the live deployment when the selected branch changes", async () => {
+    const loader = vi
+      .fn<RepositoryAnalysisLoader>()
+      .mockResolvedValue(supportedAnalysis)
+    const branchLoader = defaultBranchLoader(["main", "feature/login"])
+    const loadDeployment = vi
+      .fn<RepositoryLiveDeploymentLoader>()
+      .mockResolvedValue(notDetectedDeployment)
+    const container = await renderView(loader, roots, {
+      branchLoader,
+      loadRepositoryLiveDeployment: loadDeployment,
+    })
+
+    await act(async () => selectBranch(container, "feature/login"))
+
+    expect(loadDeployment).toHaveBeenCalledTimes(1)
+  })
+
+  it("clears previous deployment information on repository SPA navigation", async () => {
+    const container = document.createElement("div")
+    document.body.append(container)
+    const root = createRoot(container)
+    roots.push(root)
+    const deferredDeploymentA = createDeferred<RepositoryLiveDeployment>()
+
+    await act(async () => {
+      root.render(
+        <RepositoryAnalysisView
+          loadRepositoryAnalysis={vi
+            .fn<RepositoryAnalysisLoader>()
+            .mockResolvedValue(supportedAnalysis)}
+          loadRepositoryBranches={defaultBranchLoader()}
+          loadRepositoryLiveDeployment={() => deferredDeploymentA.promise}
+          repository={{ owner: "acme", repo: "repo-a" }}
+        />,
+      )
+    })
+
+    await act(async () => {
+      root.render(
+        <RepositoryAnalysisView
+          loadRepositoryAnalysis={vi
+            .fn<RepositoryAnalysisLoader>()
+            .mockResolvedValue(supportedAnalysis)}
+          loadRepositoryBranches={defaultBranchLoader()}
+          loadRepositoryLiveDeployment={() =>
+            Promise.resolve({
+              status: "confirmed",
+              candidate: {
+                environment: "production",
+                productionEnvironment: true,
+                url: "https://repo-b.example.com",
+                ref: "main",
+                sha: null,
+                state: "success",
+              },
+              candidateCount: 1,
+              truncated: false,
+              evidence: [],
+            })
+          }
+          repository={{ owner: "acme", repo: "repo-b" }}
+        />,
+      )
+    })
+
+    await act(async () => {
+      deferredDeploymentA.resolve({
+        status: "confirmed",
+        candidate: {
+          environment: "production",
+          productionEnvironment: true,
+          url: "https://repo-a.example.com",
+          ref: "main",
+          sha: null,
+          state: "success",
+        },
+        candidateCount: 1,
+        truncated: false,
+        evidence: [],
+      })
+    })
+
+    expect(container.textContent).toContain("https://repo-b.example.com")
+    expect(container.textContent).not.toContain("https://repo-a.example.com")
+  })
 })
 
 function createDeferred<T>(): {
@@ -670,6 +883,7 @@ async function renderView(
   options: {
     branchLoader?: RepositoryBranchesLoader
     loadBuildTargetAnalysis?: BuildTargetAnalysisLoader
+    loadRepositoryLiveDeployment?: RepositoryLiveDeploymentLoader
     repository?: RepositoryIdentity
     renderPreviewControls?: (
       analysis: BuildTargetAnalysis & RepositoryAnalysis,
@@ -687,6 +901,10 @@ async function renderView(
         loadRepositoryAnalysis={loader}
         loadBuildTargetAnalysis={options.loadBuildTargetAnalysis}
         loadRepositoryBranches={options.branchLoader ?? defaultBranchLoader()}
+        loadRepositoryLiveDeployment={
+          options.loadRepositoryLiveDeployment ??
+          (() => Promise.resolve(notDetectedDeployment))
+        }
         renderPreviewControls={options.renderPreviewControls}
         repository={options.repository ?? { owner: "react", repo: "react" }}
       />,

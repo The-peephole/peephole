@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client"
 import { createRepositoryAnalysisMessageLoader } from "../../core/analyzer/messages"
 import { createBuildTargetAnalysisMessageLoader } from "../../core/analyzer/targetMessages"
 import { createRepositoryBranchesMessageLoader } from "../../core/github/branchMessages"
+import { createLiveDeploymentMessageLoader } from "../../core/github/liveDeploymentMessages"
 import { PreviewApiClient } from "../../core/preview/apiClient"
 import {
   parsePreviewApiBaseUrl,
@@ -35,6 +36,9 @@ const loadBuildTargetAnalysis = createBuildTargetAnalysisMessageLoader({
   send: (message) => browser.runtime.sendMessage(message),
 })
 const loadRepositoryBranches = createRepositoryBranchesMessageLoader({
+  send: (message) => browser.runtime.sendMessage(message),
+})
+const loadRepositoryLiveDeployment = createLiveDeploymentMessageLoader({
   send: (message) => browser.runtime.sendMessage(message),
 })
 let previewApi: PreviewApiClient | null = null
@@ -101,6 +105,7 @@ createRoot(root).render(
       loadRepositoryAnalysis={loadRepositoryAnalysis}
       loadBuildTargetAnalysis={loadBuildTargetAnalysis}
       loadRepositoryBranches={loadRepositoryBranches}
+      loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
       connectGitHub={reconnectGitHub}
       previewApi={previewApi}
       previewArtifactBaseDomain={previewArtifactBaseDomain}

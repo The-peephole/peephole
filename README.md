@@ -147,7 +147,7 @@ smoke described in [Production smoke verification](docs/PRODUCTION_SMOKE.md).
 | --- | --- |
 | Production execution | Static HTML at the repository root; root or explicitly selected nested Vite + React targets using npm and a target-local `package-lock.json` |
 | Analysis recognition only | Vue/Svelte Vite, other package managers, backend hints, and monorepo ambiguity; these do not produce runnable plans |
-| Existing deployment handling | Displays a normalized GitHub repository-homepage link in a new tab; embedded deployed-site Live Preview is not implemented |
+| Existing deployment handling | A bounded GitHub Deployments API lookup surfaces a repository's confirmed live deployment (if any) as an external link, separate from its declared homepage; neither is embedded, probed, or proxied |
 | Branch selection | Any branch from a bounded (up to 100) list can be selected; it is resolved to an exact commit SHA before analysis, build plan, and preview job creation |
 | Repository structure detection | Reports layout and bounded project-candidate paths; detected frontend candidates can be explicitly selected and receive a separate exact-SHA target analysis |
 | Not implemented | Shared-root workspace orchestration, full-stack execution/routing, secret injection, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
@@ -188,13 +188,14 @@ The local preview worker is deliberately unsandboxed and must only build source 
 
 The production static-preview foundation, GitHub theme synchronization,
 Branch Preview, repository/application structure detection, the explicit
-Build Adapter architecture, and bounded frontend target selection are
-implemented. Nested execution remains limited to independently installable
-React + Vite + npm targets with a target-local lockfile.
+Build Adapter architecture, bounded frontend target selection, and existing
+deployed-site Live Preview are implemented. Nested execution remains limited
+to independently installable React + Vite + npm targets with a target-local
+lockfile.
 
 4. Build Adapter generalization (implemented)
 5. frontend target selection / bounded frontend monorepo support (implemented)
-6. existing deployed-site Live Preview
+6. existing deployed-site Live Preview (implemented)
 7. backend detection
 8. backend execution
 9. frontend ↔ backend routing

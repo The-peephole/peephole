@@ -42,8 +42,9 @@ The production runner accepts only:
 
 The analyzer recognizes more evidence than the worker can execute. Vue/Svelte
 Vite, pnpm/yarn/bun, monorepos, backends, persistent servers, secrets, and
-databases remain non-runnable. Repository homepage metadata may be shown as an
-external link, but deployed-site Live Preview is not implemented.
+databases remain non-runnable. Repository homepage metadata and a confirmed
+GitHub deployment are both shown as external links opened in a new tab; there
+is no embedded deployed-site iframe.
 
 ## Completed Foundation Milestones
 
@@ -90,7 +91,7 @@ because a fixture or interface for it exists.
 3. [x] Repository / application structure detection
 4. [x] Build Adapter generalization
 5. [x] frontend target selection / bounded frontend monorepo support
-6. [ ] existing deployed-site Live Preview
+6. [x] existing deployed-site Live Preview
 7. [ ] backend detection
 8. [ ] backend execution
 9. [ ] frontend ↔ backend routing
@@ -147,6 +148,38 @@ asserting "application" or "library" from directory names alone, and the
 existing `AMBIGUOUS_WORKSPACE` preview blocker still applies exactly as
 before -- detecting `frontend`/`backend` in
 `The-peephole/peephole-fixture-fullstack` does not make it buildable.
+
+Existing deployed-site Live Preview removes a real false-positive: a declared
+`repository.homepage` alone used to force `preview.mode` to
+`"existing-deployment"` even when the repository was genuinely buildable, and
+was labeled "confirmed" even though a homepage can be anything (this
+repository's own homepage is a Chrome Web Store listing, not a deployed app).
+`detectDeployment` now returns `"declared"` for a homepage and `"configured"`
+for a `vercel.json`/`netlify.toml` marker with no known URL; neither value is
+proof of a live deployment, and `preview.mode` resolves to
+`native-static-build` whenever the target is actually buildable regardless of
+either. A real "confirmed" live deployment now requires a separate, bounded
+GitHub Deployments API lookup (`GitHubClient.listRepositoryDeployments`,
+`per_page=10`, one page; `GitHubClient.listDeploymentStatuses`, `per_page=30`,
+one page, at most 5 deployments ever checked, ranked
+`production_environment` first) whose pure selection rule
+(`core/analyzer/liveDeploymentSelector.ts`) only accepts a `success` status
+with a validated, safe HTTPS `environment_url`
+(`core/github/externalUrlPolicy.ts`: HTTPS-only, no credentials, no
+loopback/private/link-local/CGNAT IPv4 or IPv6 literal, no control
+characters, bounded length). This result is mutable, short-TTL (45s) state
+keyed by repository identity only (`core/github/liveDeploymentCache.ts`),
+kept out of the immutable `repositoryId:commitSha:analyzerVersion` analysis
+cache, and reaches the Side Panel through its own bounded background message
+(`LOAD_REPOSITORY_DEPLOYMENTS`) rather than a generic fetch/proxy primitive.
+A lookup failure renders its own isolated message in the new "Deployment"
+section and never affects repository analysis or Build Preview. There is
+still no embedded remote iframe or server-side fetch of the deployment URL:
+"Open live site" is a plain `target="_blank"` link, exactly like the
+pre-existing homepage link, and no manifest permission or CSP changed (the
+Deployments API is under the already-permitted `api.github.com` host). Live
+deployment stays a repository-level concept -- selecting a nested frontend
+target never implies the discovered live deployment belongs to that target.
 
 The early stages establish repository selection and generalized build contracts
 before full-stack execution is considered. Backend execution requires a new
