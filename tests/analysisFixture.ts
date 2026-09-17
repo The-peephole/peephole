@@ -61,6 +61,15 @@ export const supportedAnalysis: RepositoryAnalysis = {
     complete: true,
     truncated: false,
   },
+  backend: {
+    status: "not-detected",
+    candidates: [],
+    evidence: [],
+    warnings: [],
+    complete: true,
+    truncated: false,
+  },
+  environmentRequirements: [],
   preview: {
     contractVersion: "static-v1",
     mode: "native-static-build",

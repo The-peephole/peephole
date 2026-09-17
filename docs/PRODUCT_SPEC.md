@@ -101,12 +101,24 @@ branch name.
   evidence (declared homepage or provider configuration), and the repository
   homepage -- entirely separate from Build Preview, opened only as external
   links, never embedded or proxied
+- read-only backend detection: bounded, evidence-graded candidates
+  (Express/NestJS/Fastify/Koa/Hapi framework evidence, database/server
+  dependency evidence, a textually-derived and network-unverified
+  entrypoint) for the repository root and a bounded set of nested
+  structure candidates; detected, never executed, started, or offered as a
+  preview target
+- read-only environment requirement analysis: declared `.env.example`-family
+  variable *names* (never values) classified as auto-configurable,
+  preview-generated-secret-candidate, database-requirement,
+  external-routing-candidate, user-required, or unknown, each tagged with
+  its source root; no value is ever generated, injected, or requested
 
 ### Recognized but not executable
 
 - Vue and Svelte Vite evidence
 - pnpm, yarn, and bun lockfile/package-manager evidence
-- backend and hosted-service hints
+- hosted-service hints (Supabase, Firebase, AWS Amplify) as external, not
+  local backend, evidence
 - workspace and monorepo ambiguity
 - Next.js, WXT, and non-Vite React blockers
 
@@ -114,7 +126,6 @@ branch name.
 
 - shared-root npm/pnpm/yarn workspace orchestration
 - embedded remote deployed-site iframe or a proxy/fetch of a deployment URL
-- backend detection beyond the current bounded hints
 - backend or persistent server execution
 - frontend/backend routing
 - ephemeral environment or secret injection
@@ -187,14 +198,17 @@ silently guessing how a repository should run.
 4. Build Adapter generalization (implemented)
 5. frontend target selection / bounded frontend monorepo support (implemented)
 6. existing deployed-site Live Preview (implemented)
-7. backend detection
+7. backend detection + environment requirement analysis (implemented)
 8. backend execution
 9. frontend ↔ backend routing
 10. ephemeral env / secrets
 11. temporary database support
 
-Stages 7-11 describe future full-stack work. They must not be inferred from the
-prepared full-stack fixture or documented as current capability.
+Stages 8-11 describe future full-stack work. They must not be inferred from
+the prepared full-stack fixture, from stage 7's detection-only evidence, or
+documented as current capability. "Backend detected" and "environment
+requirement detected" are not "backend execution supported" or "environment
+configured."
 
 Build Adapter generalization is an internal capability boundary. The
 implemented adapters cover package-free root static HTML and root or

@@ -412,14 +412,19 @@ interface RepositoryAnalysis {
     evidence: string[]
   }
   structure: RepositoryStructure
+  /** Detection only -- see §16. Never execution. */
+  backend: BackendDetection
+  /** Root/selected target's requirements plus every backend candidate's own. */
+  environmentRequirements: EnvironmentRequirement[]
   preview: PreviewEligibility
   inspectedFiles: string[]
   warnings: string[]
 }
 ```
 
-Target selection changes analysis behavior, so `ANALYZER_VERSION` is `0.1.4`
-(bumped from `0.1.3` when `deployment.status` dropped its misleading
+Target selection changes analysis behavior, so `ANALYZER_VERSION` is `0.1.5`
+(bumped from `0.1.4` when `backend` and `environmentRequirements` were added;
+`0.1.3` -> `0.1.4` was when `deployment.status` dropped its misleading
 `"confirmed"` value); target-scoped results have their own version and cache
 identity of repository id + exact commit SHA + source root + target analyzer
 version. `PREVIEW_CONTRACT_VERSION` is `static-v2`. Legacy `static-v1` remains
@@ -559,3 +564,214 @@ artifact origin (see [Architecture](ARCHITECTURE.md#8-delivery-plane-and-origins
 and would run into the deployment's own `frame-ancestors`/`X-Frame-Options`/
 authentication cookies -- none of which this stage attempts to solve. No
 manifest permission or CSP change was made to support this feature.
+
+## 16. Backend Detection + Environment Requirement Analysis (Detection Only)
+
+This stage answers two questions without ever executing anything: "does this
+repository contain a backend server, and what does it look like" and "what
+environment variables does it declare, and what could Peephole plausibly do
+about each one in a *future* stage." Neither question is answered by running
+code, generating a secret, or routing a request.
+
+### Backend evidence model
+
+```ts
+type BackendFramework =
+  "express" | "nestjs" | "fastify" | "koa" | "hapi" | "unknown"
+
+interface BackendCandidate {
+  sourceRoot: string // "." for root, otherwise a repository-relative path
+  framework: BackendFramework
+  runtime: "node"
+  packageName: string | null
+  entrypoint: string | null // textually derived, never network-verified
+  databaseDependencies: string[]
+  environmentRequirements: EnvironmentRequirement[]
+  evidence: string[]
+  warnings: string[]
+}
+
+interface BackendDetection {
+  status: "detected" | "not-detected"
+  candidates: BackendCandidate[]
+  evidence: string[]
+  warnings: string[]
+  complete: boolean
+  truncated: boolean
+}
+```
+
+Evidence hierarchy (`core/analyzer/backendDetector.ts`):
+
+1. **Strong framework evidence** -- a `package.json` dependency/devDependency
+   of `express`, `@nestjs/core`, `fastify`, `koa`, or `@hapi/hapi` (the
+   legacy unscoped `hapi` package name is also recognized, improving on
+   `analyzeBuildTarget.ts`'s `SERVER_DEPENDENCIES`, which only lists the
+   legacy name, without changing that blocker's behavior at all).
+2. **Supporting database/server evidence** -- `@prisma/client`, `prisma`,
+   `pg`, `mysql2`, `mongoose`, or `better-sqlite3`. This dependency alone
+   still creates a candidate (`framework: "unknown"`), but it never claims a
+   specific framework by itself.
+3. **Supporting script/entry evidence** -- a `start` or `dev` script is
+   recorded as evidence text; when that script matches the narrow, safe
+   grammar `(node|nodemon|tsx|ts-node) <relative-path>.{js,mjs,cjs,ts,mts,cts}`
+   with no flags, chaining (`&&`/`;`/`|`), substitution (`` `..` ``/`$()`),
+   absolute path, or `..` traversal, its path becomes `entrypoint`. This
+   value is never verified to exist on GitHub -- it is unread, unexecuted
+   evidence, explicitly labeled "(unverified)" in the UI.
+4. **Weak evidence** -- a conventional directory name (`backend`, `server`,
+   `api`) is recorded as an evidence string only on a candidate that already
+   qualifies through (1) or (2); a directory name alone never creates a
+   candidate, mirroring structure detection's existing "directory name alone
+   is never proof of an application" rule.
+
+A hosted backend client (`@supabase/supabase-js`, `firebase`,
+`aws-amplify`) is evidence of an *external* service, never of a local
+backend server -- it never creates a candidate by itself, and on an
+already-qualifying candidate it is recorded as a warning
+("Hosted backend client detected... this is not local backend server
+evidence"), not as evidence for that candidate's framework.
+
+A package.json that was found but could not be parsed is a read/parse gap,
+not backend evidence, and **never** yields a candidate -- unlike
+`repositoryStructureDetector.ts`'s degraded-candidate treatment of the same
+case for frontend structure, a malformed package.json here must not produce
+"Backend detected, framework: Unrecognized framework" from nothing.
+`detectBackendCandidate` receives `packageJson: null` for both "absent" and
+"malformed" (it cannot and does not need to tell them apart); the caller
+(`BackendCandidateLoader` for a nested candidate, `analyzeRepository.ts` for
+the root) instead records `backendPackageJsonParseWarning(sourceRoot,
+parseError)` in `BackendDetection.warnings` and sets `complete: false`,
+while sibling candidates are still probed and reported normally.
+
+### Root vs. nested backend, and bounded discovery
+
+The repository root's own backend evidence is classified in
+`analyzeRepository.ts` directly from `files`/`packageJson` it already has for
+the rest of analysis -- **zero extra GitHub requests**. Nested candidates
+come only from paths `RepositoryStructure.projects` already discovered (no
+new directory listing, no fresh crawl of any kind) and are probed by a
+separate bounded loader, `core/github/backendCandidateLoader.ts`:
+
+- `MAX_BACKEND_CANDIDATES` = 5 nested candidate paths ever probed;
+- for each, a direct fixed-path fetch of `{path}/package.json`
+  (`GitHubClient.getRepositoryTextFile`, the same fixed operation structure
+  detection itself uses to probe a candidate, never a directory listing);
+- up to two `{path}/.env.*` template names per candidate (`.env.example`
+  first, falling back to `.env.local.example`/`.env.sample`/`.env.template`
+  in that priority order), bounded overall by
+  `MAX_BACKEND_ENV_TEMPLATE_READS` = 10 read attempts across every candidate;
+- `MAX_BACKEND_TOTAL_BYTES` = 512 KB aggregate across every package.json and
+  env-template read for this pass (matching structure detection's own total
+  byte bound, since this probes a comparably small candidate set).
+
+Hitting any bound sets `truncated: true` rather than hiding it -- this is
+tracked entirely separately from a read *failing*, which sets
+`complete: false` instead. A single candidate's package.json request
+failing (not a parse error, an actual request failure) or an env-template
+request failing records a warning naming the failed path (e.g.
+`backend/.env.example could not be inspected: rate limited`) and sets
+`complete: false` for the whole result, but the candidate itself is kept
+(with whatever env evidence it did manage to read) and sibling candidates
+are still probed; only an abort propagates instead of being swallowed. An
+env template that is simply absent (`getRepositoryTextFile` resolving
+`null`, not throwing) is not a failure at all and never touches `complete`.
+`RepositoryAnalysisService` wraps the entire
+nested-backend loader call so that *its* failure (anything but an abort)
+degrades to an "unavailable" `BackendDetection` rather than failing
+repository analysis or disabling Build Preview for the selected frontend
+target -- backend discovery is optional, best-effort evidence, never a
+precondition for the frontend path that already works.
+
+Backend detection is immutable, deterministic per-commit data (unlike Live
+Deployment's mutable state in §15): it lives inside `RepositoryAnalysis`,
+keyed by the same `repositoryId:commitSha:analyzerVersion` cache identity as
+everything else in this document, never by a mutable branch name.
+`ANALYZER_VERSION` bumped `0.1.4` -> `0.1.5` for this addition.
+
+A `BackendCandidate` is never selectable in the Side Panel's target selector
+and never gains a build/run/start control. `core/preview/buildAdapters.ts`'s
+registry is unchanged (`static-html-v1`/`vite-react-npm-v1` only) -- there is
+no `express-v1`/`nestjs-v1`/etc. adapter.
+
+### Environment requirement model
+
+```ts
+type EnvironmentExposure = "client-public" | "server" | "unknown"
+type EnvironmentRequirementKind =
+  | "auto-configurable"
+  | "preview-generated-candidate"
+  | "external-routing-candidate"
+  | "database-requirement"
+  | "user-required"
+  | "unknown"
+type EnvironmentSensitivity = "public" | "secret-like" | "unknown"
+
+interface EnvironmentRequirement {
+  name: string
+  sourceRoot: string
+  sourceTemplate: string
+  exposure: EnvironmentExposure
+  requirementKind: EnvironmentRequirementKind
+  sensitivity: EnvironmentSensitivity
+  evidence: string[]
+  warnings: string[]
+}
+```
+
+`core/analyzer/environmentRequirements.ts` reads only declared variable
+*names* from the same bounded `.env.example`-family templates
+`environmentDetector.ts` already reads (`core/analyzer/envTemplateFiles.ts`
+is now the single shared list so the two detectors cannot drift); it never
+reads a real `.env`/`.env.local`/`.env.production` file and never inspects a
+value. Classification priority: `PORT`/`HOST`/`NODE_ENV` (exact name) ->
+`auto-configurable`; a database-URL-shaped name (`DATABASE_URL`,
+`POSTGRES_URL`, `MYSQL_URL`, `REDIS_URL`, `MONGODB_URI`, ...) ->
+`database-requirement` (this is evidence of a requirement, never a signal
+that Peephole will provision a database -- temporary database support is a
+separate, not-yet-started roadmap stage); an exact match against a narrow
+allowlist (`JWT_SECRET`, `SESSION_SECRET`, `COOKIE_SECRET`, `CSRF_SECRET`) ->
+`preview-generated-candidate` (a *future* ephemeral-secret stage could
+plausibly generate these itself; this stage generates nothing); a broader
+secret-like name pattern (`API_KEY`, `ACCESS_KEY`, `SECRET`, `TOKEN`, `PAT`,
+`PASSWORD`, `PRIVATE_KEY`, `CLIENT_SECRET`) -> `user-required`; an
+API/base-URL-shaped name (`*_API_URL`, `*_API_BASE_URL`, `*_BASE_URL`) ->
+`external-routing-candidate` (evidence of an external service or a future
+routing target -- no URL is generated or rewritten in this stage); anything
+else stays `unknown` rather than asserting false certainty.
+
+`exposure` is `client-public` for a `VITE_`/`NEXT_PUBLIC_`-prefixed name,
+`server` otherwise. **A public prefix never overrides a secret-like name**:
+`VITE_API_TOKEN`/`NEXT_PUBLIC_SECRET`/`VITE_PRIVATE_KEY` are still classified
+`sensitivity: "secret-like"`, and the combination of `client-public` exposure
+with `secret-like` sensitivity adds an explicit warning ("Secret-like
+variable name is exposed through a client-public prefix.") rather than being
+silently trusted as safe because of its prefix.
+
+This is purely additive: `RepositoryAnalysis`/`BuildTargetAnalysis` gain
+`environmentRequirements` alongside the pre-existing `environment` field
+(`templateFound`/`variables`/`publicClientVariables`/`secretLikeVariables`),
+which keeps governing `SECRET_ENV_REQUIRED` exactly as before -- the richer
+model never relaxes that blocker. A repository whose `.env.example` declares
+`MARKETPLACE_PAT` still blocks Build Preview with `SECRET_ENV_REQUIRED`
+after this stage, identically to before. `TARGET_ANALYZER_VERSION` bumped
+`0.1.0` -> `0.1.1` for this addition; `static-v1`/`static-v2`/`BuildPlan` and
+the Preview API/worker/gVisor pipeline are unchanged.
+
+The repository-level `RepositoryAnalysis.environmentRequirements` is the
+union of the root/selected target's own requirements and every detected
+backend candidate's own requirements, each tagged with its `sourceRoot` --
+`frontend/.env.example`'s `VITE_API_URL` and `backend/.env.example`'s `PORT`
+are never merged into one undifferentiated list.
+
+### What is never done
+
+No raw template value is ever returned, logged, or displayed -- only a
+variable's name and its classification. No secret is generated, encrypted,
+or stored. No environment variable is injected into a build. No `.env` file
+is created. No database is provisioned. No API URL is rewritten or routed.
+No backend process is spawned, started, or health-checked. "Backend
+detected" and "environment requirement detected" are display labels, not
+capability claims -- the UI shows a detected backend candidate's Execution
+as "Not supported yet," and never conflates it with "Full-stack preview
+supported."

@@ -311,6 +311,122 @@ Manual unpacked-extension verification:
    section is loading: it shows an isolated "unavailable" message while
    Build Preview and repository analysis remain fully usable.
 
+### Backend Detection + Environment Requirement Analysis
+
+Detection only -- no test in this section may spawn, start, or health-check
+a backend process, generate or inject a secret, or rewrite/route a URL.
+
+Deterministic unit fixtures, not live GitHub requests, cover:
+
+- `core/analyzer/backendDetector.ts` (`tests/backendDetector.test.ts`):
+  Express/NestJS/Fastify/Koa/`@hapi/hapi`/legacy-`hapi` recognized as strong
+  framework evidence; a database dependency (`pg`, et al.) alone creating a
+  candidate without inventing a framework; database evidence preserved
+  alongside a confirmed framework; a hosted backend client
+  (`@supabase/supabase-js`/`firebase`) alone never creating a candidate, and
+  recorded as a warning (not framework evidence) when it coexists with a
+  real framework; a directory with no package.json never confirmed as
+  backend; a frontend-only candidate (react/vite, no backend/database
+  dependency) never mislabeled backend; a `start`/`dev` script recorded as
+  supporting evidence; a safe `node <path>`-style entrypoint resolved only
+  from a narrow grammar, and left null for anything with flags, chaining,
+  substitution, an absolute path, or `..` traversal; a malformed nested
+  package.json degrading to a warning-carrying candidate instead of
+  crashing; conventional directory-name evidence attached only to an
+  already-qualifying candidate; root (`.`) and nested (including
+  multi-segment, e.g. `apps/api`) source roots preserved; deterministic
+  multi-candidate ordering; a candidate's own environment template
+  classified and scoped to its `sourceRoot`;
+- `core/github/backendCandidateLoader.ts`
+  (`tests/backendCandidateLoader.test.ts`): a candidate detected from a
+  fetched package.json; a candidate with no package.json reported
+  not-detected; an env-template read attached to a qualifying candidate;
+  `MAX_BACKEND_CANDIDATES` respected with `truncated: true` beyond it;
+  `MAX_BACKEND_ENV_TEMPLATE_READS` respected across candidates; a
+  package.json read failure marking `complete: false` (not `truncated`)
+  while recording the failure as a warning; a single failed env-template
+  read degrading only that candidate's environment evidence without failing
+  the whole load; an abort propagating instead of being swallowed; every
+  request using a fixed file path, never a directory listing or a wildcard;
+- `core/analyzer/environmentRequirements.ts`
+  (`tests/environmentRequirements.test.ts`): all four known template names
+  parsed; a real `.env`/`.env.local` never read; `export VAR=` syntax;
+  comments/blank lines ignored; duplicate variables deterministic;
+  deterministic name ordering; `PORT`/`HOST`/`NODE_ENV` -> auto-configurable;
+  `JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET` ->
+  preview-generated-candidate; `API_KEY`/`TOKEN`/`PAT`/`CLIENT_SECRET`/
+  `PRIVATE_KEY` -> user-required + secret-like (including
+  `MARKETPLACE_PAT` specifically, to guard the existing portfolio-repository
+  regression); `DATABASE_URL`/`POSTGRES_URL`/`MYSQL_URL`/`REDIS_URL`/
+  `MONGODB_URI` -> database-requirement, never framed as an auto-provisioned
+  database; `VITE_API_URL`/`NEXT_PUBLIC_API_URL` -> client-public
+  external-routing-candidate; `VITE_API_TOKEN`/`NEXT_PUBLIC_SECRET`/
+  `VITE_PRIVATE_KEY` -> client-public **and** secret-like, with the explicit
+  public-prefix-exposes-a-secret warning (never silently trusted as safe);
+  an unrecognized name staying `unknown`/`unknown` rather than a guessed
+  classification; an ordinary public-prefixed name with no other signal
+  classified `public`; no raw template value anywhere in the returned
+  result; every requirement tagged with its given `sourceRoot`; two
+  different source roots never merging into one result; no template present
+  producing an empty result;
+- `analyzeRepository`/`RepositoryAnalysisService` merge and isolation
+  behavior (`tests/analyzeRepository.test.ts`,
+  `tests/repositoryAnalysisService.test.ts`): a root backend detected from
+  already-fetched root data with no nested loader involved; not-detected
+  reported for a root-only frontend; nested candidates from a separately
+  supplied `BackendDetection` merged into `analysis.backend`/
+  `analysis.environmentRequirements`, tagged by source root; a buildable
+  root frontend's `preview.mode` unaffected by nested backend evidence; an
+  incomplete nested backend result not affecting `preview.mode`; root
+  environment variables classified into `environmentRequirements`; the same
+  variable from the root package.json and the root's own backend
+  classification never double-counted; existing `SECRET_ENV_REQUIRED`/
+  `BACKEND_REQUIRED` blocker behavior unchanged by the richer models;
+  `RepositoryAnalysisService` probing only nested (non-root) structure paths
+  for backend evidence; a nested-backend-loader failure not failing
+  repository analysis (`preview.mode` unaffected); an abort from the nested
+  backend loader propagating instead of being masked; the
+  `repositoryId:commitSha:analyzerVersion` cache identity applying to
+  backend/environment data too (a branch resolving to the same commit reuses
+  the cached result without a second backend probe);
+- `RepositoryAnalysisView`'s new "Backend" section and richer "Environment"
+  section (`tests/RepositoryAnalysisView.test.tsx`): "No backend detected"
+  for an empty result; a detected candidate showing its framework, source
+  root, and "Not supported yet" execution status; a backend candidate never
+  appearing as a `preview-target` `<select>` option and no
+  run/start/build-backend control ever rendered; environment requirements
+  grouped and labeled by source root, showing only names and classification
+  labels, never a raw value.
+
+Not covered by the portable suite (network-dependent, environment-gated
+separately): `tests/realFullStackBackendDetection.test.ts`, gated behind
+`PEEPHOLE_REAL_NETWORK_TESTS`, confirms the official
+`The-peephole/peephole-fixture-fullstack` fixture's `backend/` directory is
+detected as Express while its `frontend/` directory is not misdetected as
+backend -- detection only, no execution.
+
+Manual unpacked-extension verification:
+
+1. `The-peephole/peephole-fixture-fullstack`
+   (`eae411a288b212201933cebb206126dd5bb0d93e`): Structure shows `frontend`
+   and `backend` as before (unchanged from stage 5); the new Backend section
+   shows `backend` detected as Express with "Execution: Not supported yet";
+   no backend starts, no port is allocated, no `/api/hello` request is made,
+   and the frontend static preview continues to work exactly as it did
+   before this stage.
+2. A public repository with `.env.example` evidence (e.g. a personal
+   portfolio repository declaring `MARKETPLACE_PAT=`): the Environment
+   section shows `MARKETPLACE_PAT` classified user-required/secret-like;
+   Build Preview remains blocked by `SECRET_ENV_REQUIRED` exactly as before
+   this stage; no PAT is generated, requested, or stored.
+3. A repository with a `PORT`/`JWT_SECRET`/`DATABASE_URL`-style backend
+   `.env.example` and a `VITE_API_URL`-style frontend `.env.example`:
+   confirm the Environment section groups them under `backend`/`.`
+   (or the selected frontend target) separately, with the classifications
+   documented above, and no raw value ever visible.
+4. GitHub Light, Dark, and Dark Dimmed: the new Backend and Environment
+   sections remain readable in each theme.
+
 ### Repository analysis
 
 Use bounded file-map fixtures for:
@@ -436,7 +552,9 @@ Add coverage in the same order as product development:
 6. existing deployed-site Live Preview: deployment evidence hierarchy, bounded
    GitHub Deployments API discovery, URL safety, mutable cache, and
    comparison/navigation policy (implemented)
-7. backend detection evidence and false positives
+7. backend detection evidence and false positives, plus environment
+   requirement classification, bounded discovery, and failure isolation
+   (implemented)
 8. backend process lifecycle and isolation
 9. frontend/backend routing and cross-origin policy
 10. ephemeral secret redaction, scope, and teardown

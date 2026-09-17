@@ -150,7 +150,9 @@ smoke described in [Production smoke verification](docs/PRODUCTION_SMOKE.md).
 | Existing deployment handling | A bounded GitHub Deployments API lookup surfaces a repository's confirmed live deployment (if any) as an external link, separate from its declared homepage; neither is embedded, probed, or proxied |
 | Branch selection | Any branch from a bounded (up to 100) list can be selected; it is resolved to an exact commit SHA before analysis, build plan, and preview job creation |
 | Repository structure detection | Reports layout and bounded project-candidate paths; detected frontend candidates can be explicitly selected and receive a separate exact-SHA target analysis |
-| Not implemented | Shared-root workspace orchestration, full-stack execution/routing, secret injection, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
+| Backend detection | Bounded, read-only evidence (framework, database dependency, unverified entrypoint) for root and nested candidates; detected, never executed, started, or offered as a preview target |
+| Environment requirement analysis | Classifies declared `.env.example`-family variable *names* only (never a value) as auto-configurable/preview-generated/database/external-routing/user-required/unknown; no value is ever generated, injected, or requested |
+| Not implemented | Shared-root workspace orchestration, full-stack execution/routing, secret/env provisioning, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
 
 Analysis support is broader than production execution support. The official
 Vite + React golden path is
@@ -188,15 +190,16 @@ The local preview worker is deliberately unsandboxed and must only build source 
 
 The production static-preview foundation, GitHub theme synchronization,
 Branch Preview, repository/application structure detection, the explicit
-Build Adapter architecture, bounded frontend target selection, and existing
-deployed-site Live Preview are implemented. Nested execution remains limited
-to independently installable React + Vite + npm targets with a target-local
-lockfile.
+Build Adapter architecture, bounded frontend target selection, existing
+deployed-site Live Preview, and backend detection + environment requirement
+analysis are implemented. Nested execution remains limited to independently
+installable React + Vite + npm targets with a target-local lockfile; backend
+candidates are detected, never executed.
 
 4. Build Adapter generalization (implemented)
 5. frontend target selection / bounded frontend monorepo support (implemented)
 6. existing deployed-site Live Preview (implemented)
-7. backend detection
+7. backend detection + environment requirement analysis (implemented)
 8. backend execution
 9. frontend ↔ backend routing
 10. ephemeral env / secrets

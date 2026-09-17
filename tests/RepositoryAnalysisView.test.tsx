@@ -185,6 +185,7 @@ describe("RepositoryAnalysisView", () => {
       packageManager: analysis.packageManager,
       runtime: analysis.runtime,
       environment: analysis.environment,
+      environmentRequirements: analysis.environmentRequirements,
       preview: { ...analysis.preview, contractVersion: "static-v2" },
       inspectedFiles: analysis.inspectedFiles,
       warnings: analysis.warnings,
@@ -267,6 +268,7 @@ describe("RepositoryAnalysisView", () => {
         packageManager: analysis.packageManager,
         runtime: analysis.runtime,
         environment: analysis.environment,
+        environmentRequirements: analysis.environmentRequirements,
         preview: analysis.preview,
         inspectedFiles: analysis.inspectedFiles,
         warnings: analysis.warnings,
@@ -844,6 +846,155 @@ describe("RepositoryAnalysisView", () => {
 
     expect(container.textContent).toContain("https://repo-b.example.com")
     expect(container.textContent).not.toContain("https://repo-a.example.com")
+  })
+
+  it('shows "No backend detected" when no backend evidence exists', async () => {
+    const loader = vi
+      .fn<RepositoryAnalysisLoader>()
+      .mockResolvedValue(supportedAnalysis)
+    const container = await renderView(loader, roots)
+
+    expect(container.textContent).toContain("Backend")
+    expect(container.textContent).toContain("No backend detected.")
+  })
+
+  it("renders a detected backend candidate as detected-but-not-executable", async () => {
+    const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
+      ...supportedAnalysis,
+      backend: {
+        status: "detected",
+        candidates: [
+          {
+            sourceRoot: "backend",
+            framework: "express",
+            runtime: "node",
+            packageName: "backend",
+            entrypoint: "src/server.js",
+            databaseDependencies: [],
+            environmentRequirements: [],
+            evidence: ["express dependency detected"],
+            warnings: [],
+          },
+        ],
+        evidence: ["1 backend candidate detected"],
+        warnings: [],
+        complete: true,
+        truncated: false,
+      },
+    })
+    const container = await renderView(loader, roots)
+
+    expect(container.textContent).toContain("Express")
+    expect(container.textContent).toContain("backend")
+    expect(container.textContent).toContain("Not supported yet")
+    expect(container.textContent).not.toContain("No backend detected.")
+  })
+
+  it("never offers a backend candidate as a selectable or runnable preview target", async () => {
+    const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
+      ...supportedAnalysis,
+      backend: {
+        status: "detected",
+        candidates: [
+          {
+            sourceRoot: "backend",
+            framework: "express",
+            runtime: "node",
+            packageName: null,
+            entrypoint: null,
+            databaseDependencies: [],
+            environmentRequirements: [],
+            evidence: [],
+            warnings: [],
+          },
+        ],
+        evidence: [],
+        warnings: [],
+        complete: true,
+        truncated: false,
+      },
+    })
+    const container = await renderView(loader, roots)
+
+    const select = container.querySelector<HTMLSelectElement>(
+      'select[name="preview-target"]',
+    )
+    const options = Array.from(select?.options ?? []).map(
+      (option) => option.value,
+    )
+    expect(options).not.toContain("backend")
+    expect(container.textContent).not.toContain("Run backend")
+    expect(container.textContent).not.toContain("Start server")
+  })
+
+  it("classifies environment requirements grouped by source root without ever showing a raw value", async () => {
+    const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
+      ...supportedAnalysis,
+      environmentRequirements: [
+        {
+          name: "VITE_API_URL",
+          sourceRoot: ".",
+          sourceTemplate: ".env.example",
+          exposure: "client-public",
+          requirementKind: "external-routing-candidate",
+          sensitivity: "public",
+          evidence: [],
+          warnings: [],
+        },
+      ],
+      backend: {
+        status: "detected",
+        candidates: [
+          {
+            sourceRoot: "backend",
+            framework: "express",
+            runtime: "node",
+            packageName: null,
+            entrypoint: null,
+            databaseDependencies: [],
+            environmentRequirements: [
+              {
+                name: "PORT",
+                sourceRoot: "backend",
+                sourceTemplate: ".env.example",
+                exposure: "server",
+                requirementKind: "auto-configurable",
+                sensitivity: "public",
+                evidence: [],
+                warnings: [],
+              },
+              {
+                name: "JWT_SECRET",
+                sourceRoot: "backend",
+                sourceTemplate: ".env.example",
+                exposure: "server",
+                requirementKind: "preview-generated-candidate",
+                sensitivity: "secret-like",
+                evidence: [],
+                warnings: [],
+              },
+            ],
+            evidence: [],
+            warnings: [],
+          },
+        ],
+        evidence: [],
+        warnings: [],
+        complete: true,
+        truncated: false,
+      },
+    })
+    const container = await renderView(loader, roots)
+
+    expect(container.textContent).toContain("PORT")
+    expect(container.textContent).toContain("Auto-configurable candidate")
+    expect(container.textContent).toContain("JWT_SECRET")
+    expect(container.textContent).toContain(
+      "Preview-generated secret candidate",
+    )
+    expect(container.textContent).toContain("VITE_API_URL")
+    expect(container.textContent).toContain("External/routing requirement")
+    expect(container.textContent).toContain("backend")
   })
 })
 

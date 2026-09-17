@@ -248,6 +248,10 @@ function isRepositoryAnalysis(value: unknown): value is RepositoryAnalysis {
     isObject(value.environment) &&
     isObject(value.deployment) &&
     isObject(value.workspace) &&
+    isObject(value.backend) &&
+    typeof value.backend.status === "string" &&
+    Array.isArray(value.backend.candidates) &&
+    Array.isArray(value.environmentRequirements) &&
     isObject(value.preview) &&
     typeof value.preview.mode === "string" &&
     Array.isArray(value.preview.blockers) &&

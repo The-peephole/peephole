@@ -1,9 +1,4 @@
-const ENV_TEMPLATE_PATHS = new Set([
-  ".env.example",
-  ".env.sample",
-  ".env.template",
-  ".env.local.example",
-])
+import { ENV_TEMPLATE_PATHS } from "./envTemplateFiles"
 
 const SECRET_NAME_PATTERN =
   /(?:^|_)(?:API_KEY|ACCESS_KEY|SECRET|TOKEN|PAT|PASSWORD|PASSWD|PRIVATE_KEY|DATABASE_URL)(?:_|$)/i

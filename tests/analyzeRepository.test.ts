@@ -479,6 +479,161 @@ describe("analyzeRepository", () => {
       )
     },
   )
+
+  it("detects a root backend from already-fetched root data with no nested loader", () => {
+    const analysis = analyzeRepository(
+      repository,
+      snapshot(
+        {
+          "package.json": packageJson({
+            dependencies: { express: "latest" },
+            scripts: { start: "node src/server.js" },
+          }),
+        },
+        [],
+      ),
+    )
+
+    expect(analysis.backend.status).toBe("detected")
+    expect(analysis.backend.candidates).toMatchObject([
+      { sourceRoot: ".", framework: "express" },
+    ])
+  })
+
+  it("reports backend not-detected/complete:false with a parse-error warning for a malformed root package.json only", () => {
+    const analysis = analyzeRepository(
+      repository,
+      snapshot({ "package.json": "{ not valid json" }, []),
+    )
+
+    expect(analysis.backend.status).toBe("not-detected")
+    expect(analysis.backend.candidates).toEqual([])
+    expect(analysis.backend.complete).toBe(false)
+    expect(analysis.backend.warnings.join(" ")).toContain(
+      "package.json could not be parsed",
+    )
+  })
+
+  it("reports not-detected backend for a root-only frontend with no nested loader", () => {
+    const analysis = analyzeRepository(repository, viteSnapshot())
+
+    expect(analysis.backend.status).toBe("not-detected")
+    expect(analysis.backend.candidates).toEqual([])
+  })
+
+  it("merges nested backend candidates from the separate bounded loader", () => {
+    const nestedBackend = {
+      status: "detected" as const,
+      candidates: [
+        {
+          sourceRoot: "backend",
+          framework: "express" as const,
+          runtime: "node" as const,
+          packageName: "backend",
+          entrypoint: "src/server.js",
+          databaseDependencies: [],
+          environmentRequirements: [
+            {
+              name: "PORT",
+              sourceRoot: "backend",
+              sourceTemplate: ".env.example",
+              exposure: "server" as const,
+              requirementKind: "auto-configurable" as const,
+              sensitivity: "public" as const,
+              evidence: [],
+              warnings: [],
+            },
+          ],
+          evidence: ["express dependency detected"],
+          warnings: [],
+        },
+      ],
+      evidence: ["1 backend candidate detected"],
+      warnings: [],
+      complete: true,
+      truncated: false,
+    }
+    const analysis = analyzeRepository(
+      repository,
+      viteSnapshot(),
+      undefined,
+      nestedBackend,
+    )
+
+    expect(analysis.backend.candidates.map((c) => c.sourceRoot)).toEqual([
+      "backend",
+    ])
+    expect(
+      analysis.environmentRequirements.find((r) => r.name === "PORT"),
+    ).toMatchObject({ sourceRoot: "backend" })
+    // A buildable root frontend is unaffected by nested backend evidence.
+    expect(analysis.preview.mode).toBe("native-static-build")
+  })
+
+  it("does not fail repository analysis when nested backend discovery is incomplete", () => {
+    const nestedBackend = {
+      status: "not-detected" as const,
+      candidates: [],
+      evidence: [],
+      warnings: ["backend/package.json could not be inspected: rate limited"],
+      complete: false,
+      truncated: false,
+    }
+    const analysis = analyzeRepository(
+      repository,
+      viteSnapshot(),
+      undefined,
+      nestedBackend,
+    )
+
+    expect(analysis.backend.complete).toBe(false)
+    expect(analysis.preview.mode).toBe("native-static-build")
+  })
+
+  it("classifies root environment variables into environmentRequirements", () => {
+    const analysis = analyzeRepository(
+      repository,
+      viteSnapshot({ ".env.example": "VITE_API_URL=\nPORT=3000\n" }),
+    )
+
+    expect(analysis.environmentRequirements.map((r) => r.name).sort()).toEqual([
+      "PORT",
+      "VITE_API_URL",
+    ])
+    expect(
+      analysis.environmentRequirements.every((r) => r.sourceRoot === "."),
+    ).toBe(true)
+  })
+
+  it("does not duplicate root environment requirements when root is also a backend candidate", () => {
+    const analysis = analyzeRepository(
+      repository,
+      snapshot(
+        {
+          "package.json": packageJson({
+            dependencies: { express: "latest" },
+          }),
+          ".env.example": "PORT=3000\n",
+        },
+        [],
+      ),
+    )
+
+    const portRequirements = analysis.environmentRequirements.filter(
+      (r) => r.name === "PORT",
+    )
+    expect(portRequirements).toHaveLength(1)
+  })
+
+  it("keeps existing SECRET_ENV_REQUIRED/BACKEND_REQUIRED blocker behavior unchanged by the richer models", () => {
+    const analysis = analyzeRepository(
+      repository,
+      viteSnapshot({ ".env.example": "MARKETPLACE_PAT=\n" }),
+    )
+
+    expect(blockerCodes(analysis)).toContain("SECRET_ENV_REQUIRED")
+    expect(analysis.preview.mode).toBe("unsupported")
+  })
 })
 
 function viteSnapshot(

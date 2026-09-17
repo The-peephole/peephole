@@ -9,6 +9,7 @@ import type { PreviewTarget } from "../../types/target"
 import type { RepositoryFileSnapshot } from "../github/knownFiles"
 import { runnerSupportBlocker } from "../preview/runnerSupport"
 import { detectEnvironment } from "./environmentDetector"
+import { detectEnvironmentRequirements } from "./environmentRequirements"
 import { detectFramework } from "./frameworkDetector"
 import { detectPackageManager } from "./packageManagerDetector"
 import { getAllDependencies, parsePackageJson } from "./packageJson"
@@ -61,6 +62,11 @@ export function analyzeBuildTarget(
     files.textFiles,
   )
   const environment = detectEnvironment(files.presentPaths, files.textFiles)
+  const environmentRequirements = detectEnvironmentRequirements(
+    target.sourceRoot,
+    files.presentPaths,
+    files.textFiles,
+  )
   const blockers: PreviewBlocker[] = [...packageManager.blockers]
   const runnerBlocker = runnerSupportBlocker(
     technologies.framework,
@@ -156,6 +162,7 @@ export function analyzeBuildTarget(
     packageManager: packageManager.packageManager,
     runtime,
     environment,
+    environmentRequirements,
     preview: {
       contractVersion,
       mode: uniqueBlockers.length === 0 ? "native-static-build" : "unsupported",

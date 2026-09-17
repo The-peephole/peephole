@@ -146,7 +146,7 @@ changes it:
 4. Build Adapter generalization (implemented)
 5. frontend target selection / bounded frontend monorepo support (implemented)
 6. existing deployed-site Live Preview (implemented)
-7. backend detection
+7. backend detection + environment requirement analysis (implemented)
 8. backend execution
 9. frontend ↔ backend routing
 10. ephemeral env / secrets
@@ -278,6 +278,60 @@ manifest permission or CSP changed (the Deployments API is under the
 already-permitted `api.github.com` host). Live deployment stays a
 repository-level concept; selecting a nested frontend target never implies
 the discovered live deployment belongs to that target.
+
+Backend detection + environment requirement analysis is DETECTION ONLY --
+never execution, never secret provisioning, never routing. It extends the
+existing capability-driven, bounded discovery model rather than adding a
+crawler: `core/analyzer/backendDetector.ts` (pure) classifies one already-
+fetched candidate directory's dependencies into strong framework evidence
+(`express`/`@nestjs/core`/`fastify`/`koa`/`@hapi/hapi`/legacy `hapi`),
+supporting database/server evidence (`@prisma/client`/`prisma`/`pg`/
+`mysql2`/`mongoose`/`better-sqlite3`, never asserted as a specific
+framework by itself), a textually-derived (never network-verified) safe
+`node <path>`-style entrypoint, and weak conventional-directory-name
+evidence -- a directory name or a lone hosted-backend-client dependency
+(`@supabase/supabase-js`/`firebase`/`aws-amplify`) never by itself creates a
+candidate. The repository root's own backend evidence is classified from
+data `analyzeRepository.ts` already has (zero extra requests); nested
+candidates -- taken from `RepositoryStructure.projects`, never a fresh
+directory crawl -- go through the new bounded
+`core/github/backendCandidateLoader.ts`, which probes only
+`{path}/package.json` and up to two `{path}/.env.*` template names per
+candidate via the existing fixed `GitHubClient.getRepositoryTextFile`
+(`MAX_BACKEND_CANDIDATES` = 5 nested candidates, `MAX_BACKEND_ENV_TEMPLATE_READS`
+= 10 total, `MAX_BACKEND_TOTAL_BYTES` = 512 KB aggregate; hitting a bound sets
+`truncated`, a failed read sets `complete: false`). `RepositoryAnalysisService`
+wraps this loader so its failure (anything but an abort) degrades to an
+"unavailable" `BackendDetection` instead of failing repository analysis or
+disabling Build Preview for the selected frontend target -- this mirrors
+Live Preview's failure-isolation policy, but unlike Live Preview this data
+is immutable per commit and lives inside `RepositoryAnalysis.backend`,
+bumping `ANALYZER_VERSION` (`0.1.4` -> `0.1.5`). A `BackendCandidate` is
+never selectable in `TargetSelector` and never gains a build/run control;
+`BuildAdapterId` is unchanged (still only `static-html-v1`/
+`vite-react-npm-v1`).
+
+Environment requirement analysis (`core/analyzer/environmentRequirements.ts`,
+`types/environment.ts`) reads only declared variable *names* from the same
+bounded `.env.example`-family templates `environmentDetector.ts` already
+reads (never a real `.env`/`.env.local`, never a value) and classifies each
+into `exposure` (`client-public`/`server`), `requirementKind`
+(`auto-configurable` -- a narrow `PORT`/`HOST`/`NODE_ENV` allowlist;
+`preview-generated-candidate` -- `JWT_SECRET`/`SESSION_SECRET`/
+`COOKIE_SECRET`/`CSRF_SECRET`; `database-requirement`; `external-routing-candidate`
+-- `*_API_URL`/`*_BASE_URL`; `user-required`; or `unknown`), and `sensitivity`
+(`public`/`secret-like`/`unknown`). None of these kinds are acted on in this
+stage: no value is generated, injected, requested from a user, or sent
+anywhere. A client-public-prefixed name that also reads as secret-like
+(`VITE_API_TOKEN`, `NEXT_PUBLIC_SECRET`) is flagged with an explicit warning
+rather than trusted as safe just because of its prefix. This is additive:
+`BuildTargetAnalysis`/`RepositoryAnalysis` gain `environmentRequirements`
+alongside the existing `environment`/`secretLikeVariables` field, which keeps
+governing `SECRET_ENV_REQUIRED` exactly as before -- richer classification
+never relaxes `SECRET_ENV_REQUIRED` or `BACKEND_REQUIRED` eligibility
+(`MARKETPLACE_PAT` still blocks Build Preview). `TARGET_ANALYZER_VERSION`
+bumps (`0.1.0` -> `0.1.1`) for this additive field; `static-v1`/`static-v2`/
+`BuildPlan` and the Preview API/worker/gVisor pipeline are untouched.
 
 ## Fixture Registry
 

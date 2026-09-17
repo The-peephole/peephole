@@ -187,6 +187,7 @@ function isResponse(value: unknown): value is BuildTargetAnalysisResponse {
       isPreviewTarget(value.analysis.target) &&
       isObject(value.analysis.technologies) &&
       isObject(value.analysis.runtime) &&
+      Array.isArray(value.analysis.environmentRequirements) &&
       isObject(value.analysis.preview) &&
       Array.isArray(value.analysis.preview.blockers) &&
       Array.isArray(value.analysis.inspectedFiles)
