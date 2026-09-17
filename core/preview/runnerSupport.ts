@@ -3,16 +3,19 @@ import type {
   PackageManager,
   PreviewBlocker,
 } from "../../types/analysis"
+import { isBuildAdapterAvailable } from "./buildAdapters"
 
 /** One release capability table shared by analysis, the UI, and the API. */
 export function isImplementedRunnerTarget(
   framework: Framework,
   packageManager: PackageManager,
+  presentPaths: readonly string[],
 ): boolean {
-  return (
-    (framework === "static" && packageManager === "none") ||
-    (framework === "react-vite" && packageManager === "npm")
-  )
+  return isBuildAdapterAvailable({
+    technologies: { framework },
+    packageManager,
+    inspectedFiles: presentPaths,
+  })
 }
 
 export function runnerSupportBlocker(
@@ -20,26 +23,41 @@ export function runnerSupportBlocker(
   packageManager: PackageManager,
   presentPaths: readonly string[],
 ): PreviewBlocker | null {
-  if (framework === "vue-vite" || framework === "svelte-vite") {
+  const implemented = isImplementedRunnerTarget(
+    framework,
+    packageManager,
+    presentPaths,
+  )
+
+  if (
+    !implemented &&
+    (framework === "vue-vite" || framework === "svelte-vite")
+  ) {
     return {
       code: "RUNNER_TARGET_UNAVAILABLE",
       message:
         "This Vite framework is recognized, but preview builds currently support React with npm only.",
     }
   }
-  if (framework === "react-vite" && packageManager !== "unknown") {
-    if (!isImplementedRunnerTarget(framework, packageManager)) {
-      return {
-        code: "RUNNER_TARGET_UNAVAILABLE",
-        message: `The ${packageManager} package manager is recognized, but preview builds currently require npm.`,
-      }
-    }
-    if (!presentPaths.includes("package-lock.json")) {
+  if (
+    !implemented &&
+    framework === "react-vite" &&
+    packageManager !== "unknown"
+  ) {
+    if (
+      packageManager === "npm" &&
+      !presentPaths.includes("package-lock.json")
+    ) {
       return {
         code: "RUNNER_TARGET_UNAVAILABLE",
         message:
           "Preview builds currently require a root package-lock.json file for npm ci.",
       }
+    }
+
+    return {
+      code: "RUNNER_TARGET_UNAVAILABLE",
+      message: `The ${packageManager} package manager is recognized, but preview builds currently require npm.`,
     }
   }
   return null

@@ -7,7 +7,7 @@ import type {
   PreviewJobStatus,
   PreviewRepositoryRef,
 } from "../../types/preview"
-import { validateBuildPlan } from "./buildPlan"
+import { validateBuildPlan } from "./buildAdapters"
 import type { StoredPreviewSession } from "./sessionStorage"
 
 const JOB_ID_PATTERN = /^[a-z\d-]{8,64}$/i

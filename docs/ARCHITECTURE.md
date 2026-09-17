@@ -141,12 +141,30 @@ Current behavior:
 1. normalized HTTP(S) repository-homepage metadata produces
    `existing-deployment` and an external link;
 2. otherwise a native static build is offered only when the implemented runner
-   target and compatibility contract both match;
+   target resolves to exactly one registered Build Adapter and its
+   compatibility contract matches;
 3. otherwise the UI shows analysis and blockers only.
 
 The `existing-deployment` label does not currently mean that Peephole checked
 reachability or framing policy. Embedded deployed-site Live Preview is a future
 roadmap stage.
+
+### Build Adapter boundary
+
+`core/preview/buildAdapters.ts` owns the production build-capability source of
+truth. `BuildAdapterResolver` evaluates the explicit in-repository registry:
+
+- no matches means unsupported;
+- exactly one match creates and validates a deterministic `BuildPlan`;
+- multiple matches fail explicitly as an adapter configuration error.
+
+The registered adapters are `static-html-v1` and `vite-react-npm-v1`. Common
+validation checks the wire shape, repository identity, full commit SHA,
+root-only source, and safe output path. Each adapter checks its exact package
+manager, install/build commands, and output semantics. The adapter id is not
+serialized: the complete executable plan already identifies execution
+semantics, and client and server independently resolve the same analysis.
+Generalizing this architecture does not generalize runner capability.
 
 StackBlitz is not a preview mode.
 
@@ -156,7 +174,7 @@ The control plane exposes asynchronous, idempotent preview jobs. It:
 
 - authenticates the Peephole client when needed,
 - resolves repository id and commit SHA,
-- revalidates the submitted build plan,
+- independently reanalyzes the exact commit and reconstructs the build plan,
 - returns a cached artifact when the cache key matches,
 - queues a new job otherwise,
 - exposes status, cancellation, expiry, and result metadata,
@@ -177,7 +195,8 @@ The production runner performs a static build:
 1. create a fresh isolated job sandbox,
 2. download a public repository archive at the exact commit SHA,
 3. verify size and file-count limits,
-4. install dependencies using the selected lock file and frozen mode,
+4. install dependencies when the plan requires it, using the selected lock
+   file and frozen mode,
 5. run the approved build command,
 6. validate the configured output directory,
 7. publish static artifacts,
@@ -258,7 +277,7 @@ entrypoints/sidepanel/         full analysis and preview surface
 components/                    presentation components
 core/github/                   GitHub data client and bounded known files
 core/analyzer/                 evidence detectors and eligibility inputs
-core/preview/                  runner gate, build plan, API/auth clients
+core/preview/                  Build Adapter registry, build plan, API/auth clients
 services/preview-api/          control plane and PostgreSQL adapters
 services/preview-worker/local/ unsandboxed trusted-source development adapters
 services/preview-worker/gvisor/ production sandbox/network/disk adapters
@@ -270,14 +289,13 @@ Deployable service boundaries may live in separate repositories later. Their con
 
 ## 13. Planned Architecture Expansion
 
-GitHub theme synchronization, Branch Preview, and repository/application
-structure detection are implemented. The remaining ordered expansion is
-Build Adapter generalization, frontend target selection and monorepo
-support, existing deployed-site Live Preview, backend detection, backend
-execution, frontend ↔ backend routing, ephemeral environment/secrets, and
-temporary databases.
+GitHub theme synchronization, Branch Preview, repository/application structure
+detection, and Build Adapter generalization are implemented. The remaining
+ordered expansion is frontend target selection and monorepo support, existing
+deployed-site Live Preview, backend detection, backend execution, frontend ↔
+backend routing, ephemeral environment/secrets, and temporary databases.
 
-Build Adapter generalization must preserve the worker ports and must not add
+The generalized Build Adapter boundary preserves the worker ports and adds no
 fixture-specific production branches. Backend execution requires a separate
 reviewed runtime/lifecycle contract rather than keeping the static build
 sandbox alive.

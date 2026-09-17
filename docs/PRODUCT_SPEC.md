@@ -25,9 +25,10 @@ Collect bounded evidence and decide eligibility before starting a build.
 ### 5.2 Safe fast path
 
 Offer Peephole's isolated static builder only when the implemented runner
-target and compatibility contract are both satisfied. A normalized repository
-homepage may be shown as an external link, but it is not treated as an
-availability-checked or embedded Live Preview.
+target resolves to exactly one registered Build Adapter and its compatibility
+contract is satisfied. A normalized repository homepage may be shown as an
+external link, but it is not treated as an availability-checked or embedded
+Live Preview.
 
 ### 5.3 Evidence over confidence theater
 
@@ -54,8 +55,8 @@ Popularity, stars, and GitHub visibility do not reduce the runtime threat model.
 5. Bounded static analysis reports framework, package manager, commands, environment declarations, deployment evidence, repository structure, and blockers.
 6. If normalized repository-homepage metadata exists, Peephole exposes an
    **Open site** link in a new tab; it does not probe or embed that deployment.
-7. If the native static contract and current runner target match, the user
-   starts an isolated preview job.
+7. If the native static contract resolves to exactly one current Build Adapter,
+   the user starts an isolated preview job.
 8. The panel shows job phases and then the static artifact from a dedicated
    origin.
 9. If unsupported or failed, the panel shows a specific reason and never
@@ -170,7 +171,7 @@ silently guessing how a repository should run.
 1. GitHub theme synchronization (implemented)
 2. Branch Preview (implemented)
 3. Repository / application structure detection (implemented)
-4. Build Adapter generalization
+4. Build Adapter generalization (implemented)
 5. frontend target selection / frontend monorepo support
 6. existing deployed-site Live Preview
 7. backend detection
@@ -181,3 +182,7 @@ silently guessing how a repository should run.
 
 Stages 7-11 describe future full-stack work. They must not be inferred from the
 prepared full-stack fixture or documented as current capability.
+
+Build Adapter generalization is an internal capability boundary, not a product
+support expansion. The implemented adapters still cover only package-free root
+static HTML and root React + Vite + npm. No nested candidate is selected.

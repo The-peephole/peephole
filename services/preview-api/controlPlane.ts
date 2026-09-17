@@ -8,10 +8,10 @@ import type {
   PreviewRequester,
   PreviewRepositoryRef,
 } from "../../types/preview"
+import { validateBuildPlan } from "../../core/preview/buildAdapters"
 import {
   InvalidBuildPlanError,
   createBuildCacheKey,
-  validateBuildPlan,
   validateRepositoryRef,
 } from "../../core/preview/buildPlan"
 import { PreviewControlError } from "./errors"

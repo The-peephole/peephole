@@ -74,7 +74,10 @@ deployed-site Live Preview.
 - `core/github/` resolves public repository metadata and bounded known files.
 - `core/analyzer/` produces evidence, warnings, and blockers without executing
   repository code.
-- `core/preview/runnerSupport.ts` is the current execution-capability gate.
+- `core/preview/buildAdapters.ts` is the execution-capability source of truth:
+  a typed registry resolves exactly one adapter or no adapter, and rejects
+  overlapping matches. `runnerSupport.ts` only maps that shared capability
+  result into analyzer blockers.
 - The client proposes a versioned build contract; the server independently
   verifies repository identity, the exact commit, analysis, and build plan.
 - Branch names are not immutable job or cache identities. Branch Preview must
@@ -138,7 +141,7 @@ changes it:
 1. GitHub theme synchronization (implemented)
 2. Branch Preview (implemented)
 3. Repository / application structure detection (implemented)
-4. Build Adapter generalization
+4. Build Adapter generalization (implemented)
 5. frontend target selection / frontend monorepo support
 6. existing deployed-site Live Preview
 7. backend detection
@@ -225,6 +228,19 @@ to the separate Build Adapter/target-selection stage. Detecting
 change the existing `AMBIGUOUS_WORKSPACE`/`UNSUPPORTED_FRAMEWORK` blockers or
 make any nested candidate buildable; the Preview API/worker contract still
 receives only a resolved root commit SHA.
+
+Build Adapter generalization adds the explicit `BuildAdapter` registry and
+`BuildAdapterResolver` in `core/preview/buildAdapters.ts`. The only registered
+adapters are `static-html-v1` and `vite-react-npm-v1`; zero matches is
+unsupported and multiple matches are a configuration/programmer error rather
+than first-match dispatch. Shape/security validation remains separate from
+adapter-owned command and output invariants. Both client planning and
+`GitHubPreviewPlanResolver` derive a plan from the registry, while the server
+still fetches and analyzes the requested exact commit independently. The
+worker pipeline, gVisor boundary, `BuildPlan` wire shape, root-only
+`sourceRoot: "."`, cache-key inputs, analyzer version, preview contract
+version, and runner version are unchanged. This architecture generalization
+does not add Vue/Svelte, pnpm/yarn/bun, nested targets, monorepos, or backends.
 
 ## Fixture Registry
 

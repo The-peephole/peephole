@@ -186,10 +186,12 @@ The local preview worker is deliberately unsandboxed and must only build source 
 ## Project status
 
 The production static-preview foundation, GitHub theme synchronization,
-Branch Preview, and repository/application structure detection are
-implemented. Product expansion continues in this order:
+Branch Preview, repository/application structure detection, and the explicit
+Build Adapter architecture are implemented. Build Adapter generalization
+preserves the deliberately narrow runner capability; it does not add framework
+or package-manager support. Product expansion continues in this order:
 
-4. Build Adapter generalization
+4. Build Adapter generalization (implemented)
 5. frontend target selection / frontend monorepo support
 6. existing deployed-site Live Preview
 7. backend detection
