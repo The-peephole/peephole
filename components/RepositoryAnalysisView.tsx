@@ -11,11 +11,13 @@ import type {
   RepositoryAnalysis,
   RepositoryAnalysisLoader,
 } from "../types/analysis"
+import type { BackendDetection } from "../types/backend"
 import type {
   LiveDeploymentCandidate,
   RepositoryLiveDeployment,
   RepositoryLiveDeploymentLoader,
 } from "../types/deployment"
+import type { EnvironmentRequirement } from "../types/environment"
 import type {
   RepositoryBranchList,
   RepositoryBranchesLoader,
@@ -527,20 +529,29 @@ function AnalysisResults({
             )}
           </section>
 
+          <BackendSection backend={analysis.backend} />
+
           <section className="peephole__section">
             <h3>Environment</h3>
-            {targetAnalysis.environment.variables.length > 0 ? (
-              <ul
-                aria-label="Environment variables"
-                className="peephole__chips"
-              >
-                {targetAnalysis.environment.variables.map((variable) => (
-                  <li key={variable}>{variable}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="peephole__muted">No template variables detected.</p>
-            )}
+            <EnvironmentRequirementGroup
+              requirements={targetAnalysis.environmentRequirements}
+              sourceRoot={targetAnalysis.target.sourceRoot}
+            />
+            {analysis.backend.candidates.map((candidate) => (
+              <EnvironmentRequirementGroup
+                key={candidate.sourceRoot}
+                requirements={candidate.environmentRequirements}
+                sourceRoot={candidate.sourceRoot}
+              />
+            ))}
+            {targetAnalysis.environmentRequirements.length === 0 &&
+              analysis.backend.candidates.every(
+                (candidate) => candidate.environmentRequirements.length === 0,
+              ) && (
+                <p className="peephole__muted">
+                  No template variables detected.
+                </p>
+              )}
           </section>
 
           {targetAnalysis.preview.blockers.length > 0 && (
@@ -621,6 +632,156 @@ function TargetSelector({
       </p>
     </section>
   )
+}
+
+/**
+ * Detection only, never execution: no build/run/start control is ever
+ * offered here, and a backend candidate is never selectable as a preview
+ * target (see `TargetSelector`, which only lists structure `project-candidate`
+ * entries).
+ */
+function BackendSection({ backend }: { backend: BackendDetection }) {
+  return (
+    <section className="peephole__section">
+      <h3>Backend</h3>
+      {backend.candidates.length === 0 ? (
+        <p className="peephole__muted">No backend detected.</p>
+      ) : (
+        <ul aria-label="Detected backend candidates" className="peephole__list">
+          {backend.candidates.map((candidate) => (
+            <li key={candidate.sourceRoot}>
+              <dl className="peephole__facts">
+                <Detail
+                  label="Source"
+                  value={
+                    candidate.sourceRoot === "."
+                      ? "Repository root"
+                      : candidate.sourceRoot
+                  }
+                />
+                <Detail
+                  label="Framework"
+                  value={formatBackendFramework(candidate.framework)}
+                />
+                <Detail label="Runtime" value="Node.js" />
+                <Detail label="Execution" value="Not supported yet" />
+              </dl>
+              {candidate.evidence.length > 0 && (
+                <ul className="peephole__list">
+                  {candidate.evidence.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              )}
+              {candidate.warnings.length > 0 && (
+                <ul className="peephole__list">
+                  {candidate.warnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {backend.warnings.length > 0 && (
+        <p className="peephole__muted">{backend.warnings.join(" ")}</p>
+      )}
+      {(backend.truncated || !backend.complete) && (
+        <p className="peephole__muted">
+          {!backend.complete && "Backend discovery is incomplete. "}
+          {backend.truncated &&
+            "Additional backend candidates may exist beyond Peephole's bounded scan."}
+        </p>
+      )}
+    </section>
+  )
+}
+
+function formatBackendFramework(
+  framework: BackendDetection["candidates"][number]["framework"],
+): string {
+  return (
+    {
+      express: "Express",
+      nestjs: "NestJS",
+      fastify: "Fastify",
+      koa: "Koa",
+      hapi: "Hapi",
+      unknown: "Unrecognized framework",
+    } satisfies Record<
+      BackendDetection["candidates"][number]["framework"],
+      string
+    >
+  )[framework]
+}
+
+/**
+ * Renders one source root's environment requirement classifications.
+ * Detection only: only variable *names* and their classification are ever
+ * shown, never a value from the underlying template file.
+ */
+function EnvironmentRequirementGroup({
+  requirements,
+  sourceRoot,
+}: {
+  requirements: EnvironmentRequirement[]
+  sourceRoot: string
+}) {
+  if (requirements.length === 0) return null
+
+  return (
+    <div>
+      <p className="peephole__branch-label">
+        {sourceRoot === "." ? "Repository root" : sourceRoot}
+      </p>
+      <dl className="peephole__facts">
+        {requirements.map((requirement) => (
+          <Detail
+            key={requirement.name}
+            label={requirement.name}
+            value={formatEnvironmentRequirement(requirement)}
+          />
+        ))}
+      </dl>
+      {requirements.some((requirement) => requirement.warnings.length > 0) && (
+        <ul className="peephole__list">
+          {requirements.flatMap((requirement) =>
+            requirement.warnings.map((warning) => (
+              <li key={`${requirement.name}:${warning}`}>{warning}</li>
+            )),
+          )}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function formatEnvironmentRequirement(
+  requirement: EnvironmentRequirement,
+): string {
+  const label = {
+    "auto-configurable": "Auto-configurable candidate",
+    "preview-generated-candidate": "Preview-generated secret candidate",
+    "external-routing-candidate": "External/routing requirement",
+    "database-requirement": "User/database requirement",
+    "user-required": "User-required",
+    unknown: "Unknown",
+  }[requirement.requirementKind]
+  // Only add the sensitivity suffix when the label itself does not already
+  // say so (preview-generated/database requirements are secret-like by
+  // definition).
+  const showsSensitivitySeparately =
+    requirement.requirementKind === "user-required" ||
+    requirement.requirementKind === "unknown"
+  const sensitivitySuffix =
+    showsSensitivitySeparately && requirement.sensitivity === "secret-like"
+      ? " (secret-like)"
+      : ""
+  const exposurePrefix =
+    requirement.exposure === "client-public" ? "Client-public " : ""
+
+  return `${exposurePrefix}${label}${sensitivitySuffix}`
 }
 
 function PreviewStatus({ mode }: { mode: PreviewMode }) {

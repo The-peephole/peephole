@@ -13,7 +13,7 @@ later full-stack roadmap.
 4. [x] Build Adapter generalization
 5. [x] frontend target selection / bounded frontend monorepo support
 6. [x] existing deployed-site Live Preview
-7. [ ] backend detection
+7. [x] backend detection + environment requirement analysis
 8. [ ] backend execution
 9. [ ] frontend ↔ backend routing
 10. [ ] ephemeral env / secrets
@@ -260,6 +260,75 @@ target. It is not evidence that any of stages 7-11 are implemented.
 - [x] Keep live deployment a repository-level concept: selecting a nested
       frontend target never implies the discovered live deployment belongs
       to that target
+
+## Backend Detection + Environment Requirement Analysis
+
+- [x] Detection only: no backend process is ever spawned, started, or
+      proxied; no secret is generated, injected, or requested from a user;
+      no frontend/backend routing was added
+- [x] Add `BackendDetection`/`BackendCandidate` (`types/backend.ts`) and a
+      pure classifier (`core/analyzer/backendDetector.ts`): strong framework
+      evidence (`express`, `@nestjs/core`, `fastify`, `koa`, `@hapi/hapi`,
+      and the legacy `hapi` package name -- an improvement over
+      `analyzeBuildTarget.ts`'s `SERVER_DEPENDENCIES`, which recognizes only
+      the legacy name, without changing that blocker's behavior), supporting
+      database/server dependency evidence
+      (`@prisma/client`/`prisma`/`pg`/`mysql2`/`mongoose`/`better-sqlite3`,
+      never asserted as a specific framework by itself), a textually-derived
+      (never network-verified) safe `node <path>`-style entrypoint from a
+      narrow start/dev script grammar, and weak conventional-directory-name
+      evidence attached only to an already-qualifying candidate. A
+      directory name alone, or a lone hosted-backend-client dependency
+      (`@supabase/supabase-js`/`firebase`/`aws-amplify`), never by itself
+      creates a candidate; a malformed-but-present package.json degrades to
+      a warning-carrying candidate rather than crashing, mirroring
+      `repositoryStructureDetector.ts`'s existing treatment of the same case
+- [x] Classify the repository root's own backend evidence from data
+      `analyzeRepository.ts` already has -- zero extra GitHub requests
+- [x] Add a bounded loader for nested candidates
+      (`core/github/backendCandidateLoader.ts`) operating only on paths
+      `RepositoryStructure.projects` already discovered (no new directory
+      listing, no fresh crawl): direct fixed-path fetches of
+      `{path}/package.json` and up to two `{path}/.env.*` template names via
+      the existing `GitHubClient.getRepositoryTextFile`, bounded by
+      `MAX_BACKEND_CANDIDATES` (5 nested candidates),
+      `MAX_BACKEND_ENV_TEMPLATE_READS` (10 total), and
+      `MAX_BACKEND_TOTAL_BYTES` (512 KB aggregate); hitting a bound sets
+      `truncated`, a failed read sets `complete: false` without crashing,
+      and only an abort propagates
+- [x] Wire `RepositoryAnalysisService` to probe nested candidates and
+      degrade a backend-loader failure (anything but an abort) to an
+      "unavailable" `BackendDetection` instead of failing repository
+      analysis or disabling Build Preview for the selected frontend target
+- [x] Add `EnvironmentRequirement` (`types/environment.ts`) and a pure
+      classifier (`core/analyzer/environmentRequirements.ts`) that reads
+      only declared variable *names* from the same bounded
+      `.env.example`-family templates `environmentDetector.ts` already
+      reads (never a real `.env`/`.env.local`, never a value) and
+      classifies each into `exposure` (client-public/server),
+      `requirementKind` (auto-configurable -- a narrow
+      `PORT`/`HOST`/`NODE_ENV` allowlist; preview-generated-candidate --
+      `JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`;
+      database-requirement; external-routing-candidate --
+      `*_API_URL`/`*_BASE_URL`; user-required; or unknown), and
+      `sensitivity` (public/secret-like/unknown); a client-public-prefixed
+      name that also reads as secret-like (`VITE_API_TOKEN`,
+      `NEXT_PUBLIC_SECRET`) is flagged with an explicit warning instead of
+      trusted as safe by its prefix
+- [x] Add `environmentRequirements` to `RepositoryAnalysis`/
+      `BuildTargetAnalysis` alongside the existing `environment` field,
+      which keeps governing `SECRET_ENV_REQUIRED` unchanged; confirm
+      `MARKETPLACE_PAT`-style repositories still block Build Preview exactly
+      as before
+- [x] Bump `ANALYZER_VERSION` (`0.1.4` -> `0.1.5`) and
+      `TARGET_ANALYZER_VERSION` (`0.1.0` -> `0.1.1`) for these additive
+      fields; `static-v1`/`static-v2`/`BuildPlan` and the Preview
+      API/worker/gVisor pipeline are unchanged
+- [x] Add a read-only "Backend" section and richer per-source-root
+      "Environment" section to `RepositoryAnalysisView.tsx`: a backend
+      candidate is never selectable in `TargetSelector` and never gains a
+      build/run control; only variable names and their classification are
+      ever shown, never a raw template value
 
 ## Analyzer
 

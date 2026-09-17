@@ -92,7 +92,7 @@ because a fixture or interface for it exists.
 4. [x] Build Adapter generalization
 5. [x] frontend target selection / bounded frontend monorepo support
 6. [x] existing deployed-site Live Preview
-7. [ ] backend detection
+7. [x] backend detection + environment requirement analysis
 8. [ ] backend execution
 9. [ ] frontend ↔ backend routing
 10. [ ] ephemeral env / secrets
@@ -180,6 +180,29 @@ pre-existing homepage link, and no manifest permission or CSP changed (the
 Deployments API is under the already-permitted `api.github.com` host). Live
 deployment stays a repository-level concept -- selecting a nested frontend
 target never implies the discovered live deployment belongs to that target.
+
+Backend detection + environment requirement analysis is detection only, never
+execution or provisioning. `RepositoryAnalysis.backend` reports bounded,
+evidence-graded candidates (Express/NestJS/Fastify/Koa/Hapi, database/server
+dependencies as supporting evidence only, a textually-derived and
+network-unverified entrypoint, weak directory-name evidence) for the
+repository root (classified from data already fetched, zero extra requests)
+and a bounded set of nested candidates from the already-discovered
+`RepositoryStructure.projects` (`MAX_BACKEND_CANDIDATES` = 5, fetched via
+fixed `package.json`/`.env.*` reads, never a directory listing or a fresh
+crawl). A hosted-backend-client dependency (Supabase/Firebase/AWS Amplify)
+alone never creates a candidate. `RepositoryAnalysis.environmentRequirements`
+classifies declared `.env.example`-family variable names (never values) as
+auto-configurable, preview-generated-secret-candidate,
+database-requirement, external-routing-candidate, user-required, or
+unknown -- none of these are acted on: no secret is generated, no value is
+injected, no routing is rewritten. A backend discovery failure degrades to
+an "unavailable" result instead of failing repository analysis or Build
+Preview, and none of this relaxes `SECRET_ENV_REQUIRED`/`BACKEND_REQUIRED`
+eligibility (a repository like this one's own portfolio fixture with
+`MARKETPLACE_PAT` still blocks Build Preview exactly as before). A backend
+candidate is never selectable as a preview target and no new Build Adapter
+was added.
 
 The early stages establish repository selection and generalized build contracts
 before full-stack execution is considered. Backend execution requires a new

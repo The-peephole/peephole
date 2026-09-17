@@ -124,6 +124,18 @@ as the rest of analysis. A candidate is labeled `project-candidate`,
 library without supporting evidence, and detecting a candidate does not
 select or build it -- that remains a later, separate roadmap stage.
 
+Backend detection and environment requirement analysis extend this with
+`RepositoryAnalysis.backend`/`environmentRequirements` -- bounded,
+evidence-graded, detection-only additions with no execution or provisioning
+behavior. The repository root's backend evidence comes from data already
+fetched for the rest of analysis; a bounded set of nested candidates (from
+paths structure detection already found, never a fresh crawl) is probed
+independently and its failure never fails the rest of analysis. Environment
+requirement classification reads only declared variable names from the same
+bounded templates the existing environment detector reads, and never
+generates, injects, or stores a value. See
+[Repository analysis §16](REPOSITORY_ANALYSIS.md#16-backend-detection--environment-requirement-analysis-detection-only).
+
 See [Repository analysis](REPOSITORY_ANALYSIS.md).
 
 ## 5. Preview Eligibility
@@ -316,17 +328,21 @@ Deployable service boundaries may live in separate repositories later. Their con
 
 GitHub theme synchronization, Branch Preview, repository/application structure
 detection, Build Adapter generalization, bounded frontend target selection,
-and existing deployed-site Live Preview are implemented. A selected nested
-target is reanalyzed at the exact commit, authorized again by the server, and
-executed with target-local npm install, build, and output roots. Shared-root
-workspace orchestration remains outside this contract. Live Preview surfaces
-a repository's current confirmed GitHub deployment as a plain external link
+existing deployed-site Live Preview, and backend detection + environment
+requirement analysis are implemented. A selected nested target is reanalyzed
+at the exact commit, authorized again by the server, and executed with
+target-local npm install, build, and output roots. Shared-root workspace
+orchestration remains outside this contract. Live Preview surfaces a
+repository's current confirmed GitHub deployment as a plain external link
 next to Build Preview (no embedded iframe, no server-side fetch of the
-deployment URL); it does not change the build contract. The remaining
-expansion starts with backend detection and execution, then routing, secrets,
-and databases.
+deployment URL); it does not change the build contract. Backend detection
+reports bounded, evidence-graded read-only candidates and environment
+requirement classifications; neither executes anything, provisions anything,
+or changes the build contract. The remaining expansion starts with backend
+execution, then routing, ephemeral secrets, and databases.
 
 The generalized Build Adapter boundary preserves the worker ports and adds no
-fixture-specific production branches. Backend execution requires a separate
-reviewed runtime/lifecycle contract rather than keeping the static build
-sandbox alive.
+fixture-specific production branches; it is unchanged by backend detection
+(still only `static-html-v1`/`vite-react-npm-v1`, no `express-v1`/`nestjs-v1`/
+etc.). Backend execution requires a separate reviewed runtime/lifecycle
+contract rather than keeping the static build sandbox alive.

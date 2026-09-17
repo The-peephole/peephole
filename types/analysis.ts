@@ -1,9 +1,11 @@
+import type { BackendDetection } from "./backend"
+import type { EnvironmentRequirement } from "./environment"
 import type { RepositoryMetadata, RepositoryRevisionTarget } from "./repository"
 import type { RepositoryStructure } from "./structure"
 import type { PreviewTarget } from "./target"
 
-export const ANALYZER_VERSION = "0.1.4"
-export const TARGET_ANALYZER_VERSION = "0.1.0"
+export const ANALYZER_VERSION = "0.1.5"
+export const TARGET_ANALYZER_VERSION = "0.1.1"
 export const LEGACY_PREVIEW_CONTRACT_VERSION = "static-v1"
 export const PREVIEW_CONTRACT_VERSION = "static-v2"
 
@@ -83,6 +85,20 @@ export interface RepositoryAnalysis {
     evidence: string[]
   }
   structure: RepositoryStructure
+  /**
+   * Detection only -- never execution. See `types/backend.ts`. The root is
+   * classified from data already fetched for the rest of this analysis;
+   * nested candidates come from a separate bounded loader
+   * (`core/github/backendCandidateLoader.ts`) and never fail this analysis
+   * as a whole on their own.
+   */
+  backend: BackendDetection
+  /**
+   * Union of the root/selected target's environment requirements and every
+   * detected backend candidate's own, each tagged with its source root.
+   * Detection only -- see `types/environment.ts`.
+   */
+  environmentRequirements: EnvironmentRequirement[]
   preview: {
     contractVersion: string
     mode: PreviewMode
@@ -113,6 +129,7 @@ export type BuildTargetAnalysis = Pick<
   | "packageManager"
   | "runtime"
   | "environment"
+  | "environmentRequirements"
   | "preview"
   | "inspectedFiles"
   | "warnings"

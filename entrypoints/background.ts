@@ -3,6 +3,7 @@ import { RepositoryAnalysisService } from "../core/analyzer/repositoryAnalysisSe
 import { BuildTargetAnalysisService } from "../core/analyzer/buildTargetAnalysisService"
 import { createBuildTargetAnalysisMessageHandler } from "../core/analyzer/targetMessages"
 import { GitHubClient } from "../core/github/client"
+import { BackendCandidateLoader } from "../core/github/backendCandidateLoader"
 import { createRepositoryBranchesMessageHandler } from "../core/github/branchMessages"
 import { KnownRepositoryFilesLoader } from "../core/github/knownFiles"
 import { RepositoryLiveDeploymentCache } from "../core/github/liveDeploymentCache"
@@ -24,6 +25,7 @@ export default defineBackground(() => {
     metadataCache.load,
     new KnownRepositoryFilesLoader(githubClient),
     new RepositoryStructureLoader(githubClient),
+    new BackendCandidateLoader(githubClient),
   )
   const targetAnalysisService = new BuildTargetAnalysisService(
     new TargetKnownFilesLoader(githubClient),

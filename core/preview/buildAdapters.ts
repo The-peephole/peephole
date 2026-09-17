@@ -270,6 +270,7 @@ export function toRootBuildTargetAnalysis(
     packageManager: analysis.packageManager,
     runtime: analysis.runtime,
     environment: analysis.environment,
+    environmentRequirements: analysis.environmentRequirements,
     preview: analysis.preview,
     inspectedFiles: analysis.inspectedFiles,
     warnings: analysis.warnings,

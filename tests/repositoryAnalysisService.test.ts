@@ -42,6 +42,15 @@ const structure: RepositoryStructure = {
   truncated: false,
 }
 
+const notDetectedBackend = {
+  status: "not-detected" as const,
+  candidates: [],
+  evidence: [],
+  warnings: [],
+  complete: true,
+  truncated: false,
+}
+
 const repository = { owner: "acme", repo: "web" }
 const target = { repository, ref: DEFAULT_REPOSITORY_REF }
 const branchTarget = {
@@ -57,6 +66,7 @@ describe("RepositoryAnalysisService", () => {
       loadMetadata,
       { load: loadFiles },
       { load: vi.fn().mockResolvedValue(structure) },
+      { load: vi.fn().mockResolvedValue(notDetectedBackend) },
     )
 
     const first = await service.load(target)
@@ -81,6 +91,7 @@ describe("RepositoryAnalysisService", () => {
       loadMetadata,
       { load: loadFiles },
       { load: vi.fn().mockResolvedValue(structure) },
+      { load: vi.fn().mockResolvedValue(notDetectedBackend) },
     )
 
     const first = await service.load(target)
@@ -100,6 +111,7 @@ describe("RepositoryAnalysisService", () => {
       loadMetadata,
       { load: loadFiles },
       { load: vi.fn().mockResolvedValue(structure) },
+      { load: vi.fn().mockResolvedValue(notDetectedBackend) },
     )
 
     await expect(service.load(target)).rejects.toThrow("offline")
@@ -116,6 +128,7 @@ describe("RepositoryAnalysisService", () => {
       loadMetadata,
       { load: loadFiles },
       { load: vi.fn().mockResolvedValue(structure) },
+      { load: vi.fn().mockResolvedValue(notDetectedBackend) },
     )
 
     const fromDefault = await service.load(target)
@@ -132,6 +145,7 @@ describe("RepositoryAnalysisService", () => {
       loadMetadata,
       { load: loadFiles },
       { load: vi.fn().mockResolvedValue(structure) },
+      { load: vi.fn().mockResolvedValue(notDetectedBackend) },
     )
 
     await service.load(branchTarget)
@@ -146,6 +160,7 @@ describe("RepositoryAnalysisService", () => {
       loadMetadata,
       { load: loadFiles },
       { load: vi.fn().mockResolvedValue(structure) },
+      { load: vi.fn().mockResolvedValue(notDetectedBackend) },
     )
 
     await service.load(branchTarget)
@@ -161,6 +176,7 @@ describe("RepositoryAnalysisService", () => {
       loadMetadata,
       { load: loadFiles },
       { load: loadStructure },
+      { load: vi.fn().mockResolvedValue(notDetectedBackend) },
     )
 
     const analysis = await service.load(target)
@@ -177,12 +193,93 @@ describe("RepositoryAnalysisService", () => {
       loadMetadata,
       { load: loadFiles },
       { load: loadStructure },
+      { load: vi.fn().mockResolvedValue(notDetectedBackend) },
     )
 
     await service.load(target)
     await service.load(target)
 
     expect(loadStructure).toHaveBeenCalledTimes(1)
+  })
+
+  it("probes nested backend candidates from the structure result, excluding the root", async () => {
+    const nestedStructure: RepositoryStructure = {
+      ...structure,
+      layout: "multi-project",
+      projects: [
+        ...structure.projects,
+        {
+          path: "backend",
+          isRoot: false,
+          role: "unknown",
+          hasPackageJson: true,
+          packageName: "backend",
+          evidence: [],
+          warnings: [],
+        },
+      ],
+    }
+    const loadMetadata = vi.fn().mockResolvedValue(metadata)
+    const loadFiles = vi.fn().mockResolvedValue(files)
+    const loadBackend = vi.fn().mockResolvedValue(notDetectedBackend)
+    const service = new RepositoryAnalysisService(
+      loadMetadata,
+      { load: loadFiles },
+      { load: vi.fn().mockResolvedValue(nestedStructure) },
+      { load: loadBackend },
+    )
+
+    await service.load(target)
+
+    expect(loadBackend).toHaveBeenCalledWith(metadata, ["backend"], undefined)
+  })
+
+  it("does not fail repository analysis when nested backend discovery throws", async () => {
+    const loadMetadata = vi.fn().mockResolvedValue(metadata)
+    const loadFiles = vi.fn().mockResolvedValue(files)
+    const loadBackend = vi.fn().mockRejectedValue(new Error("rate limited"))
+    const service = new RepositoryAnalysisService(
+      loadMetadata,
+      { load: loadFiles },
+      { load: vi.fn().mockResolvedValue(structure) },
+      { load: loadBackend },
+    )
+
+    const analysis = await service.load(target)
+
+    expect(analysis.backend.complete).toBe(false)
+    expect(analysis.preview.mode).not.toBe("unsupported")
+  })
+
+  it("propagates an abort from nested backend discovery instead of masking it", async () => {
+    const abortError = new DOMException("aborted", "AbortError")
+    const loadMetadata = vi.fn().mockResolvedValue(metadata)
+    const loadFiles = vi.fn().mockResolvedValue(files)
+    const service = new RepositoryAnalysisService(
+      loadMetadata,
+      { load: loadFiles },
+      { load: vi.fn().mockResolvedValue(structure) },
+      { load: vi.fn().mockRejectedValue(abortError) },
+    )
+
+    await expect(service.load(target)).rejects.toBe(abortError)
+  })
+
+  it("caches by repositoryId:commitSha:analyzerVersion, not by branch name, for backend/environment data too", async () => {
+    const loadMetadata = vi.fn().mockResolvedValue(metadata)
+    const loadFiles = vi.fn().mockResolvedValue(files)
+    const loadBackend = vi.fn().mockResolvedValue(notDetectedBackend)
+    const service = new RepositoryAnalysisService(
+      loadMetadata,
+      { load: loadFiles },
+      { load: vi.fn().mockResolvedValue(structure) },
+      { load: loadBackend },
+    )
+
+    await service.load(target)
+    await service.load(branchTarget)
+
+    expect(loadBackend).toHaveBeenCalledTimes(1)
   })
 })
 
