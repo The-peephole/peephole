@@ -51,12 +51,59 @@ describe("NetworkLeaseManager", () => {
       prefixLength: toSubnet(lease.index).prefixLength,
       ...deriveNetworkNames(ALLOCATION_ID, lease.index),
       uplink: "eth0",
+      policy: "egress-nat",
       dnsServers: ["172.31.0.2"],
       creatorPid: process.pid,
       creatorProcessStartTime: "test-start",
       bootId: "test-boot",
     })
     expect(await readdir(leaseDir)).toEqual([String(lease.index)])
+  })
+
+  it("accepts a legacy v1 marker without policy as egress-nat", async () => {
+    const lease = await allocate(manager)
+    const markerPath = path.join(lease.leaseDir, "lease.json")
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<
+      string,
+      unknown
+    >
+    delete marker.policy
+    await writeFile(markerPath, JSON.stringify(marker))
+
+    await expect(
+      manager.requireOwnedLease(lease.leaseDir),
+    ).resolves.toMatchObject({
+      policy: "egress-nat",
+    })
+  })
+
+  it("always persists an explicit ingress-only policy", async () => {
+    const lease = await manager.allocate({
+      allocationId: "b".repeat(32),
+      uplink: "eth0",
+      policy: "ingress-only",
+      dnsServers: [],
+    })
+    const marker = JSON.parse(
+      await readFile(path.join(lease.leaseDir, "lease.json"), "utf8"),
+    ) as Record<string, unknown>
+
+    expect(marker.policy).toBe("ingress-only")
+  })
+
+  it("rejects an invalid network policy instead of treating it as legacy", async () => {
+    const lease = await allocate(manager)
+    const markerPath = path.join(lease.leaseDir, "lease.json")
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<
+      string,
+      unknown
+    >
+    marker.policy = "host-network"
+    await writeFile(markerPath, JSON.stringify(marker))
+
+    await expect(manager.requireOwnedLease(lease.leaseDir)).rejects.toThrow(
+      /schema/,
+    )
   })
 
   it("hands out distinct, non-overlapping /30 subnets", async () => {

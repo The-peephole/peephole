@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -145,7 +145,10 @@ class FakeRuntimeProcessStarter implements BackendRuntimeProcessStarter {
   }
 }
 
-function compose(runtimeTtlMs = 10 * 60_000) {
+function compose(
+  runtimeTtlMs = 10 * 60_000,
+  entrypoint: "file" | "missing" | "symlink" | "directory" = "file",
+) {
   const store = new InMemoryBackendRuntimeStore()
   const queue = new InMemoryBackendRuntimeQueue()
   const resolver = { resolve: vi.fn().mockResolvedValue(plan) }
@@ -164,6 +167,23 @@ function compose(runtimeTtlMs = 10 * 60_000) {
       path.join(options.destinationDir, "backend", "package-lock.json"),
       "{}",
     )
+    const entrypointPath = path.join(
+      options.destinationDir,
+      "backend",
+      "src",
+      "server.js",
+    )
+    if (entrypoint === "file") {
+      await mkdir(path.dirname(entrypointPath), { recursive: true })
+      await writeFile(entrypointPath, "module.exports = {}")
+    } else if (entrypoint === "directory") {
+      await mkdir(entrypointPath, { recursive: true })
+    } else if (entrypoint === "symlink") {
+      await mkdir(path.dirname(entrypointPath), { recursive: true })
+      const target = path.join(options.destinationDir, "outside")
+      await mkdir(target)
+      await symlink(target, entrypointPath, "junction")
+    }
   })
   const sandbox = new FakeSandboxProvisioner()
   const installRunner = new FakeCommandRunner()
@@ -272,6 +292,25 @@ describe("BackendRuntimeSupervisor", () => {
     expect(final.status).toBe("failed")
     expect(final.errorCode).toBe("INSTALL_FAILED")
   })
+
+  it.each(["missing", "symlink", "directory"] as const)(
+    "fails before runtime start when the extracted entrypoint is %s",
+    async (entrypoint) => {
+      const { controlPlane, queue, sandbox, starter, supervisor } = compose(
+        10 * 60_000,
+        entrypoint,
+      )
+      const { runtimeId, job } = await createAndLease(controlPlane, queue)
+      createdRoots.push(...sandbox.roots)
+
+      await supervisor.run(job)
+
+      const final = await controlPlane.get(runtimeId, requester)
+      expect(final.status).toBe("failed")
+      expect(final.errorCode).toBe("RUNTIME_START_FAILED")
+      expect(starter.lastHandle).toBeNull()
+    },
+  )
 
   it("fails with RUNTIME_START_FAILED when the runtime process cannot start", async () => {
     const { controlPlane, queue, sandbox, starter, supervisor } = compose()

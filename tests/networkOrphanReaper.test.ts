@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises"
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -265,6 +272,24 @@ describe("NetworkOrphanReaper", () => {
       expect(await readdir(root)).toEqual([])
     },
   )
+
+  it("cleans a legacy policy-less v1 lease as egress-nat", async () => {
+    const lease = await allocate(manager)
+    const markerPath = path.join(lease.leaseDir, "lease.json")
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<
+      string,
+      unknown
+    >
+    delete marker.policy
+    await writeFile(markerPath, JSON.stringify(marker))
+    host.install(lease, "full")
+
+    await reaper.reapAll()
+
+    expect(await manager.listOwnedLeases()).toEqual([])
+    expect(host.ipv4).toEqual([])
+    expect(host.nat).toEqual([])
+  })
 
   it("fails closed for unowned Peephole-shaped namespaces, veths, chains, and NAT comments", async () => {
     for (const install of [

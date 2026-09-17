@@ -306,6 +306,13 @@ wildcard public domain, no reverse proxy, no frontend API rewrite, and no
 iframe pointed at the backend. Frontend-to-backend routing is its own,
 later roadmap stage (see stage 9 in `docs/MVP_ROADMAP.md`).
 
+**Production capability gate.** `WXT_BACKEND_RUNTIME_ENABLED` must be exactly
+`"true"` before the extension creates a backend runtime client or renders
+Start/Stop controls. Production does not set it: the static-preview service
+does not yet wire this control plane or worker, and real Linux/gVisor
+ingress-only validation remains pending. A candidate may be compatible, but
+must not imply that execution is available.
+
 **Control plane.** A separate resource, `POST/GET/DELETE
 /v1/backend-runtimes` (`services/backend-runtime-api/`) -- never the
 existing `PreviewJob` resource. Ownership is bound to the requester subject;

@@ -502,6 +502,10 @@ docs/PREVIEW_RUNTIME.md's "Backend Runtime (backend-v1)" and D-030.
 - `tests/backendRuntimeApiClient.test.ts` (6): the client-side
   `BackendRuntimeApiClient` -- session/auth handling, response validation
   that ignores an unrecognized field such as a url, and typed error mapping.
+- `tests/githubBackendRuntimePlanResolver.test.ts`: exact-commit backend
+  authorization accepts confirmed absence only; env/package/lock read errors
+  fail closed, aborts propagate, and explicit pnpm/yarn/bun declarations are
+  rejected while npm remains accepted.
 - `tests/backendRuntimeWorkerLoop.test.ts` (4): lease/renew/acknowledge/
   release, mirroring `previewWorkerLoop.test.ts`'s coverage exactly for the
   separate `BackendRuntimeWorkerLoop`.
@@ -516,13 +520,14 @@ docs/PREVIEW_RUNTIME.md's "Backend Runtime (backend-v1)" and D-030.
   namespace allocations (egress install vs. ingress-only runtime) never
   colliding in the activation registry -- all against a fake process
   runner, never a real host.
-- `tests/backendRuntimeProcess.test.ts` (7): `GVisorBackendRuntimeProcess`
+- `tests/backendRuntimeProcess.test.ts` (10): `GVisorBackendRuntimeProcess`
   against a fake `ProcessRunner` and a real local TCP listener standing in
   for the sandboxed process -- readiness success, exit-before-ready,
   readiness timeout, crash detection via `waitForExit`, idempotent `stop()`,
+  failed/timed-out/thrown kill with forced-delete attempt,
   and the OCI spec it writes (direct `node <entrypoint>`, only the platform
   environment allowlist, the ingress-only namespace path).
-- `tests/backendRuntimeSupervisor.test.ts` (11): the full FETCH -> INSTALL
+- `tests/backendRuntimeSupervisor.test.ts` (14): the full FETCH -> INSTALL
   -> START -> monitor -> STOP orchestration against fake
   fetcher/sandbox/install-runner/runtime-process-starter dependencies --
   every phase's specific failure code, readiness timeout stopping the

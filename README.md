@@ -152,7 +152,7 @@ smoke described in [Production smoke verification](docs/PRODUCTION_SMOKE.md).
 | Repository structure detection | Reports layout and bounded project-candidate paths; detected frontend candidates can be explicitly selected and receive a separate exact-SHA target analysis |
 | Backend detection | Bounded, read-only evidence (framework, database dependency, unverified entrypoint) for root and nested candidates; never offered as a preview target regardless of execution support |
 | Environment requirement analysis | Classifies declared `.env.example`-family variable *names* only (never a value) as auto-configurable/preview-generated/database/external-routing/user-required/unknown; no value is ever generated, injected, or requested |
-| Backend execution (`backend-v1`, narrow) | A detected Express + npm candidate with a committed `package-lock.json`, no database dependency, and only `PORT`/`HOST`/`NODE_ENV` environment needs can be started/stopped as a supervised, isolated gVisor process; no public URL, no frontend/backend routing |
+| Backend execution (`backend-v1`, foundation) | The narrow Express + npm runtime foundation is implemented, but production wiring and real Linux/gVisor verification are pending; the UI is disabled by default, with no public URL or frontend/backend routing |
 | Not implemented | Shared-root workspace orchestration, any backend outside that one narrow shape, frontend/backend routing, secret/env provisioning, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
 
 Analysis support is broader than production execution support. The official
@@ -196,7 +196,7 @@ The production static-preview foundation, GitHub theme synchronization,
 Branch Preview, repository/application structure detection, the explicit
 Build Adapter architecture, bounded frontend target selection, existing
 deployed-site Live Preview, backend detection + environment requirement
-analysis, and narrow backend execution (`backend-v1`) are implemented.
+analysis, and the narrow backend execution (`backend-v1`) foundation are implemented.
 Nested build execution remains limited to independently installable React +
 Vite + npm targets with a target-local lockfile; backend execution is
 limited to one narrow adapter (Express + npm + lockfile + no database +
@@ -207,7 +207,7 @@ frontend/backend routing.
 5. frontend target selection / bounded frontend monorepo support (implemented)
 6. existing deployed-site Live Preview (implemented)
 7. backend detection + environment requirement analysis (implemented)
-8. backend execution (implemented, narrow)
+8. backend-v1 execution foundation implemented; production verification pending
 9. frontend ↔ backend routing
 10. ephemeral env / secrets
 11. temporary database support

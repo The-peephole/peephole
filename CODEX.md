@@ -157,7 +157,7 @@ changes it:
 5. frontend target selection / bounded frontend monorepo support (implemented)
 6. existing deployed-site Live Preview (implemented)
 7. backend detection + environment requirement analysis (implemented)
-8. backend execution (implemented, narrow -- see D-030)
+8. backend-v1 execution foundation implemented; production verification pending (see D-030)
 9. frontend ↔ backend routing
 10. ephemeral env / secrets
 11. temporary database support

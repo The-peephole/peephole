@@ -93,7 +93,7 @@ because a fixture or interface for it exists.
 5. [x] frontend target selection / bounded frontend monorepo support
 6. [x] existing deployed-site Live Preview
 7. [x] backend detection + environment requirement analysis
-8. [x] backend execution
+8. [ ] backend-v1 execution foundation implemented; production verification pending
 9. [ ] frontend ↔ backend routing
 10. [ ] ephemeral env / secrets
 11. [ ] temporary database support

@@ -162,23 +162,62 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         stderr: error instanceof Error ? error.message : String(error),
       }))
 
-    let cleanupPromise: Promise<void> | null = null
-    const cleanup = (): Promise<void> => {
-      cleanupPromise ??= (async () => {
-        await runPromise
+    let deletePromise: Promise<void> | null = null
+    let stopPromise: Promise<void> | null = null
+    const deleteContainer = (): Promise<void> => {
+      deletePromise ??= (async () => {
         const deleted = await this.processRunner.run(
           this.runscBinaryPath,
           runscDeleteArgs({ runscRootDir: this.runscRootDir }, containerId),
           { timeoutMs: 10_000 },
         )
         if (deleted.exitCode !== 0 || deleted.timedOut) {
-          throw new Error(
-            `runsc could not delete backend runtime container ${containerId}.`,
-          )
+          throw new Error("Backend runtime container cleanup failed.")
         }
         sandbox.unregisterContainer(containerId)
       })()
-      return cleanupPromise
+      return deletePromise
+    }
+    const cleanupAfterExit = async (): Promise<void> => {
+      await runPromise
+      await deleteContainer()
+    }
+    const stop = (): Promise<void> => {
+      stopPromise ??= (async () => {
+        let killError: Error | undefined
+        try {
+          const killed = await this.processRunner.run(
+            this.runscBinaryPath,
+            runscKillArgs({ runscRootDir: this.runscRootDir }, containerId),
+            { timeoutMs: 10_000 },
+          )
+          if (killed.exitCode !== 0 || killed.timedOut) {
+            killError = new Error("Backend runtime stop command failed.")
+          }
+        } catch {
+          killError = new Error("Backend runtime stop command failed.")
+        }
+
+        // `runsc delete --force` is the independent cleanup attempt. Do not
+        // wait for the foreground `runsc run` promise here: if kill failed or
+        // timed out, that wait could consume the full runtime backstop and
+        // block workspace/network teardown.
+        let deleteError: unknown
+        try {
+          await deleteContainer()
+        } catch {
+          deleteError = new Error("Backend runtime container cleanup failed.")
+        }
+        if (killError && deleteError) {
+          throw new AggregateError(
+            [killError, deleteError],
+            "Backend runtime stop and cleanup failed.",
+          )
+        }
+        if (killError) throw killError
+        if (deleteError) throw deleteError
+      })()
+      return stopPromise
     }
 
     return {
@@ -186,20 +225,10 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         this.probeReady(peerIp, plan.internalPort, timeoutMs, runPromise),
       waitForExit: async () => {
         const result = await runPromise
-        await cleanup()
+        await cleanupAfterExit()
         return { exitCode: result.exitCode }
       },
-      stop: async () => {
-        await this.processRunner
-          .run(
-            this.runscBinaryPath,
-            runscKillArgs({ runscRootDir: this.runscRootDir }, containerId),
-            { timeoutMs: 10_000 },
-          )
-          .catch(() => undefined)
-        await runPromise
-        await cleanup()
-      },
+      stop,
     }
   }
 

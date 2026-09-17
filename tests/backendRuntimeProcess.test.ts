@@ -41,21 +41,37 @@ class FakeProcessRunner implements ProcessRunner {
   readonly calls: Array<{ command: string; args: string[] }> = []
   private runResolve: ((result: ProcessRunResult) => void) | null = null
   crashResult: ProcessRunResult | null = null
+  killResult: ProcessRunResult = {
+    exitCode: 0,
+    timedOut: false,
+    stdout: "",
+    stderr: "",
+  }
+  deleteResult: ProcessRunResult = {
+    exitCode: 0,
+    timedOut: false,
+    stdout: "",
+    stderr: "",
+  }
+  killThrows = false
 
   async run(command: string, args: string[]): Promise<ProcessRunResult> {
     this.calls.push({ command, args })
     if (args.includes("kill")) {
-      this.runResolve?.({
-        exitCode: 137,
-        timedOut: false,
-        stdout: "",
-        stderr: "",
-      })
-      this.runResolve = null
-      return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }
+      if (this.killThrows) throw new Error("kill failed")
+      if (this.killResult.exitCode === 0 && !this.killResult.timedOut) {
+        this.runResolve?.({
+          exitCode: 137,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+        })
+        this.runResolve = null
+      }
+      return this.killResult
     }
     if (args.includes("delete")) {
-      return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }
+      return this.deleteResult
     }
     if (args.includes("run")) {
       if (this.crashResult) return this.crashResult
@@ -234,6 +250,67 @@ describe("GVisorBackendRuntimeProcess", () => {
       processRunner.calls.filter((call) => call.args.includes("delete")),
     ).toHaveLength(1)
   })
+
+  it.each([
+    {
+      label: "returns non-zero",
+      configure: (runner: FakeProcessRunner) => {
+        runner.killResult = {
+          exitCode: 1,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+        }
+      },
+    },
+    {
+      label: "times out",
+      configure: (runner: FakeProcessRunner) => {
+        runner.killResult = {
+          exitCode: null,
+          timedOut: true,
+          stdout: "",
+          stderr: "",
+        }
+      },
+    },
+    {
+      label: "throws",
+      configure: (runner: FakeProcessRunner) => {
+        runner.killThrows = true
+      },
+    },
+  ])(
+    "fails stop when runsc kill $label but still force-deletes",
+    async ({ configure }) => {
+      const processRunner = new FakeProcessRunner()
+      configure(processRunner)
+      const runtime = new GVisorBackendRuntimeProcess({ processRunner })
+      const workspace = fakeWorkspace(bundleDir, "127.0.0.1")
+      const handle = await runtime.start(workspace, {
+        ...plan,
+        internalPort: port,
+      })
+
+      await expect(handle.stop()).rejects.toThrow(
+        "Backend runtime stop command failed",
+      )
+      expect(
+        processRunner.calls.some((call) => call.args.includes("delete")),
+      ).toBe(true)
+      expect(workspace.listContainers()).toEqual([])
+
+      await expect(handle.stop()).rejects.toThrow(
+        "Backend runtime stop command failed",
+      )
+      expect(
+        processRunner.calls.filter((call) => call.args.includes("kill")),
+      ).toHaveLength(1)
+      expect(
+        processRunner.calls.filter((call) => call.args.includes("delete")),
+      ).toHaveLength(1)
+    },
+  )
 
   it("writes an OCI spec that runs node directly with only the platform env allowlist, never a shell or npm start", async () => {
     const processRunner = new FakeProcessRunner()

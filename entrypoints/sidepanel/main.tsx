@@ -47,6 +47,11 @@ let backendRuntimeApi: BackendRuntimeApiClient | null = null
 let reconnectGitHub: (() => Promise<void>) | null = null
 let previewArtifactBaseDomain: string | null = null
 let previewConfigurationError: string | null = null
+// Production deliberately leaves this false. This is separate from preview
+// API configuration so a static-preview deployment can never advertise an
+// unwired /v1/backend-runtimes endpoint.
+const backendRuntimeEnabled =
+  import.meta.env.WXT_BACKEND_RUNTIME_ENABLED === "true"
 
 try {
   const previewApiBaseUrl = parsePreviewApiBaseUrl(
@@ -64,12 +69,13 @@ try {
   // Same control-plane origin as the preview API (already covered by its
   // host permission) -- backend-v1 is a separate resource on that host,
   // not a separate service.
-  backendRuntimeApi = previewApiBaseUrl
-    ? new BackendRuntimeApiClient(previewApiBaseUrl, {
-        getSession: getStoredPreviewSession,
-        clearSession: clearStoredPreviewSession,
-      })
-    : null
+  backendRuntimeApi =
+    backendRuntimeEnabled && previewApiBaseUrl
+      ? new BackendRuntimeApiClient(previewApiBaseUrl, {
+          getSession: getStoredPreviewSession,
+          clearSession: clearStoredPreviewSession,
+        })
+      : null
   reconnectGitHub = previewApiBaseUrl
     ? async () => {
         await connectGitHub(previewApiBaseUrl)
@@ -118,6 +124,7 @@ createRoot(root).render(
       loadRepositoryBranches={loadRepositoryBranches}
       loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
       backendRuntimeApi={backendRuntimeApi}
+      backendRuntimeEnabled={backendRuntimeEnabled}
       connectGitHub={reconnectGitHub}
       previewApi={previewApi}
       previewArtifactBaseDomain={previewArtifactBaseDomain}

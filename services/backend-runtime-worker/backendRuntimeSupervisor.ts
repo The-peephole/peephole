@@ -192,6 +192,13 @@ export class BackendRuntimeSupervisor {
     )
 
     signal.throwIfAborted()
+    await runPhase("RUNTIME_START_FAILED", () =>
+      verifyExtractedEntrypoint(
+        workspace.rootDir,
+        plan.sourceRoot,
+        plan.start.args[0],
+      ),
+    )
     await this.controlPlane.markPhase(runtimeId, "starting")
     const handle = await runPhase("RUNTIME_START_FAILED", () =>
       this.runtimeProcessStarter.start(workspace, plan),
@@ -308,6 +315,58 @@ async function isRegularFile(filePath: string): Promise<boolean> {
     return stats.isFile() && !stats.isSymbolicLink()
   } catch {
     return false
+  }
+}
+
+/** The plan's textual entrypoint evidence is not enough: extraction can
+ * produce a missing file, directory, or symlink. Re-check the final object
+ * immediately before giving its path to runsc, without exposing host paths. */
+async function verifyExtractedEntrypoint(
+  workspaceRoot: string,
+  sourceRoot: string,
+  entrypoint: string,
+): Promise<void> {
+  const sourceRootDir = await resolveWorkspaceSourceRoot(
+    workspaceRoot,
+    sourceRoot,
+  )
+  if (
+    !entrypoint ||
+    entrypoint.startsWith("/") ||
+    entrypoint.split("/").some((segment) => !segment || segment === "..") ||
+    !/\.(js|mjs|cjs)$/.test(entrypoint)
+  ) {
+    throw new Error("Backend runtime entrypoint is unsafe.")
+  }
+
+  const candidate = path.resolve(sourceRootDir, ...entrypoint.split("/"))
+  const relative = path.relative(sourceRootDir, candidate)
+  if (
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error("Backend runtime entrypoint is unsafe.")
+  }
+
+  let current = sourceRootDir
+  for (const segment of entrypoint.split("/")) {
+    current = path.join(current, segment)
+    let stats
+    try {
+      stats = await lstat(current)
+    } catch {
+      throw new Error("Backend runtime entrypoint is unavailable.")
+    }
+    if (stats.isSymbolicLink()) {
+      throw new Error("Backend runtime entrypoint is unavailable.")
+    }
+    if (current !== candidate && !stats.isDirectory()) {
+      throw new Error("Backend runtime entrypoint is unavailable.")
+    }
+    if (current === candidate && !stats.isFile()) {
+      throw new Error("Backend runtime entrypoint is unavailable.")
+    }
   }
 }
 

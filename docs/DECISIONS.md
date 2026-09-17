@@ -631,7 +631,9 @@ install and runtime phases get two independent leases, each with a distinct,
 randomly generated allocation id, so they can coexist without colliding in
 `NetworkAllocationRegistry`'s per-id activation guard); every existing
 egress-nat call site passes `policy: "egress-nat"` explicitly, byte-for-byte
-unchanged. `VethNatNetworkProvisioner.createIngressOnly()` is a new, separate
+unchanged. Pre-backend version-1 markers without `policy` remain accepted only
+as the old `egress-nat` shape; newly written markers always persist policy,
+and an unknown value remains invalid. `VethNatNetworkProvisioner.createIngressOnly()` is a new, separate
 method (not a branch inside the existing `create()`) that configures no
 NAT/MASQUERADE and no default route, an egress chain that unconditionally
 `DROP`s, an input chain that accepts only `ESTABLISHED,RELATED` replies

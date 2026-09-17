@@ -947,6 +947,37 @@ describe("RepositoryAnalysisView", () => {
     expect(options).not.toContain("backend")
   })
 
+  it("shows compatibility without a Start control when runtime capability is disabled", async () => {
+    const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
+      ...supportedAnalysis,
+      backend: {
+        status: "detected",
+        candidates: [
+          {
+            sourceRoot: "backend",
+            framework: "express",
+            runtime: "node",
+            packageName: "backend",
+            entrypoint: "src/server.js",
+            databaseDependencies: [],
+            environmentRequirements: [],
+            packageLockPresent: true,
+            evidence: ["express dependency detected"],
+            warnings: [],
+          },
+        ],
+        evidence: ["1 backend candidate detected"],
+        warnings: [],
+        complete: true,
+        truncated: false,
+      },
+    })
+    const container = await renderView(loader, roots)
+
+    expect(container.textContent).toContain("Supported (express-node-npm-v1)")
+    expect(container.textContent).not.toContain("Start backend")
+  })
+
   it("never offers a backend candidate as a selectable or runnable preview target", async () => {
     const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
       ...supportedAnalysis,

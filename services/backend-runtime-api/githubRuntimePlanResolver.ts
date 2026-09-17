@@ -57,7 +57,17 @@ export class GitHubBackendRuntimePlanResolver implements BackendRuntimePlanResol
     )
 
     for (const path of candidatePaths) {
-      const candidate = await this.loadCandidate(metadata, path)
+      let candidate
+      try {
+        candidate = await this.loadCandidate(metadata, path)
+      } catch (error) {
+        // These reads are execution authorization evidence. Only the GitHub
+        // client's confirmed-404 result is represented as `null`; a transport,
+        // rate-limit, malformed-response, or size failure cannot be mistaken
+        // for an absent file or bypassed by trying a sibling candidate.
+        if (isAbortError(error)) throw error
+        return null
+      }
       if (!candidate) continue
       const plan = resolveBackendRuntimePlan(repository, candidate)
       if (plan) return plan
@@ -98,21 +108,26 @@ export class GitHubBackendRuntimePlanResolver implements BackendRuntimePlanResol
       sourceRoot === "."
         ? "package.json"
         : joinRepositoryPath(sourceRoot, "package.json")
-    const packageJsonContent = await this.github
-      .getRepositoryTextFile(metadata, packageJsonPath, MAX_PACKAGE_JSON_BYTES)
-      .catch(() => null)
+    const packageJsonContent = await this.github.getRepositoryTextFile(
+      metadata,
+      packageJsonPath,
+      MAX_PACKAGE_JSON_BYTES,
+    )
     if (!packageJsonContent) return null
 
     const parsed = parsePackageJson(packageJsonContent)
     if (!parsed.value) return null
+    if (!isNpmDeclaration(parsed.value.packageManager)) return null
 
     const lockPath =
       sourceRoot === "."
         ? "package-lock.json"
         : joinRepositoryPath(sourceRoot, "package-lock.json")
-    const lockContent = await this.github
-      .getRepositoryTextFile(metadata, lockPath, MAX_PACKAGE_LOCK_PROBE_BYTES)
-      .catch(() => null)
+    const lockContent = await this.github.getRepositoryTextFile(
+      metadata,
+      lockPath,
+      MAX_PACKAGE_LOCK_PROBE_BYTES,
+    )
 
     const envPresentPaths: string[] = []
     const envTextFiles: Record<string, string> = {}
@@ -124,9 +139,11 @@ export class GitHubBackendRuntimePlanResolver implements BackendRuntimePlanResol
         sourceRoot === "."
           ? templateName
           : joinRepositoryPath(sourceRoot, templateName)
-      const content = await this.github
-        .getRepositoryTextFile(metadata, templatePath, MAX_ENV_TEMPLATE_BYTES)
-        .catch(() => null)
+      const content = await this.github.getRepositoryTextFile(
+        metadata,
+        templatePath,
+        MAX_ENV_TEMPLATE_BYTES,
+      )
       if (content !== null) {
         envPresentPaths.push(templateName)
         envTextFiles[templateName] = content
@@ -141,4 +158,14 @@ export class GitHubBackendRuntimePlanResolver implements BackendRuntimePlanResol
       lockContent !== null,
     )
   }
+}
+
+/** Absent declaration is permitted when the committed package-lock proves npm;
+ * a declaration is only accepted when it is exactly npm or npm@<version>. */
+function isNpmDeclaration(value: string | null): boolean {
+  return value === null || /^npm(?:@[A-Za-z0-9.+_-]+)?$/.test(value)
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError"
 }
