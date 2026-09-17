@@ -1,4 +1,7 @@
+const MAX_PACKAGE_NAME_LENGTH = 214
+
 export interface ParsedPackageJson {
+  name: string | null
   dependencies: Record<string, string>
   devDependencies: Record<string, string>
   scripts: Record<string, string>
@@ -32,6 +35,7 @@ export function parsePackageJson(
 
   return {
     value: {
+      name: readSafePackageName(parsed.name),
       dependencies: readStringRecord(parsed.dependencies),
       devDependencies: readStringRecord(parsed.devDependencies),
       scripts: readStringRecord(parsed.scripts),
@@ -56,6 +60,14 @@ export function getAllDependencies(
     ...packageJson.devDependencies,
     ...packageJson.dependencies,
   }
+}
+
+function readSafePackageName(value: unknown): string | null {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_PACKAGE_NAME_LENGTH
+    ? value
+    : null
 }
 
 function readStringRecord(value: unknown): Record<string, string> {

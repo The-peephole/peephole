@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import { analyzeRepository } from "../core/analyzer/analyzeRepository"
 import type { RepositoryFileSnapshot } from "../core/github/knownFiles"
 import type { RepositoryMetadata } from "../types/repository"
+import type { RepositoryStructure } from "../types/structure"
 
 const repository: RepositoryMetadata = {
   repositoryId: 1,
@@ -174,6 +175,101 @@ describe("analyzeRepository", () => {
       ambiguous: true,
     })
     expect(blockerCodes(analysis)).toContain("AMBIGUOUS_WORKSPACE")
+  })
+
+  it("marks a root-only Vite app as a single-project structure without regressing eligibility", () => {
+    const analysis = analyzeRepository(repository, viteSnapshot())
+
+    expect(analysis.structure).toMatchObject({
+      layout: "single-project",
+      projects: [{ path: ".", isRoot: true, role: "project-candidate" }],
+    })
+    expect(analysis.preview.mode).toBe("native-static-build")
+  })
+
+  it("keeps nested project candidates from enabling a build even when structure is well understood", () => {
+    const structure: RepositoryStructure = {
+      layout: "multi-project",
+      projects: [
+        {
+          path: ".",
+          isRoot: true,
+          role: "unknown",
+          hasPackageJson: false,
+          packageName: null,
+          evidence: [],
+          warnings: [],
+        },
+        {
+          path: "frontend",
+          isRoot: false,
+          role: "project-candidate",
+          hasPackageJson: true,
+          packageName: null,
+          evidence: ["package.json detected", "react dependency detected"],
+          warnings: [],
+        },
+        {
+          path: "backend",
+          isRoot: false,
+          role: "unknown",
+          hasPackageJson: true,
+          packageName: null,
+          evidence: ["package.json detected"],
+          warnings: [],
+        },
+      ],
+      workspaceEvidence: [],
+      warnings: [],
+      complete: true,
+      truncated: false,
+    }
+    const analysis = analyzeRepository(repository, snapshot({}, []), structure)
+
+    expect(analysis.structure).toBe(structure)
+    expect(analysis.preview.mode).not.toBe("native-static-build")
+    expect(analysis.technologies.framework).toBe("unknown")
+  })
+
+  it("uses a structure-informed message once multiple applications are detected", () => {
+    const structure: RepositoryStructure = {
+      layout: "workspace",
+      projects: [
+        {
+          path: ".",
+          isRoot: true,
+          role: "unknown",
+          hasPackageJson: true,
+          packageName: null,
+          evidence: [],
+          warnings: [],
+        },
+        {
+          path: "apps/web",
+          isRoot: false,
+          role: "project-candidate",
+          hasPackageJson: true,
+          packageName: null,
+          evidence: ["package.json detected"],
+          warnings: [],
+        },
+      ],
+      workspaceEvidence: ["package.json workspaces detected"],
+      warnings: [],
+      complete: true,
+      truncated: false,
+    }
+    const analysis = analyzeRepository(
+      repository,
+      viteSnapshot({}, { workspaces: ["apps/*"] }),
+      structure,
+    )
+
+    expect(analysis.preview.blockers).toContainEqual({
+      code: "AMBIGUOUS_WORKSPACE",
+      message:
+        "Applications were detected, but target selection is not implemented yet.",
+    })
   })
 
   it("blocks conflicting lockfiles", () => {

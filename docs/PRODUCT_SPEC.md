@@ -51,7 +51,7 @@ Popularity, stars, and GitHub visibility do not reduce the runtime threat model.
 2. Peephole inserts one action in the current repository header.
 3. Clicking it opens the Peephole side panel.
 4. Peephole resolves repository identity and an immutable commit SHA.
-5. Bounded static analysis reports framework, package manager, commands, environment declarations, deployment evidence, and blockers.
+5. Bounded static analysis reports framework, package manager, commands, environment declarations, deployment evidence, repository structure, and blockers.
 6. If normalized repository-homepage metadata exists, Peephole exposes an
    **Open site** link in a new tab; it does not probe or embed that deployment.
 7. If the native static contract and current runner target match, the user
@@ -87,6 +87,9 @@ branch name.
 - no StackBlitz dependency
 - branch selection from a bounded list, resolved to an exact commit SHA before
   analysis, build plan, and preview job creation
+- read-only repository/application structure detection: layout
+  (single-project, workspace, multi-project, or unknown) and a bounded list
+  of project candidate paths, without selecting or building any of them
 
 ### Recognized but not executable
 
@@ -150,7 +153,10 @@ official Vite + React fixture is
 `The-peephole/peephole-fixture-vite-react` at
 `4a2c3b78e15d90865ed565c3d38c4045b5a5235f`. The separate full-stack fixture at
 `The-peephole/peephole-fixture-fullstack@eae411a288b212201933cebb206126dd5bb0d93e`
-is reserved for future roadmap work and is not a supported product path.
+is reserved for future roadmap work and is not a supported product path; it is
+now also a verification target for repository structure detection (its
+`frontend`/`backend` layout resolves to two project candidates), which is
+evidence of detection only, not of full-stack support.
 
 ## 11. Product Boundary
 
@@ -163,7 +169,7 @@ silently guessing how a repository should run.
 
 1. GitHub theme synchronization (implemented)
 2. Branch Preview (implemented)
-3. Repository / application structure detection
+3. Repository / application structure detection (implemented)
 4. Build Adapter generalization
 5. frontend target selection / frontend monorepo support
 6. existing deployed-site Live Preview

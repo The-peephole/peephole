@@ -7,7 +7,7 @@ Peephole has a deployed, commit-pinned static-preview path:
 ```text
 public GitHub repository
 -> GitHub action and Chrome Side Panel
--> bounded analysis of the default-branch head commit
+-> bounded analysis of the selected (or default) branch's resolved commit
 -> authenticated Preview Control Plane job
 -> PostgreSQL queue/state
 -> isolated gVisor build
@@ -87,7 +87,7 @@ because a fixture or interface for it exists.
 
 1. [x] GitHub theme synchronization
 2. [x] Branch Preview
-3. [ ] Repository / application structure detection
+3. [x] Repository / application structure detection
 4. [ ] Build Adapter generalization
 5. [ ] frontend target selection / frontend monorepo support
 6. [ ] existing deployed-site Live Preview
@@ -119,6 +119,25 @@ and one preview-job identity. Branch switches abort the in-flight analysis
 request through the existing `AbortController`/effect-cleanup contract, so
 rapid re-selection cannot render a stale branch's result.
 
+Repository/application structure detection is a detection-only stage: it
+describes a repository's layout (`single-project`, `workspace`,
+`multi-project`, or `unknown`) and lists bounded project candidates without
+selecting or building any of them. Discovery combines declared workspace
+patterns (`package.json` `workspaces`, a bounded `pnpm-workspace.yaml`
+`packages:` subset) with a small, capability-driven set of conventional root
+directory names (`apps`, `packages`, `frontend`, `backend`, `client`, `web`);
+directory names alone are never treated as proof of an application. Every
+read is bounded (at most 8 wildcard directory listings, 200 entries per
+listing, 20 candidate probes, 512 KB of nested `package.json` bytes total) and
+uses the already-resolved commit SHA from Branch Preview, never a mutable
+branch name; hitting a bound sets `truncated`, and a failed read sets
+`complete: false` instead of failing the whole analysis. Candidates are
+labeled `project-candidate`, `package-candidate`, or `unknown` rather than
+asserting "application" or "library" from directory names alone, and the
+existing `AMBIGUOUS_WORKSPACE` preview blocker still applies exactly as
+before -- detecting `frontend`/`backend` in
+`The-peephole/peephole-fixture-fullstack` does not make it buildable.
+
 The early stages establish repository selection and generalized build contracts
 before full-stack execution is considered. Backend execution requires a new
 reviewed runtime contract; it must not be implemented by extending the lifetime
@@ -146,7 +165,11 @@ repository: The-peephole/peephole-fixture-fullstack
 commit: eae411a288b212201933cebb206126dd5bb0d93e
 ```
 
-It is not connected to a supported full-stack runtime contract today.
+It is not connected to a supported full-stack runtime contract today. Its
+`frontend`/`backend` layout is now a real verification target for repository
+structure detection (both are surfaced as bounded project candidates); this
+is structure-detection evidence only, not full-stack preview, backend, or
+routing support.
 
 ## Cross-Cutting Work
 

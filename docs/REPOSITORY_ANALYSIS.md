@@ -213,8 +213,9 @@ The current detector marks any `package.json` `workspaces` field or root
 `monorepo` and `ambiguous`. The current contract returns `unsupported`; it does
 not enumerate applications or select a frontend target.
 
-Future repository/application structure detection may refine the result, but
-today the blocker applies when:
+Repository/application structure detection (below) now enumerates the
+applications this section previously only flagged, but the blocker applies
+exactly as before when:
 
 - more than one likely application exists,
 - the build requires choosing a workspace,
@@ -223,7 +224,105 @@ today the blocker applies when:
 
 A repository is not treated as a simple root application merely because the root has a `package.json`.
 
-## 12. Preview Eligibility
+## 12. Repository Structure Detection
+
+Structure detection is a bounded, detection-only layer: it describes the
+repository's layout and lists project candidates without selecting or
+building any of them.
+
+```ts
+type RepositoryStructureLayout =
+  | "single-project"
+  | "workspace"
+  | "multi-project"
+  | "unknown"
+
+type ProjectCandidateRole =
+  | "project-candidate"
+  | "package-candidate"
+  | "unknown"
+
+interface RepositoryProjectCandidate {
+  path: string // repository-relative; "." for the root
+  isRoot: boolean
+  role: ProjectCandidateRole
+  hasPackageJson: boolean
+  packageName: string | null
+  evidence: string[]
+  warnings: string[]
+}
+
+interface RepositoryStructure {
+  layout: RepositoryStructureLayout
+  projects: RepositoryProjectCandidate[]
+  workspaceEvidence: string[]
+  warnings: string[]
+  complete: boolean
+  truncated: boolean
+}
+```
+
+`role` is deliberately conservative: a directory is `project-candidate` only
+when it has frontend-framework evidence (a `vite`/`react`/`vue`/`svelte`/`next`
+dependency, mirroring framework detection) or is the repository root with
+recognized evidence; a directory conventionally named `packages` or nested
+under it is `package-candidate` (it may be a shared library, not an
+application); everything else with a package.json but no such evidence is
+`unknown`. Directory names such as `backend` never imply backend execution
+support -- that classification stays `unknown` until a later roadmap stage
+adds real backend detection.
+
+Candidate discovery combines two sources, both bounded:
+
+1. **Declared workspace patterns** -- `package.json` `workspaces` (array form
+   or `{ packages: [...] }` object form) and a bounded subset of
+   `pnpm-workspace.yaml`'s `packages:` list (not a YAML parser). Only an exact
+   1-2 segment literal path (`"frontend"`, `"apps/web"`) or a single-level
+   `dir/*` wildcard is supported; negation, `**`, mid-pattern wildcards,
+   absolute paths, and `..` are reported as a warning, never guessed.
+2. **Conventional root directory names**, read from the same bounded root
+   directory listing analysis already performs, split into two kinds:
+   - **Direct** (`frontend`, `backend`, `client`, `web`) -- probed for their
+     own `package.json` directly, exactly like a declared literal path. A
+     directory name alone is never sufficient; a candidate is only surfaced
+     once a `package.json` is actually found at that path.
+   - **Container** (`apps`, `packages`) -- never probed for their own
+     `package.json`. Instead they are bounded-listed exactly like a declared
+     `dir/*` wildcard, so `apps/web` or `packages/ui` can be discovered even
+     when no workspace tool declares them. A workspace pattern that already
+     declares the same directory as a wildcard (e.g. `apps/*`) shares the
+     same listing rather than listing it twice.
+
+A `dir/*` wildcard or container directory is resolved with exactly one
+bounded directory listing of `dir` (`GitHubClient.getRepositoryDirectoryEntries`,
+a fixed, validated, path-checked operation); only `type: "dir"` entries
+become candidates, so symlinks and submodules are never recursively followed,
+and no listing is ever performed on a discovered subdirectory (`apps/web` is
+never itself listed). Every read uses the same resolved `commitSha` as the
+rest of analysis, never a mutable branch name.
+
+Bounds: at most 8 directory listings (wildcard and container parents share
+this budget), 200 entries considered per listing, 20 candidate `package.json`
+probes, and 512 KB of nested `package.json` bytes read in total, strictly
+enforced -- each nested read's byte cap is `min(256 KB, bytes remaining in
+the 512 KB budget)`, so no single read can push the total past the bound; once
+the remaining budget reaches zero, no further candidate is read at all.
+Hitting any of these bounds sets `truncated: true` rather than silently
+returning a partial result as complete. A per-candidate GitHub read failure
+(including a candidate that no longer fits the remaining byte budget) or a
+directory listing failure is recorded as a warning and sets `complete: false`
+for the whole result -- distinct from `truncated`, which means a bound was
+reached by design, not that a read failed -- but does not fail analysis;
+sibling candidates and listings are still discovered normally. A malformed
+nested `package.json` is kept as an `unknown`-role candidate carrying its
+parse error as a warning.
+
+Detecting `frontend`/`backend`-shaped candidates never changes preview
+eligibility by itself: the existing `AMBIGUOUS_WORKSPACE` blocker still
+applies when `workspace.ambiguous` is true, and no nested candidate is ever
+passed to the build plan or Preview API.
+
+## 13. Preview Eligibility
 
 ```ts
 interface PreviewEligibility {
@@ -261,7 +360,7 @@ Common blocker codes:
 - `AMBIGUOUS_WORKSPACE`
 - `ANALYSIS_INCOMPLETE`
 
-## 13. Analysis Output
+## 14. Analysis Output
 
 ```ts
 interface RepositoryAnalysis {
@@ -290,11 +389,17 @@ interface RepositoryAnalysis {
     ambiguous: boolean
     evidence: string[]
   }
+  structure: RepositoryStructure
   preview: PreviewEligibility
   inspectedFiles: string[]
   warnings: string[]
 }
 ```
+
+Adding `structure` changed the analysis schema, so `ANALYZER_VERSION` moved
+to `0.1.2`; an analysis cached under the previous version is never reused as
+this shape. `PREVIEW_CONTRACT_VERSION` (`static-v1`) is unchanged because the
+runner/build contract did not change.
 
 The analyzer output is safe to display and cache. It contains variable names and evidence, never secret values or executed output.
 

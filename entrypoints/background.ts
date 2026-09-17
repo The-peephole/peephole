@@ -4,6 +4,7 @@ import { GitHubClient } from "../core/github/client"
 import { createRepositoryBranchesMessageHandler } from "../core/github/branchMessages"
 import { KnownRepositoryFilesLoader } from "../core/github/knownFiles"
 import { RepositoryMetadataCache } from "../core/github/repositoryMetadataCache"
+import { RepositoryStructureLoader } from "../core/github/repositoryStructureLoader"
 import { clearLegacyStoredGitHubToken } from "../core/github/tokenStorage"
 import { createSidePanelMessageHandler } from "../core/sidepanel/messages"
 import { createGitHubThemeMessageHandler } from "../core/sidepanel/themeMessages"
@@ -16,6 +17,7 @@ export default defineBackground(() => {
   const analysisService = new RepositoryAnalysisService(
     metadataCache.load,
     new KnownRepositoryFilesLoader(githubClient),
+    new RepositoryStructureLoader(githubClient),
   )
   const handleMessage = createRepositoryAnalysisMessageHandler(
     analysisService.load,

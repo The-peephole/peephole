@@ -13,6 +13,7 @@ import type {
   RepositoryIdentity,
   RepositoryRefSelection,
 } from "../types/repository"
+import type { RepositoryStructureLayout } from "../types/structure"
 
 interface RepositoryAnalysisViewProps {
   repository: RepositoryIdentity
@@ -397,6 +398,34 @@ function AnalysisResults({
       </section>
 
       <section className="peephole__section">
+        <h3>Structure</h3>
+        <dl className="peephole__facts">
+          <Detail
+            label="Layout"
+            value={formatStructureLayout(analysis.structure.layout)}
+          />
+        </dl>
+        {analysis.structure.projects.length > 0 && (
+          <ul aria-label="Detected projects" className="peephole__list">
+            {analysis.structure.projects.map((project) => (
+              <li key={project.path}>
+                <code>{project.path}</code>
+                {project.packageName ? ` — ${project.packageName}` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+        {(analysis.structure.truncated || !analysis.structure.complete) && (
+          <p className="peephole__muted">
+            {!analysis.structure.complete &&
+              "Structure analysis is incomplete. "}
+            {analysis.structure.truncated &&
+              "Additional projects may exist beyond Peephole's bounded scan."}
+          </p>
+        )}
+      </section>
+
+      <section className="peephole__section">
         <h3>Environment</h3>
         {analysis.environment.variables.length > 0 ? (
           <ul aria-label="Environment variables" className="peephole__chips">
@@ -501,6 +530,17 @@ function getPreservedAnalysis(state: AnalysisState): RepositoryAnalysis | null {
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
+}
+
+function formatStructureLayout(layout: RepositoryStructureLayout): string {
+  return (
+    {
+      "single-project": "Single project",
+      workspace: "Workspace",
+      "multi-project": "Multiple projects",
+      unknown: "Unknown",
+    } satisfies Record<RepositoryStructureLayout, string>
+  )[layout]
 }
 
 function formatFramework(framework: Framework): string {

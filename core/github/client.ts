@@ -4,6 +4,7 @@ import type {
   RepositoryMetadata,
 } from "../../types/repository"
 import type { PreviewRepositoryRef } from "../../types/preview"
+import { isRepositoryRelativeDirectoryPath } from "./repositoryPath"
 import { isRepositoryBranchName } from "./repositoryRef"
 
 const DEFAULT_API_BASE_URL = "https://api.github.com"
@@ -273,10 +274,38 @@ export class GitHubClient {
     repository: RepositoryMetadata,
     signal?: AbortSignal,
   ): Promise<GitHubContentEntry[]> {
+    return this.getRepositoryDirectoryEntries(repository, "", signal)
+  }
+
+  /**
+   * Lists one directory's immediate entries at the repository's resolved
+   * commit. `path` must be a validated, repository-relative path (the empty
+   * string means the repository root); this is a fixed, bounded GitHub
+   * operation, not an arbitrary-path fetch primitive.
+   */
+  async getRepositoryDirectoryEntries(
+    repository: RepositoryMetadata,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<GitHubContentEntry[]> {
+    if (!isRepositoryRelativeDirectoryPath(path)) {
+      throw new GitHubApiError(
+        "invalid-response",
+        "The requested repository directory path is invalid.",
+      )
+    }
+
     const repositoryPath = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}`
+    const suffix =
+      path === ""
+        ? ""
+        : `/${path
+            .split("/")
+            .map((segment) => encodeURIComponent(segment))
+            .join("/")}`
 
     return this.requestJson(
-      `${repositoryPath}/contents?ref=${encodeURIComponent(repository.commitSha)}`,
+      `${repositoryPath}/contents${suffix}?ref=${encodeURIComponent(repository.commitSha)}`,
       isGitHubContentEntriesResponse,
       signal,
     )

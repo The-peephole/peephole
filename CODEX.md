@@ -30,7 +30,8 @@ The implemented path is:
 ```text
 GitHub repository page
 -> Chrome extension repository injection
--> bounded repository analysis at the default-branch head commit
+-> bounded repository analysis at the selected (or default) branch's
+   resolved commit
 -> authenticated, commit-pinned Preview API job
 -> PostgreSQL-backed queue and state
 -> real gVisor production worker
@@ -78,6 +79,10 @@ deployed-site Live Preview.
   verifies repository identity, the exact commit, analysis, and build plan.
 - Branch names are not immutable job or cache identities. Branch Preview must
   resolve a selected branch to a full commit SHA before analysis or execution.
+- Repository/application structure detection is bounded and capability-driven:
+  it reads a small, fixed set of workspace declarations and conventional
+  directory names, never an unbounded or recursive repository crawl, and it
+  never selects or executes a nested candidate.
 
 ### Control and execution planes
 
@@ -132,7 +137,7 @@ changes it:
 
 1. GitHub theme synchronization (implemented)
 2. Branch Preview (implemented)
-3. Repository / application structure detection
+3. Repository / application structure detection (implemented)
 4. Build Adapter generalization
 5. frontend target selection / frontend monorepo support
 6. existing deployed-site Live Preview
@@ -178,6 +183,49 @@ commit reuses the existing preview identity instead of creating a new one; the
 Preview API/worker contract is unchanged and still receives only the resolved
 commit SHA, never a branch name.
 
+Repository/application structure detection adds `RepositoryStructure`
+(`types/structure.ts`): a bounded `layout` (`single-project`, `workspace`,
+`multi-project`, or `unknown`) plus a bounded list of `RepositoryProjectCandidate`
+entries, each labeled `project-candidate`, `package-candidate`, or `unknown`
+rather than asserting "application" or "library" without evidence.
+`core/analyzer/repositoryStructureDetector.ts` is a pure module (workspace
+pattern parsing/classification and the final layout/role assembly, no I/O);
+`core/github/repositoryStructureLoader.ts` is the bounded loader that performs
+the actual GitHub reads through `GitHubClient.getRepositoryDirectoryEntries`
+(a new fixed, validated, path-checked operation alongside the existing
+`getRepositoryTextFile`) and `GitHubClient.getRepositoryRootEntries`. Discovery
+combines declared workspace patterns (`package.json` `workspaces`, a bounded
+`pnpm-workspace.yaml` `packages:` subset -- not a YAML parser) with a small,
+fixed set of conventional root directory names, split into direct names
+(`frontend`, `backend`, `client`, `web`, each probed for its own
+package.json) and container names (`apps`, `packages`, never probed
+directly but bounded-listed exactly like a declared `dir/*` wildcard so
+`apps/web`/`packages/ui` are found even without a workspace declaration,
+deduped against the same directory if a wildcard already covers it); only an
+exact 1-2 segment literal path or a single-level `dir/*` wildcard is
+supported, so depth never exceeds one level of listing beneath the root.
+Every read is bounded (at most 8 directory listings -- wildcard and
+container parents share this budget --, 200 entries per listing, 20
+candidate package.json probes, 512 KB of nested package.json bytes total,
+strictly enforced by capping each nested read's byte limit to `min(256 KB,
+bytes remaining in the 512 KB budget)` so no single read can push the total
+past the bound) and reads `repository.commitSha` -- the same already-resolved
+metadata Branch Preview produces, never a mutable branch name. Hitting a
+bound sets `truncated: true` instead of hiding it; a failed candidate read or
+a failed directory listing sets `complete: false` (an explicit,
+loader-computed I/O signal distinct from `truncated`) and continues with the
+rest rather than failing the whole analysis. This adds
+a `structure` field to `RepositoryAnalysis`, so `ANALYZER_VERSION` moved to
+`0.1.2` to invalidate old cached analyses; `PREVIEW_CONTRACT_VERSION` is
+unchanged. The Side Panel's read-only "Structure" section
+(`components/RepositoryAnalysisView.tsx`) never adds a target selector, app
+picker, or per-app preview control -- selecting a discovered candidate belongs
+to the separate Build Adapter/target-selection stage. Detecting
+`frontend`/`backend` in `The-peephole/peephole-fixture-fullstack` does not
+change the existing `AMBIGUOUS_WORKSPACE`/`UNSUPPORTED_FRAMEWORK` blockers or
+make any nested candidate buildable; the Preview API/worker contract still
+receives only a resolved root commit SHA.
+
 ## Fixture Registry
 
 The official Vite + React golden-path fixture is:
@@ -200,7 +248,10 @@ commit: eae411a288b212201933cebb206126dd5bb0d93e
 ```
 
 Its existence is test preparation only. It is not evidence of full-stack
-analysis, execution, routing, secrets, or database support.
+analysis, execution, routing, secrets, or database support. Its
+`frontend`/`backend` layout is now exercised as a real repository structure
+detection target (both surface as bounded project candidates); this proves
+structure detection only, not a runnable full-stack path.
 
 ## Change Procedure
 

@@ -56,6 +56,39 @@ describe("KnownRepositoryFilesLoader", () => {
     )
   })
 
+  it("records root directory names alongside known files", async () => {
+    const entries: GitHubContentEntry[] = [
+      entry("package.json", 120),
+      entry("apps", 0, "dir"),
+      entry("packages", 0, "dir"),
+      entry(".github", 0, "dir"),
+    ]
+    const githubClient = {
+      getRepositoryRootEntries: vi.fn().mockResolvedValue(entries),
+      getRepositoryTextFile: vi.fn(async () => "{}"),
+    } as unknown as GitHubClient
+    const loader = new KnownRepositoryFilesLoader(githubClient)
+
+    const result = await loader.load(repository)
+
+    expect(result.rootDirectories).toEqual([".github", "apps", "packages"])
+  })
+
+  it("reads pnpm-workspace.yaml content within its byte limit", async () => {
+    const content = 'packages:\n  - "apps/*"\n'
+    const githubClient = {
+      getRepositoryRootEntries: vi
+        .fn()
+        .mockResolvedValue([entry("pnpm-workspace.yaml", content.length)]),
+      getRepositoryTextFile: vi.fn(async () => content),
+    } as unknown as GitHubClient
+    const loader = new KnownRepositoryFilesLoader(githubClient)
+
+    const result = await loader.load(repository)
+
+    expect(result.textFiles["pnpm-workspace.yaml"]).toBe(content)
+  })
+
   it("skips oversized text files and records a warning", async () => {
     const githubClient = {
       getRepositoryRootEntries: vi

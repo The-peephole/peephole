@@ -74,6 +74,83 @@ describe("RepositoryAnalysisView", () => {
     )
   })
 
+  it("renders the detected repository structure and project paths", async () => {
+    const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
+      ...supportedAnalysis,
+      structure: {
+        layout: "workspace",
+        projects: [
+          {
+            path: ".",
+            isRoot: true,
+            role: "unknown",
+            hasPackageJson: true,
+            packageName: null,
+            evidence: [],
+            warnings: [],
+          },
+          {
+            path: "apps/web",
+            isRoot: false,
+            role: "project-candidate",
+            hasPackageJson: true,
+            packageName: "@acme/web",
+            evidence: ["package.json detected"],
+            warnings: [],
+          },
+          {
+            path: "packages/ui",
+            isRoot: false,
+            role: "package-candidate",
+            hasPackageJson: true,
+            packageName: null,
+            evidence: ["package.json detected"],
+            warnings: [],
+          },
+        ],
+        workspaceEvidence: ["package.json workspaces detected"],
+        warnings: [],
+        complete: true,
+        truncated: false,
+      },
+    })
+    const container = await renderView(loader, roots)
+
+    expect(container.textContent).toContain("Structure")
+    expect(container.textContent).toContain("Workspace")
+    expect(container.textContent).toContain("apps/web")
+    expect(container.textContent).toContain("@acme/web")
+    expect(container.textContent).toContain("packages/ui")
+  })
+
+  it("shows a truncation notice when structure detection hit a bound", async () => {
+    const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
+      ...supportedAnalysis,
+      structure: {
+        ...supportedAnalysis.structure,
+        truncated: true,
+      },
+    })
+    const container = await renderView(loader, roots)
+
+    expect(container.textContent).toContain(
+      "Additional projects may exist beyond Peephole's bounded scan.",
+    )
+  })
+
+  it("shows an incomplete notice when structure detection could not verify everything", async () => {
+    const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
+      ...supportedAnalysis,
+      structure: {
+        ...supportedAnalysis.structure,
+        complete: false,
+      },
+    })
+    const container = await renderView(loader, roots)
+
+    expect(container.textContent).toContain("Structure analysis is incomplete.")
+  })
+
   it("shows a safe error and retries analysis", async () => {
     const loader = vi
       .fn<RepositoryAnalysisLoader>()

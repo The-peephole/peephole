@@ -5,12 +5,14 @@ import {
   type RepositoryAnalysis,
 } from "../../types/analysis"
 import type { RepositoryMetadata } from "../../types/repository"
+import type { RepositoryStructure } from "../../types/structure"
 import type { RepositoryFileSnapshot } from "../github/knownFiles"
 import { detectDeployment } from "./deploymentDetector"
 import { detectEnvironment } from "./environmentDetector"
 import { detectFramework } from "./frameworkDetector"
 import { detectPackageManager } from "./packageManagerDetector"
 import { getAllDependencies, parsePackageJson } from "./packageJson"
+import { detectRepositoryStructure } from "./repositoryStructureDetector"
 import { detectRuntime } from "./runtimeDetector"
 import { detectWorkspace } from "./workspaceDetector"
 import { runnerSupportBlocker } from "../preview/runnerSupport"
@@ -38,6 +40,7 @@ const HOSTED_BACKEND_DEPENDENCIES = new Set([
 export function analyzeRepository(
   repository: RepositoryMetadata,
   files: RepositoryFileSnapshot,
+  structure?: RepositoryStructure,
 ): RepositoryAnalysis {
   const packageJsonPresent = files.presentPaths.includes("package.json")
   const packageJsonResult = parsePackageJson(files.textFiles["package.json"])
@@ -62,6 +65,19 @@ export function analyzeRepository(
   const environment = detectEnvironment(files.presentPaths, files.textFiles)
   const deployment = detectDeployment(repository, files.presentPaths)
   const workspace = detectWorkspace(packageJson, files.presentPaths)
+  const resolvedStructure =
+    structure ??
+    detectRepositoryStructure({
+      rootFramework: framework.framework,
+      rootPackageJsonPresent: packageJsonPresent,
+      rootPackageName: packageJson?.name ?? null,
+      workspaceEvidence: workspace.evidence,
+      warnings: [],
+      candidates: [],
+      candidatePathsTruncated: false,
+      directoryListingsTruncated: false,
+      directoryListingFailed: false,
+    })
   const blockers: PreviewBlocker[] = [...packageManager.blockers]
   const runnerBlocker = runnerSupportBlocker(
     framework.framework,
@@ -158,7 +174,10 @@ export function analyzeRepository(
   if (workspace.ambiguous) {
     blockers.push({
       code: "AMBIGUOUS_WORKSPACE",
-      message: "Workspace application selection is outside the v0.1 contract.",
+      message:
+        resolvedStructure.projects.length > 1
+          ? "Applications were detected, but target selection is not implemented yet."
+          : "Workspace application selection is outside the v0.1 contract.",
     })
   }
 
@@ -191,6 +210,7 @@ export function analyzeRepository(
     environment,
     deployment,
     workspace,
+    structure: resolvedStructure,
     preview: {
       contractVersion: PREVIEW_CONTRACT_VERSION,
       mode,
