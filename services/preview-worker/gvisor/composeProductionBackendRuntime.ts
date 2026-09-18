@@ -1,5 +1,9 @@
 import type { BackendRuntimeControlPlane } from "../../backend-runtime-api/controlPlane"
 import { BackendRuntimeSupervisor } from "../../backend-runtime-worker/backendRuntimeSupervisor"
+import {
+  LiveBackendRuntimeRegistry,
+  type LiveBackendRuntimeRouteRegistry,
+} from "../../backend-runtime-worker/liveRuntimeRegistry"
 import { ArchiveByteStore } from "../local/archiveByteStore"
 import { ExtractionState } from "../local/extractionState"
 import { GitHubCommitArchiveFetcher } from "../local/githubCommitArchiveFetcher"
@@ -29,6 +33,13 @@ export interface ComposeProductionBackendRuntimeOptions {
    * plane's own runtime TTL -- see GVisorBackendRuntimeProcess's doc
    * comment. */
   maxRuntimeMs?: number
+  /** Process-local live-route registry a future same-process proxy would
+   * also read from -- injected so the caller (the process composition
+   * layer) stays the single owner of one shared instance, never a
+   * supervisor-constructed or module-level singleton. Defaults to a fresh,
+   * empty `LiveBackendRuntimeRegistry` when omitted, matching this
+   * composition's other injectable-with-a-default options. */
+  liveRuntimeRegistry?: LiveBackendRuntimeRouteRegistry
 }
 
 /**
@@ -87,6 +98,7 @@ export function composeProductionBackendRuntime(
     sandbox,
     installRunner,
     runtimeProcessStarter,
+    options.liveRuntimeRegistry ?? new LiveBackendRuntimeRegistry(),
     {
       installTimeoutMs: options.installTimeoutMs,
       readinessTimeoutMs: options.readinessTimeoutMs,

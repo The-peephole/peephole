@@ -5,9 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { BackendRuntimeSupervisor } from "../services/backend-runtime-worker/backendRuntimeSupervisor"
 import type {
+  BackendRuntimeDialTarget,
   BackendRuntimeProcessStarter,
   RuntimeProcessHandle,
 } from "../services/backend-runtime-worker/ports"
+import { LiveBackendRuntimeRegistry } from "../services/backend-runtime-worker/liveRuntimeRegistry"
 import { BackendRuntimeControlPlane } from "../services/backend-runtime-api/controlPlane"
 import {
   InMemoryBackendRuntimeQueue,
@@ -67,6 +69,10 @@ class FakeArchiveFetcher implements SourceArchiveFetcher {
 class FakeSandboxProvisioner implements SandboxProvisioner {
   roots: string[] = []
   destroyed: string[] = []
+  /** Observation hook, fired synchronously as the first thing `destroy()`
+   * does -- lets a test prove ordering (e.g. that a live route was already
+   * unregistered by the time namespace/workspace teardown begins). */
+  onDestroy?: (jobId: string) => void
 
   async allocate(
     jobId: string,
@@ -80,6 +86,7 @@ class FakeSandboxProvisioner implements SandboxProvisioner {
       rootDir,
       remainingMs: () => 60_000,
       destroy: async () => {
+        this.onDestroy?.(jobId)
         this.destroyed.push(jobId)
       },
     }
@@ -100,9 +107,20 @@ class FakeCommandRunner implements CommandRunner {
   }
 }
 
+const FAKE_DIAL_TARGET: BackendRuntimeDialTarget = {
+  host: "10.90.0.2",
+  port: plan.internalPort,
+}
+
 class FakeRuntimeProcessHandle implements RuntimeProcessHandle {
+  readonly dialTarget: BackendRuntimeDialTarget = FAKE_DIAL_TARGET
   stopCalls = 0
   readyError: Error | null = null
+  /** If set, `waitUntilReady()` awaits this before resolving/throwing --
+   * lets a test hold the supervisor inside "starting" indefinitely to
+   * observe registry state before readiness ever succeeds. */
+  readyGate: Promise<void> | null = null
+  stopOverride: (() => Promise<void>) | null = null
   private resolveExit!: (result: { exitCode: number | null }) => void
   private readonly exitPromise = new Promise<{ exitCode: number | null }>(
     (resolve) => {
@@ -111,6 +129,7 @@ class FakeRuntimeProcessHandle implements RuntimeProcessHandle {
   )
 
   async waitUntilReady(): Promise<void> {
+    if (this.readyGate) await this.readyGate
     if (this.readyError) throw this.readyError
   }
 
@@ -120,6 +139,10 @@ class FakeRuntimeProcessHandle implements RuntimeProcessHandle {
 
   async stop(): Promise<void> {
     this.stopCalls += 1
+    if (this.stopOverride) {
+      await this.stopOverride()
+      return
+    }
     this.resolveExit({ exitCode: 0 })
   }
 
@@ -135,12 +158,14 @@ class FakeRuntimeProcessStarter implements BackendRuntimeProcessStarter {
    * own `waitUntilReady()` call, instead of racing to mutate the handle
    * after the fact. */
   nextReadyError: Error | null = null
+  nextReadyGate: Promise<void> | null = null
   lastHandle: FakeRuntimeProcessHandle | null = null
 
   async start(): Promise<RuntimeProcessHandle> {
     if (this.startError) throw this.startError
     this.lastHandle = new FakeRuntimeProcessHandle()
     this.lastHandle.readyError = this.nextReadyError
+    this.lastHandle.readyGate = this.nextReadyGate
     return this.lastHandle
   }
 }
@@ -188,6 +213,7 @@ function compose(
   const sandbox = new FakeSandboxProvisioner()
   const installRunner = new FakeCommandRunner()
   const starter = new FakeRuntimeProcessStarter()
+  const liveRuntimeRegistry = new LiveBackendRuntimeRegistry()
   const supervisor = new BackendRuntimeSupervisor(
     controlPlane,
     fetcher,
@@ -196,6 +222,7 @@ function compose(
     sandbox,
     installRunner,
     starter,
+    liveRuntimeRegistry,
     { cancellationPollMs: 20, monitorPollMs: 20, readinessTimeoutMs: 200 },
   )
   return {
@@ -206,6 +233,7 @@ function compose(
     sandbox,
     installRunner,
     starter,
+    liveRuntimeRegistry,
     supervisor,
     setNow: (value: Date) => {
       now = value
@@ -236,8 +264,15 @@ describe("BackendRuntimeSupervisor", () => {
   })
 
   it("runs fetch -> install -> start -> running, then stays running until told to stop", async () => {
-    const { controlPlane, queue, sandbox, installRunner, starter, supervisor } =
-      compose()
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      installRunner,
+      starter,
+      liveRuntimeRegistry,
+      supervisor,
+    } = compose()
     const { runtimeId, job } = await createAndLease(controlPlane, queue)
     createdRoots.push(...sandbox.roots)
 
@@ -255,6 +290,8 @@ describe("BackendRuntimeSupervisor", () => {
       args: ["ci", "--no-audit", "--no-fund"],
     })
     expect(starter.lastHandle).not.toBeNull()
+    // Registered by the time the control plane reports "running".
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toEqual(FAKE_DIAL_TARGET)
 
     await controlPlane.cancel(runtimeId, requester)
     await runPromise
@@ -263,10 +300,19 @@ describe("BackendRuntimeSupervisor", () => {
     expect(final.status).toBe("stopped")
     expect(starter.lastHandle?.stopCalls).toBe(1)
     expect(sandbox.destroyed).toEqual([runtimeId])
+    // Cancel unregisters: no live route survives a normal stop.
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
   })
 
   it("fails with FETCH_FAILED and still destroys the workspace", async () => {
-    const { controlPlane, queue, sandbox, fetcher, supervisor } = compose()
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      fetcher,
+      liveRuntimeRegistry,
+      supervisor,
+    } = compose()
     const { runtimeId, job } = await createAndLease(controlPlane, queue)
     createdRoots.push(...sandbox.roots)
     fetcher.fetchError = new Error("network down")
@@ -277,6 +323,8 @@ describe("BackendRuntimeSupervisor", () => {
     expect(final.status).toBe("failed")
     expect(final.errorCode).toBe("FETCH_FAILED")
     expect(sandbox.destroyed).toEqual([runtimeId])
+    // A failure this early never even reached the register() call.
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
   })
 
   it("fails with INSTALL_FAILED when npm ci fails", async () => {
@@ -313,7 +361,14 @@ describe("BackendRuntimeSupervisor", () => {
   )
 
   it("fails with RUNTIME_START_FAILED when the runtime process cannot start", async () => {
-    const { controlPlane, queue, sandbox, starter, supervisor } = compose()
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      starter,
+      liveRuntimeRegistry,
+      supervisor,
+    } = compose()
     const { runtimeId, job } = await createAndLease(controlPlane, queue)
     createdRoots.push(...sandbox.roots)
     starter.startError = new Error("runsc run failed")
@@ -323,10 +378,18 @@ describe("BackendRuntimeSupervisor", () => {
     const final = await controlPlane.get(runtimeId, requester)
     expect(final.status).toBe("failed")
     expect(final.errorCode).toBe("RUNTIME_START_FAILED")
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
   })
 
   it("fails with RUNTIME_READINESS_TIMEOUT and stops the half-started process", async () => {
-    const { controlPlane, queue, sandbox, starter, supervisor } = compose()
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      starter,
+      liveRuntimeRegistry,
+      supervisor,
+    } = compose()
     const { runtimeId, job } = await createAndLease(controlPlane, queue)
     createdRoots.push(...sandbox.roots)
     starter.nextReadyError = new BackendRuntimeReadinessTimeoutError()
@@ -339,18 +402,35 @@ describe("BackendRuntimeSupervisor", () => {
     expect(final.status).toBe("failed")
     expect(final.errorCode).toBe("RUNTIME_READINESS_TIMEOUT")
     expect(starter.lastHandle?.stopCalls).toBeGreaterThanOrEqual(1)
+    // A readiness failure never resolves before register() would run, so
+    // no route was ever registered to begin with.
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
   })
 
-  it("fails with RUNTIME_EXITED when the process crashes while running", async () => {
-    const { controlPlane, queue, sandbox, starter, supervisor } = compose()
+  it("fails with RUNTIME_EXITED when the process crashes while running, and unregisters strictly before workspace destruction", async () => {
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      starter,
+      liveRuntimeRegistry,
+      supervisor,
+    } = compose()
     const { runtimeId, job } = await createAndLease(controlPlane, queue)
     createdRoots.push(...sandbox.roots)
+    let registeredAtDestroyTime:
+      ReturnType<typeof liveRuntimeRegistry.resolve> | "destroy-not-called" =
+      "destroy-not-called"
+    sandbox.onDestroy = (id) => {
+      registeredAtDestroyTime = liveRuntimeRegistry.resolve(id)
+    }
 
     const runPromise = supervisor.run(job)
     await vi.waitFor(async () => {
       const runtime = await controlPlane.get(runtimeId, requester)
       expect(runtime.status).toBe("running")
     })
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toEqual(FAKE_DIAL_TARGET)
 
     starter.lastHandle!.crash(1)
     await runPromise
@@ -359,11 +439,22 @@ describe("BackendRuntimeSupervisor", () => {
     expect(final.status).toBe("failed")
     expect(final.errorCode).toBe("RUNTIME_EXITED")
     expect(sandbox.destroyed).toEqual([runtimeId])
+    // The registry must already be clear by the time workspace/network
+    // teardown begins -- proven directly, not just after the fact.
+    expect(registeredAtDestroyTime).toBeUndefined()
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
   })
 
   it("stops cleanly once the control plane's own TTL expires", async () => {
-    const { controlPlane, queue, sandbox, starter, supervisor, setNow } =
-      compose(1_000)
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      starter,
+      liveRuntimeRegistry,
+      supervisor,
+      setNow,
+    } = compose(1_000)
     const { runtimeId, job } = await createAndLease(controlPlane, queue)
     createdRoots.push(...sandbox.roots)
 
@@ -372,6 +463,7 @@ describe("BackendRuntimeSupervisor", () => {
       const runtime = await controlPlane.get(runtimeId, requester)
       expect(runtime.status).toBe("running")
     })
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toEqual(FAKE_DIAL_TARGET)
 
     setNow(new Date(Date.now() + 2_000))
     await runPromise
@@ -380,6 +472,8 @@ describe("BackendRuntimeSupervisor", () => {
     expect(final.status).toBe("expired")
     expect(starter.lastHandle?.stopCalls).toBe(1)
     expect(sandbox.destroyed).toEqual([runtimeId])
+    // Expiry unregisters just like an explicit stop.
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
   })
 
   it("cancelling before the process ever starts goes straight to cancelled, never stopped", async () => {
@@ -449,5 +543,151 @@ describe("BackendRuntimeSupervisor", () => {
     const final = await controlPlane.get(runtimeId, requester)
     expect(final.status).toBe("failed")
     expect(starter.lastHandle).toBeNull()
+  })
+
+  describe("live runtime route registration", () => {
+    it("never registers a route until after waitUntilReady() has actually succeeded", async () => {
+      const {
+        controlPlane,
+        queue,
+        sandbox,
+        starter,
+        liveRuntimeRegistry,
+        supervisor,
+      } = compose()
+      const { runtimeId, job } = await createAndLease(controlPlane, queue)
+      createdRoots.push(...sandbox.roots)
+      let releaseReady!: () => void
+      starter.nextReadyGate = new Promise((resolve) => {
+        releaseReady = resolve
+      })
+
+      const runPromise = supervisor.run(job)
+      // Wait until the process has actually started (fetch/install/start
+      // have all completed) but is held inside waitUntilReady().
+      await vi.waitFor(() => {
+        expect(starter.lastHandle).not.toBeNull()
+      })
+      const runtimeDuringStarting = await controlPlane.get(runtimeId, requester)
+      expect(runtimeDuringStarting.status).toBe("starting")
+      // Not registered during fetch/install/start, and not registered
+      // before waitUntilReady() resolves.
+      expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+
+      releaseReady()
+      await vi.waitFor(async () => {
+        const runtime = await controlPlane.get(runtimeId, requester)
+        expect(runtime.status).toBe("running")
+      })
+      expect(liveRuntimeRegistry.resolve(runtimeId)).toEqual(FAKE_DIAL_TARGET)
+
+      await controlPlane.cancel(runtimeId, requester)
+      await runPromise
+    })
+
+    it('registers the route before the control plane is ever told the runtime is "running"', async () => {
+      const { controlPlane, queue, sandbox, liveRuntimeRegistry, supervisor } =
+        compose()
+      const { runtimeId, job } = await createAndLease(controlPlane, queue)
+      createdRoots.push(...sandbox.roots)
+      const originalMarkPhase = controlPlane.markPhase.bind(controlPlane)
+      let resolvedWhenMarkedRunning:
+        ReturnType<typeof liveRuntimeRegistry.resolve> | "never-called" =
+        "never-called"
+      vi.spyOn(controlPlane, "markPhase").mockImplementation(
+        async (id, phase) => {
+          if (phase === "running") {
+            resolvedWhenMarkedRunning = liveRuntimeRegistry.resolve(id)
+          }
+          return originalMarkPhase(id, phase)
+        },
+      )
+
+      const runPromise = supervisor.run(job)
+      await vi.waitFor(async () => {
+        const runtime = await controlPlane.get(runtimeId, requester)
+        expect(runtime.status).toBe("running")
+      })
+
+      expect(resolvedWhenMarkedRunning).toEqual(FAKE_DIAL_TARGET)
+
+      await controlPlane.cancel(runtimeId, requester)
+      await runPromise
+    })
+
+    it("fails the runtime closed and leaves no live route when registration itself conflicts", async () => {
+      const { controlPlane, queue, sandbox, liveRuntimeRegistry, supervisor } =
+        compose()
+      const { runtimeId, job } = await createAndLease(controlPlane, queue)
+      createdRoots.push(...sandbox.roots)
+      // Simulate an already-broken precondition: some other owner already
+      // holds a *different* live route under this exact runtimeId.
+      liveRuntimeRegistry.register(runtimeId, {
+        host: "10.0.0.1",
+        port: 9_999,
+      })
+
+      await supervisor.run(job)
+
+      const final = await controlPlane.get(runtimeId, requester)
+      expect(final.status).toBe("failed")
+      expect(final.status).not.toBe("running")
+      // Whatever the outcome, this runtimeId must not be left resolvable
+      // once run() has finished.
+      expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+    })
+
+    it('cleans up the registration when markPhase("running") itself fails immediately after a successful register', async () => {
+      const { controlPlane, queue, sandbox, liveRuntimeRegistry, supervisor } =
+        compose()
+      const { runtimeId, job } = await createAndLease(controlPlane, queue)
+      createdRoots.push(...sandbox.roots)
+      const originalMarkPhase = controlPlane.markPhase.bind(controlPlane)
+      vi.spyOn(controlPlane, "markPhase").mockImplementation(
+        async (id, phase) => {
+          if (phase === "running") {
+            throw new Error("control plane unavailable")
+          }
+          return originalMarkPhase(id, phase)
+        },
+      )
+
+      await supervisor.run(job)
+
+      const final = await controlPlane.get(runtimeId, requester)
+      expect(final.status).toBe("failed")
+      expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+    })
+
+    it("never preserves a live route even when stop()/cleanup itself fails", async () => {
+      const {
+        controlPlane,
+        queue,
+        sandbox,
+        starter,
+        liveRuntimeRegistry,
+        supervisor,
+      } = compose()
+      const { runtimeId, job } = await createAndLease(controlPlane, queue)
+      createdRoots.push(...sandbox.roots)
+
+      const runPromise = supervisor.run(job)
+      await vi.waitFor(async () => {
+        const runtime = await controlPlane.get(runtimeId, requester)
+        expect(runtime.status).toBe("running")
+      })
+      expect(liveRuntimeRegistry.resolve(runtimeId)).toEqual(FAKE_DIAL_TARGET)
+
+      starter.lastHandle!.stopOverride = async () => {
+        throw new Error("runsc kill failed")
+      }
+      await controlPlane.cancel(runtimeId, requester)
+      // run() may itself reject if stop() throws inside the teardown
+      // finally block -- what matters here is the registry's own state,
+      // not whether the promise resolves or rejects.
+      await runPromise.catch(() => undefined)
+
+      expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+    })
   })
 })

@@ -106,21 +106,35 @@ describe("BackendRuntimeApiClient", () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it("rejects a response whose runtime carries an unrecognized field shape (e.g. a url)", async () => {
-    const fetch = vi
-      .fn<typeof globalThis.fetch>()
-      .mockResolvedValue(
-        jsonResponse(200, { ...runtime, url: "https://evil.example/" }),
-      )
+  it("rejects a response whose runtime carries an unrecognized field shape (e.g. a url, or an internal dial target)", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      jsonResponse(200, {
+        ...runtime,
+        url: "https://evil.example/",
+        // M9 phase 1 regression: the internal-only live dial target
+        // (services/backend-runtime-worker/ports.ts's
+        // BackendRuntimeDialTarget) must never surface here even if a
+        // non-conformant server response included it or its fields
+        // directly.
+        dialTarget: { host: "10.99.0.2", port: 3000 },
+        peerIp: "10.99.0.2",
+        internalPort: 3000,
+      }),
+    )
     const client = new BackendRuntimeApiClient("https://api.example.test/", {
       fetch,
       getSession: () => ACTIVE_SESSION,
     })
 
     // Extra fields are simply ignored by the parser -- it never surfaces a
-    // url even if a (non-conformant) server response included one.
+    // url, dial target, peer IP, or internal port even if a
+    // (non-conformant) server response included one.
     const result = await client.get(runtime.id)
     expect(result).not.toHaveProperty("url")
+    expect(result).not.toHaveProperty("dialTarget")
+    expect(result).not.toHaveProperty("peerIp")
+    expect(result).not.toHaveProperty("internalPort")
+    expect(JSON.stringify(result)).not.toContain("10.99.0.2")
   })
 
   it("maps a typed API error response", async () => {
