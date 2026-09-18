@@ -89,6 +89,18 @@ describe("BackendRuntimeControlPlane", () => {
     expect(JSON.stringify(result.runtime).toLowerCase()).not.toContain("url")
   })
 
+  it("never includes an internal dial target, peer IP, or internal port on the public runtime resource", async () => {
+    const { controlPlane } = compose()
+
+    const result = await controlPlane.create(createRequest(), requester)
+
+    expect(result.runtime).not.toHaveProperty("dialTarget")
+    expect(result.runtime).not.toHaveProperty("peerIp")
+    expect(result.runtime).not.toHaveProperty("internalPort")
+    expect(result.runtime).not.toHaveProperty("host")
+    expect(result.runtime).not.toHaveProperty("port")
+  })
+
   it("returns the existing active runtime for an identical request (idempotent)", async () => {
     const { controlPlane, resolver } = compose()
 

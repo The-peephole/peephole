@@ -1,5 +1,6 @@
 import type { BackendRuntimeControlPlane } from "../../backend-runtime-api/controlPlane"
 import { BackendRuntimeSupervisor } from "../../backend-runtime-worker/backendRuntimeSupervisor"
+import type { LiveBackendRuntimeRouteRegistry } from "../../backend-runtime-worker/liveRuntimeRegistry"
 import { ArchiveByteStore } from "../local/archiveByteStore"
 import { ExtractionState } from "../local/extractionState"
 import { GitHubCommitArchiveFetcher } from "../local/githubCommitArchiveFetcher"
@@ -29,6 +30,16 @@ export interface ComposeProductionBackendRuntimeOptions {
    * plane's own runtime TTL -- see GVisorBackendRuntimeProcess's doc
    * comment. */
   maxRuntimeMs?: number
+  /** Process-local live-route registry the future same-process full-stack
+   * proxy resolver will also read from -- REQUIRED, not defaulted, and
+   * deliberately never constructed by this function. The one process
+   * composing both the backend supervisor and (later) the proxy resolver
+   * must own exactly one registry instance and pass the SAME instance to
+   * both; a silently-constructed fallback here would let that composition
+   * accidentally create two independent, disagreeing registries (the
+   * supervisor registering routes nobody's resolver ever reads) with no
+   * type or runtime error to catch it. */
+  liveRuntimeRegistry: LiveBackendRuntimeRouteRegistry
 }
 
 /**
@@ -87,6 +98,7 @@ export function composeProductionBackendRuntime(
     sandbox,
     installRunner,
     runtimeProcessStarter,
+    options.liveRuntimeRegistry,
     {
       installTimeoutMs: options.installTimeoutMs,
       readinessTimeoutMs: options.readinessTimeoutMs,

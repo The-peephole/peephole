@@ -2,6 +2,21 @@ import type { BackendRuntimePlan } from "../../types/backendRuntime"
 import type { LocalPreviewWorkspace } from "../preview-worker/local/localWorkspace"
 
 /**
+ * Internal-only network coordinates for dialing a *running* backend
+ * runtime's sandbox from the host's own root network namespace -- never a
+ * public backend URL/hostname (see D-030/D-031). `host` is always the
+ * sandbox's `peerIp` on its ingress-only point-to-point veth link, `port`
+ * is always the plan's own fixed, server-validated `internalPort`. This
+ * type must never reach `types/backendRuntime.ts`'s public `BackendRuntime`
+ * DTO, any backend-runtime HTTP response, or the extension's API client --
+ * it is consumed only by trusted, same-process routing infrastructure.
+ */
+export interface BackendRuntimeDialTarget {
+  readonly host: string
+  readonly port: number
+}
+
+/**
  * A single supervised backend process inside its sandbox. Deliberately not
  * `CommandRunner`-shaped: that interface is "one command, wait for exit,
  * delete" (see RunscCommandRunner); this is "start, watch readiness, watch
@@ -9,6 +24,12 @@ import type { LocalPreviewWorkspace } from "../preview-worker/local/localWorkspa
  * command runner cannot express.
  */
 export interface RuntimeProcessHandle {
+  /** Internal-only dial target for this specific running process -- see
+   * `BackendRuntimeDialTarget`. Known as soon as the handle exists (the
+   * sandbox's ingress-only namespace is already provisioned by then); it is
+   * the caller's responsibility to only register it in a live-routing
+   * registry once `waitUntilReady()` has actually succeeded. */
+  readonly dialTarget: BackendRuntimeDialTarget
   /**
    * Polls until the backend accepts a TCP connection on its assigned
    * internal port, or throws once the process exits first (a startup

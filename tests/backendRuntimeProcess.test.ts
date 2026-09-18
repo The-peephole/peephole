@@ -153,6 +153,23 @@ describe("GVisorBackendRuntimeProcess", () => {
     ).toBe(true)
   })
 
+  it("exposes an internal dial target matching the provisioned ingress-only peerIp and the plan's own internalPort", async () => {
+    const processRunner = new FakeProcessRunner()
+    const runtime = new GVisorBackendRuntimeProcess({
+      processRunner,
+      resolveDnsConfig: () => ({ source: "/etc/resolv.conf", nameservers: [] }),
+    })
+    const distinctPeerIp = "10.201.7.2"
+    const handle = await runtime.start(
+      fakeWorkspace(bundleDir, distinctPeerIp),
+      { ...plan, internalPort: 4321 },
+    )
+
+    expect(handle.dialTarget).toEqual({ host: distinctPeerIp, port: 4321 })
+
+    await handle.stop()
+  })
+
   it("registers then unregisters the container across the full lifecycle", async () => {
     const processRunner = new FakeProcessRunner()
     const runtime = new GVisorBackendRuntimeProcess({

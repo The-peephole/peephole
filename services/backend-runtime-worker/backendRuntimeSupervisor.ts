@@ -29,6 +29,7 @@ import type {
   BackendRuntimeProcessStarter,
   RuntimeProcessHandle,
 } from "./ports"
+import type { LiveBackendRuntimeRouteRegistry } from "./liveRuntimeRegistry"
 
 export interface BackendRuntimeSupervisorOptions {
   archiveLimits?: ArchiveLimits
@@ -71,6 +72,11 @@ export class BackendRuntimeSupervisor {
     private readonly sandbox: SandboxProvisioner,
     private readonly installRunner: CommandRunner,
     private readonly runtimeProcessStarter: BackendRuntimeProcessStarter,
+    /** Process-local live-route registry -- see liveRuntimeRegistry.ts.
+     * Injected, never self-constructed and never a module-level singleton,
+     * so the process composition layer stays the single owner of the one
+     * registry instance a future same-process proxy would also read from. */
+    private readonly liveRuntimeRegistry: LiveBackendRuntimeRouteRegistry,
     private readonly options: BackendRuntimeSupervisorOptions = {},
   ) {
     this.archiveLimits = options.archiveLimits ?? DEFAULT_ARCHIVE_LIMITS
@@ -154,6 +160,21 @@ export class BackendRuntimeSupervisor {
         signal.aborted ? "RUNTIME_UNAVAILABLE" : phaseErrorCode(error),
       )
     } finally {
+      // Unregister first, synchronously, with no `await` before it -- the
+      // very first thing teardown does, before even `checking`'s own
+      // in-flight control-plane poll is awaited below. Once teardown has
+      // begun, no new proxy request may keep resolving this runtime merely
+      // because some other in-flight promise happens to still be pending;
+      // route revocation must not wait on anything. This also still
+      // strictly precedes everything that could release this runtime's
+      // namespace/peerIp back for reuse by an unrelated later sandbox
+      // (`processHandle?.stop()`/`workspace?.destroy()`, below) -- covers
+      // every exit path that reaches this finally block (normal stop,
+      // cancel, expiry, control-plane-unreachable abort, a start/readiness
+      // failure that never registered at all, and an unexpected process
+      // exit noticed by monitorWhileRunning). Idempotent and safe even if
+      // this runtimeId was never registered.
+      this.liveRuntimeRegistry.unregister(queued.runtimeId)
       stopped = true
       clearTimeout(poll)
       await checking
@@ -217,6 +238,14 @@ export class BackendRuntimeSupervisor {
     }
 
     signal.throwIfAborted()
+    // Register the live route before the control plane ever reports this
+    // runtime as "running" -- a caller observing "running" status must
+    // always be able to resolve a live dial target, never a window where
+    // status says running but the route isn't registered yet. If
+    // markPhase() itself now throws, run()'s existing finally block still
+    // unregisters this entry (unregister is unconditional and idempotent
+    // there), so a failed transition never leaves a live route behind.
+    this.liveRuntimeRegistry.register(runtimeId, handle.dialTarget)
     await this.controlPlane.markPhase(runtimeId, "running")
     return handle
   }
@@ -262,7 +291,28 @@ export class BackendRuntimeSupervisor {
   /** Polls the control plane's own status (which already accounts for TTL
    * expiry and explicit cancel/stop) rather than tracking a separate timer
    * here, and races that against the process's own `waitForExit()` so a
-   * crash is detected without waiting for the next poll tick. */
+   * crash is detected without waiting for the next poll tick.
+   *
+   * Live-route staleness note: an unexpected process exit is only noticed
+   * up to `monitorPollMs` (plus one `shouldContinueRunning` round trip)
+   * after it actually happens -- this loop polls `exited`, it does not
+   * react to it immediately. During that bounded window the registry entry
+   * this runtime registered is still resolvable. This is safe: the
+   * process's own container is deleted by `handle.waitForExit()` itself
+   * (see RuntimeProcessHandle's doc comment), but the *network namespace*
+   * that owns this runtime's `peerIp` is torn down later, only by
+   * `workspace.destroy()` in run()'s finally block -- which always runs
+   * strictly after `unregister()` there. So for the entire window, the
+   * address a stale entry points to remains exclusively owned by this
+   * dead runtime's own (not-yet-released) namespace; it can never resolve
+   * to a different sandbox. The only possible effect of the window is a
+   * dial attempt racing a connection refusal against an already-dead
+   * process, never a misroute. Deliberately not narrowed further by
+   * attaching a second, independent `waitForExit()` continuation here
+   * purely to unregister early: that would call `waitForExit()` from two
+   * separate ownership paths in this class for a window that is already
+   * provably safe, trading a real (if small) new race-analysis burden for
+   * no additional security property. */
   private async monitorWhileRunning(
     runtimeId: string,
     handle: RuntimeProcessHandle,

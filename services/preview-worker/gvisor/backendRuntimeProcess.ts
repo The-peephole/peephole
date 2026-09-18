@@ -233,6 +233,11 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     }
 
     return {
+      // Internal-only: `peerIp` comes from the actual provisioned
+      // ingress-only namespace above, `internalPort` from the validated
+      // plan -- never from any client/host/header/query/env value, never
+      // persisted. See BackendRuntimeDialTarget's doc comment.
+      dialTarget: { host: peerIp, port: plan.internalPort },
       waitUntilReady: (timeoutMs) =>
         this.probeReady(peerIp, plan.internalPort, timeoutMs, runPromise),
       waitForExit: async () => {
