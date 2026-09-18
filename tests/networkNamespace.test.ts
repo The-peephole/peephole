@@ -168,6 +168,7 @@ describe("VethNatNetworkProvisioner", () => {
     const reallocated = await allocator.allocate({
       allocationId: "a".repeat(32),
       uplink: "eth0",
+      policy: "egress-nat",
       dnsServers: [DNS_SERVER],
     })
     expect(reallocated.index).toBeDefined()
@@ -223,6 +224,154 @@ describe("VethNatNetworkProvisioner", () => {
     await expect(
       provisioner.create("9".repeat(32), [DNS_SERVER]),
     ).rejects.toThrow(/default network interface/)
+  })
+})
+
+describe("VethNatNetworkProvisioner.createIngressOnly", () => {
+  let leaseDir: string
+  let processRunner: FakeProcessRunner
+  let allocator: SubnetAllocator
+  let provisioner: VethNatNetworkProvisioner
+
+  beforeEach(async () => {
+    leaseDir = await mkdtemp(path.join(os.tmpdir(), "peephole-net-leases-"))
+    processRunner = new FakeProcessRunner()
+    allocator = new SubnetAllocator({
+      leaseDir,
+      bootId: async () => "test-boot",
+      processStartTime: async () => "test-start",
+      syncDirectory: async () => undefined,
+    })
+    provisioner = new VethNatNetworkProvisioner({
+      processRunner,
+      subnetAllocator: allocator,
+    })
+  })
+
+  afterEach(async () => {
+    await rm(leaseDir, { recursive: true, force: true })
+  })
+
+  it("never configures NAT, DNS, or a default route", async () => {
+    const handle = await provisioner.createIngressOnly("a".repeat(32))
+    const lines = commandLines(processRunner)
+
+    expect(handle.path).toMatch(/^\/var\/run\/netns\/peephole-\d+$/)
+    expect(handle.peerIp).toMatch(/^10\.200\.\d+\.\d+$/)
+    expect(lines).not.toContain(expect.stringContaining("MASQUERADE"))
+    expect(lines).not.toContain(expect.stringContaining("--dport 53"))
+    expect(lines.some((line) => line.includes("route add default"))).toBe(false)
+  })
+
+  it("makes the egress chain an unconditional DROP", async () => {
+    await provisioner.createIngressOnly("b".repeat(32))
+    const lines = commandLines(processRunner)
+    const egressChain = createdChain(lines, "ppe")
+    const chainLines = lines.filter((line) =>
+      line.startsWith(`iptables -w 5 -A ${egressChain} `),
+    )
+
+    expect(chainLines).toEqual([`iptables -w 5 -A ${egressChain} -j DROP`])
+  })
+
+  it("allows only established/related replies into the host, dropping everything else", async () => {
+    await provisioner.createIngressOnly("c".repeat(32))
+    const lines = commandLines(processRunner)
+    const inputChain = createdChain(lines, "ppi")
+    const chainLines = lines.filter((line) =>
+      line.startsWith(`iptables -w 5 -A ${inputChain} `),
+    )
+
+    expect(chainLines).toEqual([
+      `iptables -w 5 -A ${inputChain} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT`,
+      `iptables -w 5 -A ${inputChain} -j DROP`,
+    ])
+  })
+
+  it("makes the return (forwarded-into-the-namespace) chain an unconditional DROP", async () => {
+    await provisioner.createIngressOnly("d".repeat(32))
+    const lines = commandLines(processRunner)
+    const returnChain = createdChain(lines, "ppr")
+    const chainLines = lines.filter((line) =>
+      line.startsWith(`iptables -w 5 -A ${returnChain} `),
+    )
+
+    expect(chainLines).toEqual([`iptables -w 5 -A ${returnChain} -j DROP`])
+  })
+
+  it("still hooks all three chains into FORWARD/INPUT ahead of any host-wide policy", async () => {
+    await provisioner.createIngressOnly("e".repeat(32))
+    const lines = commandLines(processRunner)
+    const egressChain = createdChain(lines, "ppe")
+    const inputChain = createdChain(lines, "ppi")
+    const returnChain = createdChain(lines, "ppr")
+
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(
+          new RegExp(
+            `^iptables -w 5 -I FORWARD 1 -i veph\\d+ -j ${egressChain}$`,
+          ),
+        ),
+        expect.stringMatching(
+          new RegExp(
+            `^iptables -w 5 -I FORWARD 1 -o veph\\d+ -j ${returnChain}$`,
+          ),
+        ),
+        expect.stringMatching(
+          new RegExp(`^iptables -w 5 -I INPUT 1 -i veph\\d+ -j ${inputChain}$`),
+        ),
+      ]),
+    )
+  })
+
+  it("denies IPv6 the same way as an egress-NAT namespace", async () => {
+    await provisioner.createIngressOnly("f".repeat(32))
+    const lines = commandLines(processRunner)
+
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^ip6tables -w 5 -I INPUT 1 -i veph\d+ -j DROP$/),
+        expect.stringMatching(
+          /^ip6tables -w 5 -I FORWARD 1 -i veph\d+ -j DROP$/,
+        ),
+        expect.stringMatching(
+          /^ip6tables -w 5 -I FORWARD 1 -o veph\d+ -j DROP$/,
+        ),
+      ]),
+    )
+  })
+
+  it("tears down chains, hooks, interfaces, and namespace with no NAT rule to remove", async () => {
+    const handle = await provisioner.createIngressOnly("1".repeat(32))
+    processRunner.calls.length = 0
+
+    await handle.teardown()
+
+    const lines = commandLines(processRunner)
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        "ip netns list",
+        "ip -o link show",
+        "iptables -w 5 -S",
+        "iptables -w 5 -t nat -S",
+        "ip6tables -w 5 -S",
+      ]),
+    )
+    expect(lines).not.toContain(
+      expect.stringContaining("-t nat -D POSTROUTING"),
+    )
+
+    processRunner.failing = () => true
+    await expect(handle.teardown()).resolves.toBeUndefined()
+  })
+
+  it("allocates two ingress-only namespaces from the same call with independent identities", async () => {
+    const first = await provisioner.createIngressOnly("2".repeat(32))
+    const second = await provisioner.createIngressOnly("3".repeat(32))
+
+    expect(first.path).not.toBe(second.path)
+    expect(first.peerIp).not.toBe(second.peerIp)
   })
 })
 

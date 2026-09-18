@@ -20,6 +20,15 @@ export interface NetworkNamespaceHandle {
   teardown(): Promise<void>
 }
 
+export interface IngressOnlyNetworkNamespaceHandle extends NetworkNamespaceHandle {
+  /** The sandbox's address on its point-to-point link to the host. A
+   * host-root-namespace process connecting to `peerIp` never traverses this
+   * namespace's egress/return firewall chains -- that traffic is locally
+   * delivered over the veth pair, not forwarded -- so this is the address a
+   * trusted readiness or proxy probe must dial. */
+  readonly peerIp: string
+}
+
 export interface NetworkNamespaceProvisionerOptions {
   processRunner?: ProcessRunner
   ipBinaryPath?: string
@@ -85,6 +94,7 @@ export class VethNatNetworkProvisioner {
       lease = await this.leases.allocate({
         allocationId: id,
         uplink,
+        policy: "egress-nat",
         dnsServers,
       })
       await this.run([
@@ -181,6 +191,165 @@ export class VethNatNetworkProvisioner {
         }
       },
     }
+  }
+
+  /**
+   * A namespace for a supervised backend runtime process, not an install/build
+   * step: no NAT, no default route, no DNS. The job may never originate
+   * traffic; the only traffic it can ever see is the reply to a connection
+   * the host itself opened. See `IngressOnlyNetworkNamespaceHandle`. Kept as
+   * its own method (not a branch inside `create()`) so the existing,
+   * production-proven egress-NAT setup path is never touched by this change.
+   */
+  async createIngressOnly(
+    id: string,
+  ): Promise<IngressOnlyNetworkNamespaceHandle> {
+    const uplink = await this.defaultUplinkInterface()
+    this.activity.activate(id)
+    let lease: NetworkLease | undefined
+
+    try {
+      lease = await this.leases.allocate({
+        allocationId: id,
+        uplink,
+        policy: "ingress-only",
+        dnsServers: [],
+      })
+      await this.run([
+        "link",
+        "add",
+        lease.hostVeth,
+        "mtu",
+        "1500",
+        "type",
+        "veth",
+        "peer",
+        "name",
+        lease.peerVeth,
+      ])
+      await this.run([
+        "addr",
+        "add",
+        `${lease.hostIp}/${lease.prefixLength}`,
+        "dev",
+        lease.hostVeth,
+      ])
+      await this.run(["link", "set", lease.hostVeth, "up"])
+      await this.run(["netns", "add", lease.namespace])
+      await this.run(["link", "set", lease.peerVeth, "netns", lease.namespace])
+      await this.runInNamespace(lease.namespace, [
+        "addr",
+        "add",
+        `${lease.peerIp}/${lease.prefixLength}`,
+        "dev",
+        lease.peerVeth,
+      ])
+      await this.runInNamespace(lease.namespace, [
+        "link",
+        "set",
+        lease.peerVeth,
+        "up",
+      ])
+      await this.runInNamespace(lease.namespace, ["link", "set", "lo", "up"])
+      // Deliberately no default route: the backend must have no outbound
+      // path at all, not merely a firewalled one. Only the directly
+      // connected /30 to the host is reachable.
+
+      await this.configureIngressOnlyFirewall(lease)
+      await this.configureIpv6Deny(lease)
+      // Deliberately no NAT/MASQUERADE rule -- this policy is ingress-only.
+    } catch (error) {
+      try {
+        if (lease) {
+          await this.reaper.cleanupLease(lease, { allowLiveOwner: true })
+        }
+      } catch (cleanupError) {
+        this.activity.deactivate(id)
+        throw new AggregateError(
+          [error, cleanupError],
+          "Ingress-only sandbox network setup failed and its durable cleanup also failed.",
+          { cause: cleanupError },
+        )
+      }
+      this.activity.deactivate(id)
+      throw error
+    }
+
+    let tornDown = false
+    return {
+      path: `/var/run/netns/${lease.namespace}`,
+      peerIp: lease.peerIp,
+      teardown: async () => {
+        if (tornDown) return
+        try {
+          await this.reaper.cleanupLease(lease, { allowLiveOwner: true })
+          tornDown = true
+        } finally {
+          this.activity.deactivate(id)
+        }
+      },
+    }
+  }
+
+  private async configureIngressOnlyFirewall(
+    names: NetworkLease,
+  ): Promise<void> {
+    for (const chain of [
+      names.egressChain,
+      names.inputChain,
+      names.returnChain,
+    ]) {
+      await this.iptablesRun(["-N", chain])
+    }
+
+    // The job namespace may never reach anywhere else through the host.
+    await this.iptablesRun(["-A", names.egressChain, "-j", "DROP"])
+
+    // Only the reply to a host-initiated connection (the trusted readiness
+    // or proxy probe) may reach a host-owned address; nothing else may.
+    await this.iptablesRun([
+      "-A",
+      names.inputChain,
+      "-m",
+      "conntrack",
+      "--ctstate",
+      "ESTABLISHED,RELATED",
+      "-j",
+      "ACCEPT",
+    ])
+    await this.iptablesRun(["-A", names.inputChain, "-j", "DROP"])
+
+    // Nothing should ever be forwarded into this namespace from elsewhere.
+    await this.iptablesRun(["-A", names.returnChain, "-j", "DROP"])
+
+    // Insert per-veth hooks ahead of any host-wide ACCEPT policy.
+    await this.iptablesRun([
+      "-I",
+      "FORWARD",
+      "1",
+      "-i",
+      names.hostVeth,
+      "-j",
+      names.egressChain,
+    ])
+    await this.iptablesRun([
+      "-I",
+      "FORWARD",
+      "1",
+      "-o",
+      names.hostVeth,
+      "-j",
+      names.returnChain,
+    ])
+    await this.iptablesRun([
+      "-I",
+      "INPUT",
+      "1",
+      "-i",
+      names.hostVeth,
+      "-j",
+      names.inputChain,
+    ])
   }
 
   private async configureIpv4Firewall(

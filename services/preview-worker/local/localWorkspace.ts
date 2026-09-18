@@ -10,6 +10,11 @@ export interface LocalPreviewWorkspace extends PreviewWorkspace {
   readonly rootDir: string
   /** Optional host-only directory for bounded compressed archive staging. */
   readonly archiveStagingRoot?: string
+  /**
+   * Optional sandbox-specific trust-boundary hook. Called after trusted
+   * host-side extraction and before any untrusted command may run.
+   */
+  normalizeExtractedTree?(signal?: AbortSignal): Promise<void>
   /** Milliseconds left in this job's total wall-clock budget, may be negative. */
   remainingMs(): number
 }

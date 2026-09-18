@@ -480,6 +480,74 @@ and reaper ownership rules.
 The local development worker is unsandboxed. Its passing tests are functional
 pipeline evidence, not production isolation evidence.
 
+### Backend runtime (`backend-v1`)
+
+Wholly separate from the static build/worker tests above -- see
+docs/PREVIEW_RUNTIME.md's "Backend Runtime (backend-v1)" and D-030.
+
+- `tests/backendRuntimeAdapter.test.ts` (29): every branch of
+  `resolveBackendExecutionSupport`/`resolveBackendRuntimePlan` -- framework
+  rejection, missing lockfile, unsafe/traversal/absolute/`.ts` entrypoint
+  rejection, database rejection, the full environment-requirement-kind
+  matrix, the fixed internal port, and no raw `npm start` string anywhere
+  in the produced plan.
+- `tests/backendRuntimeControlPlane.test.ts` (22): creation, idempotent
+  reuse, per-requester quota, ownership isolation (wrong requester gets
+  404), full phase progression and invalid-transition rejection,
+  cancel-from-queued-vs-running semantics, TTL expiry,
+  `shouldContinueRunning`/`isWorkerRuntimeActive` polling semantics, and
+  safe error messages that never leak stdout/stderr.
+- `tests/backendRuntimeHttp.test.ts` (5): route matching, create-never-
+  returns-a-url, get/cancel round trip, malformed body rejection.
+- `tests/backendRuntimeApiClient.test.ts` (6): the client-side
+  `BackendRuntimeApiClient` -- session/auth handling, response validation
+  that ignores an unrecognized field such as a url, and typed error mapping.
+- `tests/githubBackendRuntimePlanResolver.test.ts`: exact-commit backend
+  authorization accepts confirmed absence only; env/package/lock read errors
+  fail closed, aborts propagate, and explicit pnpm/yarn/bun declarations are
+  rejected while npm remains accepted.
+- `tests/backendRuntimeWorkerLoop.test.ts` (4): lease/renew/acknowledge/
+  release, mirroring `previewWorkerLoop.test.ts`'s coverage exactly for the
+  separate `BackendRuntimeWorkerLoop`.
+- `tests/networkNamespace.test.ts`, `tests/networkOrphanReaper.test.ts`,
+  `tests/subnetAllocator.test.ts`, `tests/gvisorAdapter.test.ts`: the new
+  `policy: "egress-nat" | "ingress-only"` lease field, `createIngressOnly`'s
+  exact firewall rule generation (unconditional egress `DROP`, input
+  accepts only `ESTABLISHED,RELATED`, unconditional return `DROP`, no NAT,
+  no default route), `expectedRules()`'s policy-aware branching,
+  reconciliation/cleanup for a mix of egress-nat and ingress-only leases in
+  the same host snapshot, and the two independent per-workspace network
+  namespace allocations (egress install vs. ingress-only runtime) never
+  colliding in the activation registry -- all against a fake process
+  runner, never a real host.
+- `tests/backendRuntimeProcess.test.ts` (10): `GVisorBackendRuntimeProcess`
+  against a fake `ProcessRunner` and a real local TCP listener standing in
+  for the sandboxed process -- readiness success, exit-before-ready,
+  readiness timeout, crash detection via `waitForExit`, idempotent `stop()`,
+  failed/timed-out/thrown kill with forced-delete attempt,
+  and the OCI spec it writes (direct `node <entrypoint>`, only the platform
+  environment allowlist, the ingress-only namespace path).
+- `tests/backendRuntimeSupervisor.test.ts` (14): the full FETCH -> INSTALL
+  -> START -> monitor -> STOP orchestration against fake
+  fetcher/sandbox/install-runner/runtime-process-starter dependencies --
+  every phase's specific failure code, readiness timeout stopping the
+  half-started process, a mid-run crash producing `RUNTIME_EXITED`, TTL
+  expiry and explicit cancellation both reaching a clean `stopped` (not
+  `failed`) state, a tampered/mismatched queued plan being rejected before
+  anything executes, and a recovered non-queued runtime never being started
+  twice. This suite also caught and fixed a real deadlock (the monitoring
+  loop's own cleanup awaited the very exit signal that only a caller-level
+  `stop()` could ever produce) -- see D-030's implementation notes.
+- `tests/RepositoryAnalysisView.test.tsx`: a qualifying candidate shows
+  "Supported (express-node-npm-v1)" and calls the new
+  `renderBackendRuntimeControls` render prop; a non-qualifying candidate is
+  unchanged ("Not supported yet"); still never a preview-target option.
+
+Not yet portable-tested: `BackendRuntimeSupervisor`/`GVisorBackendRuntimeProcess`
+against a *real* gVisor sandbox (see section 5), and the composition
+function `composeProductionBackendRuntime` end to end (it is not wired into
+production `main()` in this change).
+
 ## 4. Live-Network Golden Paths
 
 With `PEEPHOLE_REAL_NETWORK_TESTS=1`, exercise:
@@ -515,6 +583,19 @@ the applicable production claims, including:
 The dedicated `realGvisorMaliciousScript` suite exists but its production-like
 AWS run remains a separate unchecked gate. Do not promote its assertions to a
 recorded production result until that run is completed and retained.
+
+The `backend-v1` ingress-only network policy (`VethNatNetworkProvisioner
+.createIngressOnly`, the `policy` field on `NetworkLease`) has full portable
+coverage (see section 3) but has **not** been exercised against a real
+gVisor/Linux host by this change -- there was no such host available. Before
+`composeProductionBackendRuntime` is wired into production `main()`, verify
+on a real host: the sandbox can accept a host-initiated TCP connection with
+zero firewall exceptions added, the sandbox cannot reach the public
+internet/host services/metadata/another job's namespace/the control plane,
+`GVisorBackendRuntimeProcess.stop()` actually terminates the sandboxed
+process (not just the local `runsc run` CLI), and a worker restart with a
+live `running`/`starting` runtime is correctly reaped as stale on the next
+startup reconciliation.
 
 ## 6. Failure and Security Cases
 
@@ -555,7 +636,12 @@ Add coverage in the same order as product development:
 7. backend detection evidence and false positives, plus environment
    requirement classification, bounded discovery, and failure isolation
    (implemented)
-8. backend process lifecycle and isolation
+8. backend process lifecycle and isolation -- adapter/plan matching, plan
+   re-validation, control plane lifecycle/ownership/quota, the gVisor
+   runtime process primitive, ingress-only network policy generation and
+   reconciliation, and supervisor orchestration are all covered by portable
+   tests (implemented); real-gVisor-host verification of the ingress-only
+   network policy specifically is not yet done -- see section 5
 9. frontend/backend routing and cross-origin policy
 10. ephemeral secret redaction, scope, and teardown
 11. temporary database tenancy, credentials, lifecycle, and cleanup

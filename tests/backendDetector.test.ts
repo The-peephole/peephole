@@ -153,6 +153,20 @@ describe("detectBackendCandidate", () => {
     expect(candidate?.entrypoint).toBe("src/server.js")
   })
 
+  it("retains the packageManager declaration for backend-v1 compatibility", () => {
+    const candidate = detectBackendCandidate(
+      "backend",
+      packageJson({
+        packageManager: "pnpm@9.0.0",
+        dependencies: { express: "latest" },
+      }),
+      [],
+      {},
+    )
+
+    expect(candidate?.packageManager).toBe("pnpm@9.0.0")
+  })
+
   it.each([
     "node src/server.js && echo done",
     "node src/server.js; rm -rf /",

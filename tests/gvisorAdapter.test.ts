@@ -17,6 +17,7 @@ import {
 } from "../services/preview-worker/gvisor/runscCli"
 import { FakeSandboxDiskManager } from "./fakeSandboxDiskManager"
 import { RunnerDiskLimitError } from "../services/preview-worker/local/commandRunner"
+import type { VethNatNetworkProvisioner } from "../services/preview-worker/gvisor/networkNamespace"
 
 describe("buildOciRuntimeSpec", () => {
   it("produces a non-root, capability-stripped, quota'd spec", () => {
@@ -362,4 +363,109 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
 
     await workspace.destroy()
   }, 10_000)
+})
+
+class FakeNetworkProvisioner {
+  createCalls: string[] = []
+  createIngressOnlyCalls: string[] = []
+  teardownCounts = { egress: 0, ingressOnly: 0 }
+
+  async create(id: string) {
+    this.createCalls.push(id)
+    return {
+      path: `/var/run/netns/fake-egress-${id}`,
+      teardown: async () => {
+        this.teardownCounts.egress += 1
+      },
+    }
+  }
+
+  async createIngressOnly(id: string) {
+    this.createIngressOnlyCalls.push(id)
+    return {
+      path: `/var/run/netns/fake-ingress-${id}`,
+      peerIp: `10.250.0.${String(this.createIngressOnlyCalls.length)}`,
+      teardown: async () => {
+        this.teardownCounts.ingressOnly += 1
+      },
+    }
+  }
+}
+
+describe("GVisorSandboxProvisioner.ensureIngressOnlyNetworkNamespace", () => {
+  let baseRootfsImage: string
+  let bundlesRootDir: string
+
+  beforeEach(async () => {
+    baseRootfsImage = await mkdtemp(
+      path.join(os.tmpdir(), "peephole-base-rootfs-"),
+    )
+    await writeFile(path.join(baseRootfsImage, "base-file"), "trusted-rootfs")
+    bundlesRootDir = await mkdtemp(path.join(os.tmpdir(), "peephole-bundles-"))
+  })
+
+  afterEach(async () => {
+    await rm(baseRootfsImage, { recursive: true, force: true })
+    await rm(bundlesRootDir, { recursive: true, force: true })
+  })
+
+  it("lazily creates and caches a separate ingress-only namespace from a distinct allocation id", async () => {
+    const processRunner = new FakeProcessRunner()
+    const networkProvisioner = new FakeNetworkProvisioner()
+    const provisioner = new GVisorSandboxProvisioner({
+      baseRootfsImage,
+      bundlesRootDir,
+      processRunner,
+      diskManager: new FakeSandboxDiskManager(bundlesRootDir),
+      networkProvisioner:
+        networkProvisioner as unknown as VethNatNetworkProvisioner,
+    })
+    const workspace = await provisioner.allocate("job-ingress-only")
+
+    const first = await workspace.ensureIngressOnlyNetworkNamespace()
+    const second = await workspace.ensureIngressOnlyNetworkNamespace()
+
+    expect(first).toEqual(second)
+    expect(networkProvisioner.createIngressOnlyCalls).toHaveLength(1)
+    expect(first.peerIp).toBe("10.250.0.1")
+
+    const egressPath = await workspace.ensureNetworkNamespace(["172.31.0.2"])
+    expect(networkProvisioner.createCalls).toHaveLength(1)
+    expect(egressPath).not.toBe(first.path)
+    // Two independent leases: never the same allocation id, or the
+    // process-local activation registry would reject the second as a
+    // duplicate concurrent activation of the same lease.
+    expect(networkProvisioner.createIngressOnlyCalls[0]).not.toBe(
+      networkProvisioner.createCalls[0],
+    )
+
+    await workspace.destroy()
+    expect(networkProvisioner.teardownCounts).toEqual({
+      egress: 1,
+      ingressOnly: 1,
+    })
+  })
+
+  it("never creates an ingress-only namespace unless a caller asks for one", async () => {
+    const processRunner = new FakeProcessRunner()
+    const networkProvisioner = new FakeNetworkProvisioner()
+    const provisioner = new GVisorSandboxProvisioner({
+      baseRootfsImage,
+      bundlesRootDir,
+      processRunner,
+      diskManager: new FakeSandboxDiskManager(bundlesRootDir),
+      networkProvisioner:
+        networkProvisioner as unknown as VethNatNetworkProvisioner,
+    })
+    const workspace = await provisioner.allocate("job-no-network")
+
+    await workspace.destroy()
+
+    expect(networkProvisioner.createCalls).toHaveLength(0)
+    expect(networkProvisioner.createIngressOnlyCalls).toHaveLength(0)
+    expect(networkProvisioner.teardownCounts).toEqual({
+      egress: 0,
+      ingressOnly: 0,
+    })
+  })
 })

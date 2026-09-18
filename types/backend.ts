@@ -18,6 +18,9 @@ export interface BackendCandidate {
   framework: BackendFramework
   runtime: "node"
   packageName: string | null
+  /** The `package.json` packageManager declaration, retained solely for
+   * backend-v1's npm-only compatibility check. */
+  packageManager?: string | null
   /**
    * A safe, textually-derived entrypoint file name from a narrow
    * `node <path>`-style start/dev script, or null when none could be
@@ -28,6 +31,14 @@ export interface BackendCandidate {
   /** Names of recognized database/server-side dependencies, if any. */
   databaseDependencies: string[]
   environmentRequirements: EnvironmentRequirement[]
+  /**
+   * Whether `{sourceRoot}/package-lock.json` was found. This is bounded
+   * evidence for a *future* execution-support signal (see
+   * `types/backendRuntime.ts`'s `BackendExecutionSupport`) -- it is never
+   * itself an authorization to execute anything, and a real backend
+   * runtime job always re-verifies this independently at the exact commit.
+   */
+  packageLockPresent: boolean
   evidence: string[]
   warnings: string[]
 }

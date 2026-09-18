@@ -93,7 +93,7 @@ because a fixture or interface for it exists.
 5. [x] frontend target selection / bounded frontend monorepo support
 6. [x] existing deployed-site Live Preview
 7. [x] backend detection + environment requirement analysis
-8. [ ] backend execution
+8. [ ] backend-v1 execution foundation implemented; production verification pending
 9. [ ] frontend ↔ backend routing
 10. [ ] ephemeral env / secrets
 11. [ ] temporary database support
@@ -208,6 +208,27 @@ The early stages establish repository selection and generalized build contracts
 before full-stack execution is considered. Backend execution requires a new
 reviewed runtime contract; it must not be implemented by extending the lifetime
 or privileges of the static-build sandbox.
+
+Backend execution is that new, wholly separate `backend-v1` runtime contract
+(`types/backendRuntime.ts`, `services/backend-runtime-api/`,
+`services/backend-runtime-worker/`) -- see D-030 and
+docs/PREVIEW_RUNTIME.md's "Backend Runtime (backend-v1)" section for the
+full design. Its success criterion is narrowly "safely start, supervise,
+stop, and clean up one supported backend process inside gVisor," not
+"supports arbitrary Node backends" and not "frontend can call the backend."
+The only implemented adapter (`express-node-npm-v1`) requires Express, npm,
+a committed `package-lock.json`, zero database dependencies, and every
+environment requirement already classified `auto-configurable`
+(`PORT`/`HOST`/`NODE_ENV` only); everything else keeps showing "Execution:
+Not supported yet" exactly as stage 7 left it. The runtime gets its own
+ingress-only network namespace (no NAT, no default route, an unconditional
+egress `DROP`) instead of the install/build sandbox's NAT'd egress policy,
+and there is still no public backend URL, no frontend/backend routing, no
+generated secret, and no provisioned database -- those remain stages 9-11.
+`static-v1`/`static-v2`/`BuildPlan`/the static artifact pipeline are
+unchanged. Persistence in this stage is in-memory only and the ingress-only
+network policy is unit-tested but not yet verified against a real
+gVisor/Linux host; production startup does not wire this in yet.
 
 ## Fixture Status
 

@@ -22,6 +22,11 @@ const MAX_BACKEND_ENV_TEMPLATE_READS_PER_CANDIDATE = 2
 export const MAX_BACKEND_TOTAL_BYTES = 512 * 1024
 const MAX_BACKEND_PACKAGE_JSON_BYTES = 256 * 1024
 const MAX_BACKEND_ENV_TEMPLATE_BYTES = 64 * 1024
+/** Presence-only probe; a lockfile larger than this reads as "not confirmed
+ * present" rather than throwing -- a conservative, fail-closed limitation
+ * of this client-side/analysis-time signal only. A real backend runtime job
+ * always re-verifies presence from the extracted archive with no such cap. */
+const MAX_BACKEND_PACKAGE_LOCK_PROBE_BYTES = 1024 * 1024
 
 interface BackendGitHubSource {
   getRepositoryTextFile(
@@ -154,17 +159,58 @@ export class BackendCandidateLoader {
         }
       }
 
+      const packageLockPresent = await this.probePackageLockPresent(
+        repository,
+        path,
+        totalBytes,
+        signal,
+      )
+      if (packageLockPresent.bytesRead > 0) {
+        totalBytes += packageLockPresent.bytesRead
+      }
+
       candidates.push(
         detectBackendCandidate(
           path,
           packageJson,
           envPresentPaths,
           envTextFiles,
+          packageLockPresent.present,
         ),
       )
     }
 
     return assembleBackendDetection(candidates, warnings, complete, truncated)
+  }
+
+  /**
+   * Presence-only: never used for its content. Failures (including the
+   * bounded-size cap) degrade to "not confirmed present" rather than
+   * throwing -- this is a best-effort UI signal, not an authorization path.
+   */
+  private async probePackageLockPresent(
+    repository: RepositoryMetadata,
+    path: string,
+    bytesAlreadyUsed: number,
+    signal?: AbortSignal,
+  ): Promise<{ present: boolean; bytesRead: number }> {
+    const remaining = MAX_BACKEND_TOTAL_BYTES - bytesAlreadyUsed
+    if (remaining <= 0) return { present: false, bytesRead: 0 }
+
+    try {
+      const content = await this.githubClient.getRepositoryTextFile(
+        repository,
+        joinRepositoryPath(path, "package-lock.json"),
+        Math.min(MAX_BACKEND_PACKAGE_LOCK_PROBE_BYTES, remaining),
+        signal,
+      )
+      return content === null
+        ? { present: false, bytesRead: 0 }
+        : { present: true, bytesRead: byteLength(content) }
+    } catch (error) {
+      if (isAbortError(error)) throw error
+      return { present: false, bytesRead: 0 }
+    }
   }
 }
 

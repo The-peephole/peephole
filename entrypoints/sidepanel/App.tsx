@@ -1,5 +1,7 @@
 import { RepositoryAnalysisView } from "../../components/RepositoryAnalysisView"
+import { BackendRuntimeControl } from "../../components/BackendRuntimeControl"
 import { PreviewJobPanel } from "../../components/PreviewJobPanel"
+import type { BackendRuntimeApi } from "../../core/backendRuntime/apiClient"
 import type { PreviewApi } from "../../core/preview/apiClient"
 import type {
   BuildTargetAnalysisLoader,
@@ -21,6 +23,10 @@ interface SidePanelAppProps {
   previewApi: PreviewApi | null
   previewArtifactBaseDomain?: string | null
   previewConfigurationError?: string | null
+  backendRuntimeApi?: BackendRuntimeApi | null
+  /** Backend-v1 is intentionally opt-in until production wires and verifies
+   * its separate control plane and worker on a real gVisor host. */
+  backendRuntimeEnabled?: boolean
 }
 
 export function SidePanelApp({
@@ -33,6 +39,8 @@ export function SidePanelApp({
   previewApi,
   previewConfigurationError = null,
   previewArtifactBaseDomain = null,
+  backendRuntimeApi = null,
+  backendRuntimeEnabled = false,
 }: SidePanelAppProps) {
   return (
     <main className="peephole-panel">
@@ -50,6 +58,19 @@ export function SidePanelApp({
           loadRepositoryBranches={loadRepositoryBranches}
           loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
           repository={repository}
+          renderBackendRuntimeControls={
+            backendRuntimeEnabled
+              ? ({ candidate, repository: repo }) => (
+                  <BackendRuntimeControl
+                    backendRuntimeApi={backendRuntimeApi}
+                    candidate={candidate}
+                    connectGitHub={connectGitHub}
+                    key={`${repo.repositoryId}:${repo.commitSha}:${candidate.sourceRoot}`}
+                    repository={repo}
+                  />
+                )
+              : undefined
+          }
           renderPreviewControls={(analysis) => (
             <PreviewJobPanel
               analysis={analysis}

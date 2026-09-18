@@ -58,10 +58,22 @@ export interface NetworkNames {
   readonly iptablesComment: string
 }
 
+/**
+ * `egress-nat` is the existing install/build sandbox policy: NAT'd public
+ * egress through the host, with a DNS/blocklist-filtered chain. `ingress-only`
+ * is for a long-lived backend runtime job: no NAT, no default route, and the
+ * job namespace may never originate traffic anywhere -- the only traffic it
+ * may ever see is the reply to a connection the host itself opened (the
+ * trusted readiness/proxy probe). A lease's policy is fixed for its whole
+ * lifetime; there is no in-place transition between policies.
+ */
+export type NetworkLeasePolicy = "egress-nat" | "ingress-only"
+
 export interface NetworkLease extends AllocatedSubnet, NetworkNames {
   readonly version: 1
   readonly allocationId: string
   readonly uplink: string
+  readonly policy: NetworkLeasePolicy
   readonly dnsServers: readonly string[]
   readonly creatorPid: number
   readonly creatorProcessStartTime: string | null
@@ -81,6 +93,12 @@ interface NetworkLeaseMarker {
   peerIp: string
   prefixLength: number
   uplink: string
+  /**
+   * Version 1 markers written before backend-v1 did not have this field.
+   * Absence is deliberately interpreted only as the pre-existing egress NAT
+   * policy; newly persisted markers always contain it.
+   */
+  policy?: NetworkLeasePolicy
   egressChain: string
   inputChain: string
   returnChain: string
@@ -166,13 +184,20 @@ export class NetworkLeaseManager {
   async allocate(options: {
     allocationId: string
     uplink: string
+    policy: NetworkLeasePolicy
     dnsServers: readonly string[]
   }): Promise<NetworkLease> {
     assertAllocationId(options.allocationId)
     if (!INTERFACE_PATTERN.test(options.uplink)) {
       throw new Error("Unsafe sandbox network uplink interface.")
     }
-    if (
+    if (options.policy === "ingress-only") {
+      if (options.dnsServers.length > 0) {
+        throw new Error(
+          "An ingress-only network lease must not configure DNS servers.",
+        )
+      }
+    } else if (
       options.dnsServers.length === 0 ||
       options.dnsServers.some((ip) => !isAllowedDnsServer(ip)) ||
       new Set(options.dnsServers).size !== options.dnsServers.length
@@ -293,11 +318,12 @@ export class NetworkLeaseManager {
       {
         allocationId: value.allocationId,
         uplink: value.uplink,
+        policy: value.policy ?? "egress-nat",
         dnsServers: value.dnsServers,
       },
       value,
     )
-    if (JSON.stringify(toMarker(expected)) !== JSON.stringify(value)) {
+    if (!sameMarker(expected, value)) {
       throw new Error(
         "Network lease marker does not match derived resource identity.",
       )
@@ -390,6 +416,7 @@ export class NetworkLeaseManager {
     options: {
       allocationId: string
       uplink: string
+      policy: NetworkLeasePolicy
       dnsServers: readonly string[]
     },
     ownership?: Pick<
@@ -403,6 +430,7 @@ export class NetworkLeaseManager {
       ...deriveNetworkNames(options.allocationId, index),
       allocationId: options.allocationId,
       uplink: options.uplink,
+      policy: options.policy,
       dnsServers: [...options.dnsServers],
       creatorPid: ownership?.creatorPid ?? process.pid,
       creatorProcessStartTime:
@@ -523,11 +551,12 @@ export class NetworkLeaseManager {
       {
         allocationId: value.allocationId,
         uplink: value.uplink,
+        policy: value.policy ?? "egress-nat",
         dnsServers: value.dnsServers,
       },
       value,
     )
-    if (JSON.stringify(toMarker(expected)) !== JSON.stringify(value)) {
+    if (!sameMarker(expected, value)) {
       throw new Error("Released network lease marker identity is invalid.")
     }
     await rm(markerPath, { force: false })
@@ -1092,6 +1121,7 @@ function toMarker(lease: NetworkLease): NetworkLeaseMarker {
     peerIp: lease.peerIp,
     prefixLength: lease.prefixLength,
     uplink: lease.uplink,
+    policy: lease.policy,
     egressChain: lease.egressChain,
     inputChain: lease.inputChain,
     returnChain: lease.returnChain,
@@ -1129,7 +1159,7 @@ function isMarker(value: unknown): value is NetworkLeaseMarker {
     "version",
   ]
   return (
-    Object.keys(marker).sort().join(",") === expectedKeys.sort().join(",") &&
+    isExpectedMarkerKeys(marker, expectedKeys) &&
     marker.version === 1 &&
     Number.isInteger(marker.subnetIndex) &&
     typeof marker.allocationId === "string" &&
@@ -1142,22 +1172,54 @@ function isMarker(value: unknown): value is NetworkLeaseMarker {
     marker.prefixLength === 30 &&
     typeof marker.uplink === "string" &&
     INTERFACE_PATTERN.test(marker.uplink) &&
+    (marker.policy === undefined ||
+      marker.policy === "egress-nat" ||
+      marker.policy === "ingress-only") &&
     typeof marker.egressChain === "string" &&
     typeof marker.inputChain === "string" &&
     typeof marker.returnChain === "string" &&
     typeof marker.iptablesComment === "string" &&
     Array.isArray(marker.dnsServers) &&
-    marker.dnsServers.length > 0 &&
-    marker.dnsServers.every(
-      (ip) => typeof ip === "string" && isAllowedDnsServer(ip),
-    ) &&
-    new Set(marker.dnsServers).size === marker.dnsServers.length &&
+    ((marker.policy ?? "egress-nat") === "ingress-only"
+      ? marker.dnsServers.length === 0
+      : marker.dnsServers.length > 0 &&
+        marker.dnsServers.every(
+          (ip) => typeof ip === "string" && isAllowedDnsServer(ip),
+        ) &&
+        new Set(marker.dnsServers).size === marker.dnsServers.length) &&
     Number.isInteger(marker.creatorPid) &&
     Number(marker.creatorPid) > 0 &&
     (marker.creatorProcessStartTime === null ||
       typeof marker.creatorProcessStartTime === "string") &&
     (marker.bootId === null || typeof marker.bootId === "string") &&
     typeof marker.createdAt === "string"
+  )
+}
+
+function isExpectedMarkerKeys(
+  marker: Record<string, unknown>,
+  expectedKeys: readonly string[],
+): boolean {
+  const actual = Object.keys(marker).sort().join(",")
+  const current = [...expectedKeys, "policy"].sort().join(",")
+  const legacy = [...expectedKeys].sort().join(",")
+  return actual === current || actual === legacy
+}
+
+function sameMarker(lease: NetworkLease, marker: NetworkLeaseMarker): boolean {
+  return (
+    stableMarkerJson(toMarker(lease)) ===
+    stableMarkerJson({ ...marker, policy: marker.policy ?? "egress-nat" })
+  )
+}
+
+function stableMarkerJson(marker: object): string {
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(marker).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    ),
   )
 }
 

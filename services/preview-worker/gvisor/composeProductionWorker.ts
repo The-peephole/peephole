@@ -9,7 +9,10 @@ import { LocalOutputResolver } from "../local/localOutputResolver"
 import { NpmBuildExecutor } from "../local/npmBuildExecutor"
 import { NpmDependencyInstaller } from "../local/npmDependencyInstaller"
 import type { PreviewControlPlane } from "../../preview-api/controlPlane"
-import { GVisorSandboxProvisioner } from "./gvisorSandboxProvisioner"
+import {
+  GVisorSandboxProvisioner,
+  type GVisorSandboxProvisionerOptions,
+} from "./gvisorSandboxProvisioner"
 import type { resolveDnsConfig } from "./dnsConfig"
 import type { VethNatNetworkProvisioner } from "./networkNamespace"
 import type { ProcessRunner } from "./processRunner"
@@ -42,6 +45,8 @@ export interface ComposeProductionWorkerOptions {
   /** Shared with startup/maintenance reconciliation in production so disk
    * lifecycle ownership cannot diverge between allocators and reapers. */
   diskManager?: SandboxDiskManager
+  /** Portable-test seam; production uses descriptor-based uid/gid changes. */
+  normalizeWorkspaceOwnership?: GVisorSandboxProvisionerOptions["normalizeWorkspaceOwnership"]
 }
 
 /**
@@ -77,6 +82,7 @@ export function composeProductionWorker(
     processRunner: options.processRunner,
     networkProvisioner: options.networkProvisioner,
     diskManager: options.diskManager,
+    normalizeWorkspaceOwnership: options.normalizeWorkspaceOwnership,
   })
   const installRunner = new RunscCommandRunner({
     network: "sandbox",

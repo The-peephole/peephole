@@ -1,0 +1,156 @@
+import { describe, expect, it, vi } from "vitest"
+
+import { BackendRuntimeWorkerLoop } from "../services/backend-runtime-worker/backendRuntimeWorkerLoop"
+import type {
+  BackendRuntimeQueueConsumer,
+  BackendRuntimeQueueLease,
+} from "../services/backend-runtime-api/ports"
+import type {
+  BackendRuntimePlan,
+  QueuedBackendRuntime,
+} from "../types/backendRuntime"
+
+const repository = {
+  repositoryId: 1,
+  owner: "acme",
+  name: "web",
+  commitSha: "0123456789abcdef0123456789abcdef01234567",
+}
+
+const plan: BackendRuntimePlan = {
+  contractVersion: "backend-v1",
+  repository,
+  sourceRoot: "backend",
+  adapterId: "express-node-npm-v1",
+  packageManager: "npm",
+  install: { command: "npm", args: ["ci", "--no-audit", "--no-fund"] },
+  start: { command: "node", args: ["src/server.js"] },
+  internalPort: 3000,
+  platformEnvironment: {
+    PORT: "3000",
+    HOST: "0.0.0.0",
+    NODE_ENV: "production",
+  },
+}
+
+const queuedRuntime: QueuedBackendRuntime = {
+  runtimeId: "runtime-1",
+  repository,
+  plan,
+}
+
+class FakeQueue implements BackendRuntimeQueueConsumer {
+  renew = vi.fn(async () => true)
+  leases: Array<BackendRuntimeQueueLease | null> = []
+  leaseCalls: Array<{ workerId: string; now: Date; leaseMs: number }> = []
+  acknowledgements: Array<{ runtimeId: string; workerId: string }> = []
+  releases: Array<{
+    runtimeId: string
+    workerId: string
+    availableAt: Date
+  }> = []
+
+  async lease(workerId: string, now: Date, leaseMs: number) {
+    this.leaseCalls.push({ workerId, now, leaseMs })
+    return this.leases.shift() ?? null
+  }
+
+  async acknowledge(runtimeId: string, workerId: string) {
+    this.acknowledgements.push({ runtimeId, workerId })
+    return true
+  }
+
+  async release(runtimeId: string, workerId: string, availableAt: Date) {
+    this.releases.push({ runtimeId, workerId, availableAt })
+    return true
+  }
+}
+
+describe("BackendRuntimeWorkerLoop", () => {
+  it("leases, runs, and acknowledges one runtime", async () => {
+    const queue = new FakeQueue()
+    queue.leases.push({ job: queuedRuntime, attempts: 1 })
+    const run = vi.fn(async () => undefined)
+    const now = new Date("2026-09-02T00:00:00.000Z")
+    const loop = new BackendRuntimeWorkerLoop(
+      queue,
+      { run },
+      { workerId: "worker-1", now: () => now },
+    )
+
+    await expect(loop.runOnce()).resolves.toBe(true)
+
+    expect(queue.leaseCalls).toEqual([
+      { workerId: "worker-1", now, leaseMs: 210_000 },
+    ])
+    expect(run).toHaveBeenCalledWith(
+      queuedRuntime,
+      expect.objectContaining({
+        recovered: false,
+        signal: expect.any(AbortSignal),
+      }),
+    )
+    expect(queue.acknowledgements).toEqual([
+      { runtimeId: "runtime-1", workerId: "worker-1" },
+    ])
+    expect(queue.releases).toEqual([])
+  })
+
+  it("returns false without invoking the worker when the queue is empty", async () => {
+    const queue = new FakeQueue()
+    const run = vi.fn(async () => undefined)
+    const loop = new BackendRuntimeWorkerLoop(
+      queue,
+      { run },
+      { workerId: "worker-1" },
+    )
+
+    await expect(loop.runOnce()).resolves.toBe(false)
+    expect(run).not.toHaveBeenCalled()
+    expect(queue.acknowledgements).toEqual([])
+  })
+
+  it("releases an unexpected worker failure with a retry delay", async () => {
+    const queue = new FakeQueue()
+    queue.leases.push({ job: queuedRuntime, attempts: 2 })
+    const failure = new Error("worker process exited")
+    const now = new Date("2026-09-02T00:00:00.000Z")
+    const loop = new BackendRuntimeWorkerLoop(
+      queue,
+      { run: async () => Promise.reject(failure) },
+      { workerId: "worker-1", retryDelayMs: 7_000, now: () => now },
+    )
+
+    await expect(loop.runOnce()).rejects.toBe(failure)
+    expect(queue.acknowledgements).toEqual([])
+    expect(queue.releases).toEqual([
+      {
+        runtimeId: "runtime-1",
+        workerId: "worker-1",
+        availableAt: new Date("2026-09-02T00:00:07.000Z"),
+      },
+    ])
+  })
+
+  it("polls until aborted and reports queue errors", async () => {
+    const controller = new AbortController()
+    const queue = new FakeQueue()
+    const error = new Error("database unavailable")
+    queue.lease = vi.fn(async () => Promise.reject(error))
+    const onError = vi.fn()
+    const wait = vi.fn(async (_milliseconds: number, signal: AbortSignal) => {
+      controller.abort()
+      expect(signal).toBe(controller.signal)
+    })
+    const loop = new BackendRuntimeWorkerLoop(
+      queue,
+      { run: async () => undefined },
+      { workerId: "worker-1", pollIntervalMs: 25, wait, onError },
+    )
+
+    await loop.runUntilStopped(controller.signal)
+
+    expect(onError).toHaveBeenCalledWith(error)
+    expect(wait).toHaveBeenCalledWith(25, controller.signal)
+  })
+})
