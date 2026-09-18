@@ -37,7 +37,9 @@ async function main() {
         [
           "node_modules/vitest/vitest.mjs",
           "run",
+          "--no-file-parallelism",
           "tests/postgresIntegration.test.ts",
+          "tests/postgresFullStackPreview.test.ts",
         ],
         {
           stdio: "inherit",
