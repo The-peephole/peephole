@@ -29,6 +29,7 @@ import type { BackendRuntimePlan } from "../types/backendRuntime"
 import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 
 const FIXTURE_COMMIT = "eae411a288b212201933cebb206126dd5bb0d93e"
+const RUNSC_ROOT_DIR = "/var/run/peephole/runsc"
 const baseRootfsImage =
   process.env.PEEPHOLE_GVISOR_BASE_ROOTFS ?? "/var/lib/peephole/base-rootfs"
 
@@ -112,11 +113,9 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
       ownedRoots.add(rootDir)
       const bundlesRootDir = path.join(rootDir, "bundles")
       const leaseDir = path.join(rootDir, "network-leases")
-      const runscRootDir = path.join(rootDir, "runsc")
       await Promise.all([
         mkdir(bundlesRootDir, { recursive: true }),
         mkdir(leaseDir, { recursive: true }),
-        mkdir(runscRootDir, { recursive: true }),
       ])
 
       const processRunner = new NodeProcessRunner()
@@ -136,13 +135,13 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
       })
       const sandboxProvisioner = new GVisorSandboxProvisioner({
         baseRootfsImage,
-        runscRootDir,
+        runscRootDir: RUNSC_ROOT_DIR,
         processRunner,
         networkProvisioner,
         diskManager,
       })
       const runtimeStarter = new GVisorBackendRuntimeProcess({
-        runscRootDir,
+        runscRootDir: RUNSC_ROOT_DIR,
         processRunner,
         maxRuntimeMs: 120_000,
       })
@@ -150,7 +149,7 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
       const environment = {
         rootDir,
         bundlesRootDir,
-        runscRootDir,
+        runscRootDir: RUNSC_ROOT_DIR,
         processRunner,
         leaseManager,
         networkProvisioner,
@@ -371,12 +370,7 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
           nat: false,
           ipv6: false,
         })
-        expect(
-          await listRunscContainers(
-            environment.processRunner,
-            environment.runscRootDir,
-          ),
-        ).toEqual([])
+        expect(await listOwnedTestContainers(environment)).toEqual([])
 
         process.stdout.write(
           `[real-backend-v1] ${JSON.stringify({ fixtureCommit: FIXTURE_COMMIT, readiness: "ready", health: health.body, hello: hello.body, outbound: probe.attempts, noDefaultRoute: true, noRuntimeNat: true, repeatedStop: "passed", runscCleanup: "passed", networkCleanup: "passed", diskCleanup: "passed" })}\n`,
@@ -452,11 +446,13 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
       await networkReaper.reapAll()
 
       expect(
-        await listRunscContainers(
-          environment.processRunner,
-          environment.runscRootDir,
-        ),
-      ).toEqual([])
+        (
+          await listRunscContainers(
+            environment.processRunner,
+            environment.runscRootDir,
+          )
+        ).some((container) => container.id === containerId),
+      ).toBe(false)
       await expect(stat(allocation.bundleDir)).rejects.toThrow()
       await expect(stat(allocation.mountpoint)).rejects.toThrow()
       await expect(stat(allocation.imagePath)).rejects.toThrow()
@@ -663,9 +659,26 @@ async function environmentIsClean(
   const [allocations, leases, containers] = await Promise.all([
     environment.diskManager.listOwnedAllocations(),
     environment.leaseManager.listOwnedLeases(),
-    listRunscContainers(environment.processRunner, environment.runscRootDir),
+    listOwnedTestContainers(environment),
   ])
   return (
     allocations.length === 0 && leases.length === 0 && containers.length === 0
   )
+}
+
+async function listOwnedTestContainers(
+  environment: RealBackendEnvironment,
+): Promise<Array<{ id: string; bundle: string }>> {
+  const containers = await listRunscContainers(
+    environment.processRunner,
+    environment.runscRootDir,
+  )
+  const root = path.resolve(environment.bundlesRootDir)
+  return containers.filter((container) => {
+    const relative = path.relative(root, path.resolve(container.bundle))
+    return (
+      relative === "" ||
+      (!relative.startsWith("..") && !path.isAbsolute(relative))
+    )
+  })
 }
