@@ -313,7 +313,7 @@ describe("GVisorBackendRuntimeProcess", () => {
     },
   )
 
-  it("writes an OCI spec that runs node directly with only the platform env allowlist, never a shell or npm start", async () => {
+  it("writes an OCI spec that runs the absolute sandbox node binary directly with only the platform env allowlist, never a shell or npm start", async () => {
     const processRunner = new FakeProcessRunner()
     const runtime = new GVisorBackendRuntimeProcess({ processRunner })
     const handle = await runtime.start(fakeWorkspace(bundleDir, "127.0.0.1"), {
@@ -325,17 +325,54 @@ describe("GVisorBackendRuntimeProcess", () => {
     const config = JSON.parse(
       await readFile(path.join(bundleDir, "config.json"), "utf8"),
     )
-    expect(config.process.args).toEqual(["node", "src/server.js"])
+    // Exactly ["/usr/local/bin/node", <entrypoint>]: no shell wrapper (a
+    // shell would appear as "/bin/sh", "-c", ...), no "npm"/"npm start".
+    expect(config.process.args).toEqual([
+      "/usr/local/bin/node",
+      "src/server.js",
+    ])
+    expect(config.process.args[0]).not.toMatch(/sh$/)
+    expect(config.process.args).not.toContain("npm")
+    // Exactly PORT/HOST/NODE_ENV -- no PATH, so a bare command name could
+    // never resolve via executable-name lookup even if this regressed.
     expect(config.process.env).toEqual([
       "PORT=3000",
       "HOST=0.0.0.0",
       "NODE_ENV=production",
     ])
+    expect(
+      (config.process.env as string[]).some((entry) =>
+        entry.startsWith("PATH="),
+      ),
+    ).toBe(false)
     expect(config.process.cwd).toBe("/workspace/backend")
     expect(config.process.user).toEqual({ uid: 65534, gid: 65534 })
     expect(config.linux.namespaces).toContainEqual({
       type: "network",
       path: "/var/run/netns/fake-ingress",
     })
+  })
+
+  it('rejects a plan whose start command is not the logical "node" command', async () => {
+    // start.command is typed as the literal "node" and is independently
+    // validated far upstream by validateBackendRuntimePlan; this proves the
+    // runtime's own narrow defense-in-depth check, guarding the translation
+    // to the absolute sandbox binary, never silently passes an unexpected
+    // command straight into the OCI spec if that upstream guarantee is ever
+    // bypassed (e.g. a plan reconstructed from untrusted storage).
+    const processRunner = new FakeProcessRunner()
+    const runtime = new GVisorBackendRuntimeProcess({ processRunner })
+    const tamperedPlan: BackendRuntimePlan = {
+      ...plan,
+      internalPort: port,
+      start: { command: "sh", args: ["src/server.js"] } as unknown as {
+        command: "node"
+        args: [string]
+      },
+    }
+
+    await expect(
+      runtime.start(fakeWorkspace(bundleDir, "127.0.0.1"), tamperedPlan),
+    ).rejects.toThrow('Backend runtime plan start command must be "node".')
   })
 })

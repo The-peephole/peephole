@@ -18,7 +18,11 @@ import { buildOciRuntimeSpec } from "./ociConfig"
 import { NodeProcessRunner } from "./nodeProcessRunner"
 import type { ProcessRunner, ProcessRunResult } from "./processRunner"
 import { runscDeleteArgs, runscKillArgs, runscRunArgs } from "./runscCli"
-import { SANDBOX_GID, SANDBOX_UID } from "./sandboxIdentity"
+import {
+  SANDBOX_GID,
+  SANDBOX_NODE_BINARY,
+  SANDBOX_UID,
+} from "./sandboxIdentity"
 
 /** Thrown by `waitUntilReady` when the process exits before ever accepting
  * a connection -- a distinct, callers-can-distinguish failure from a bare
@@ -109,13 +113,21 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     if (!isSafePreviewSourceRoot(plan.sourceRoot)) {
       throw new Error("Backend runtime plan sourceRoot is unsafe.")
     }
+    // The plan's `start.command` is the logical, allowlist-validated value
+    // "node" (validateBackendRuntimePlan). The OCI container has no shell
+    // and no PATH, so a bare "node" cannot be resolved by executable-name
+    // lookup -- translate it here, at the trusted runtime boundary, to the
+    // base rootfs's fixed absolute Node path.
+    if (plan.start.command !== "node") {
+      throw new Error('Backend runtime plan start command must be "node".')
+    }
     const sandbox = asGVisorWorkspace(workspace)
     const { path: namespacePath, peerIp } =
       await sandbox.ensureIngressOnlyNetworkNamespace()
 
     const dnsConfig = this.resolveDnsConfig()
     const spec = buildOciRuntimeSpec({
-      command: [plan.start.command, ...plan.start.args],
+      command: [SANDBOX_NODE_BINARY, ...plan.start.args],
       cwd:
         plan.sourceRoot === "."
           ? "/workspace"
