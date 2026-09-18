@@ -45,12 +45,12 @@ const ACTIVE_STATUSES = [
 
 /**
  * Mirrors `PostgresPreviewJobStore`'s exact atomic-admission shape
- * (services/preview-api/postgres/jobStore.ts): `createOrGet` inserts the
- * resource row and its initial queue row inside the SAME transaction, or
- * returns the existing idempotent resource -- never two separate
- * INSERT/commit steps, so an API crash between them can never leave a
- * durable preview that no queue delivery will ever pick up. See that
- * file's own doc comments for why this matters.
+ * (services/preview-api/postgres/jobStore.ts), extended with requester-level
+ * transaction serialization: `createOrGetWithCapacity` checks idempotency
+ * and capacity, then inserts the resource row and its initial queue row
+ * inside the SAME transaction. An API crash cannot leave a durable preview
+ * without a queue delivery, and concurrent API processes cannot both spend
+ * the same final capacity slot.
  */
 export class PostgresFullStackPreviewStore implements FullStackPreviewStore {
   constructor(private readonly database: PostgresDatabase) {}
@@ -83,29 +83,72 @@ export class PostgresFullStackPreviewStore implements FullStackPreviewStore {
       : null
   }
 
-  async countActiveByRequester(requesterId: string): Promise<number> {
-    const result = await this.database.query<{ count: string }>(
-      `
-        SELECT count(*)::text AS count
-        FROM peephole_fullstack_previews
-        WHERE requester_id = $1 AND status = ANY($2::text[])
-      `,
-      [requesterId, ACTIVE_STATUSES],
-    )
-    return Number(result.rows[0]?.count ?? "0")
-  }
-
-  async createOrGet(input: {
+  async createOrGetWithCapacity(input: {
     requesterId: string
     idempotencyKey: string
     requestFingerprint: string
     preview: StoredFullStackPreview
+    maxActive: number
   }): Promise<{
     created: boolean
     preview: StoredFullStackPreview
     enqueued?: boolean
   }> {
+    if (!Number.isSafeInteger(input.maxActive) || input.maxActive < 1) {
+      throw new FullStackPreviewControlError(
+        "INTERNAL_ERROR",
+        "The full-stack preview capacity limit is invalid.",
+        500,
+      )
+    }
+
     return this.database.transaction(async (client) => {
+      // Transaction-scoped advisory locks are held by PostgreSQL, not a
+      // Node process. Every API process derives the same signed 64-bit key
+      // from the requester id, so previously-unseen requests for one
+      // requester serialize across processes. Hash collisions can only
+      // over-serialize unrelated requesters; they can never under-lock one
+      // requester. The parameterized query cannot inject SQL, and the lock
+      // is released automatically on commit or rollback.
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))",
+        [input.requesterId],
+      )
+
+      const existing = await client.query<FullStackPreviewRow>(
+        `${SELECT_PREVIEW} WHERE requester_id = $1 AND idempotency_key = $2 FOR UPDATE`,
+        [input.requesterId, input.idempotencyKey],
+      )
+      const existingRow = existing.rows[0]
+
+      if (existingRow) {
+        if (existingRow.request_fingerprint !== input.requestFingerprint) {
+          throw new FullStackPreviewControlError(
+            "CONFLICT",
+            "The idempotency key was already used for a different request.",
+            409,
+          )
+        }
+        return { created: false, preview: toStoredPreview(existingRow) }
+      }
+
+      const active = await client.query<{ count: string }>(
+        `
+          SELECT count(*)::text AS count
+          FROM peephole_fullstack_previews
+          WHERE requester_id = $1 AND status = ANY($2::text[])
+        `,
+        [input.requesterId, ACTIVE_STATUSES],
+      )
+      if (Number(active.rows[0]?.count ?? "0") >= input.maxActive) {
+        throw new FullStackPreviewControlError(
+          "RATE_LIMITED",
+          "The active full-stack preview limit has been reached.",
+          429,
+          30,
+        )
+      }
+
       const inserted = await client.query<FullStackPreviewRow>(
         `
           INSERT INTO peephole_fullstack_previews (
@@ -117,63 +160,34 @@ export class PostgresFullStackPreviewStore implements FullStackPreviewStore {
             $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13,
             $14, $15, $16, $17
           )
-          ON CONFLICT (requester_id, idempotency_key) DO NOTHING
           RETURNING *
         `,
         previewValues(input),
       )
-      const insertedRow = inserted.rows[0]
-
-      if (insertedRow) {
-        const preview = toStoredPreview(insertedRow)
-        const enqueued = preview.status === "queued"
-        if (enqueued) {
-          // Admission and delivery commit together, including after an
-          // API crash -- see this class's own doc comment.
-          await client.query(
-            `
-              INSERT INTO peephole_fullstack_queue (
-                preview_id, payload, status, available_at, attempts,
-                created_at, updated_at
-              ) VALUES ($1, $2::jsonb, 'queued', now(), 0, now(), now())
-            `,
-            [
-              preview.id,
-              JSON.stringify({
-                previewId: preview.id,
-                repository: preview.repository,
-                frontendSourceRoot: preview.frontendSourceRoot,
-                backendSourceRoot: preview.backendSourceRoot,
-              }),
-            ],
-          )
-        }
-        return { created: true, preview, enqueued }
-      }
-
-      const existing = await client.query<FullStackPreviewRow>(
-        `${SELECT_PREVIEW} WHERE requester_id = $1 AND idempotency_key = $2 FOR UPDATE`,
-        [input.requesterId, input.idempotencyKey],
-      )
-      const existingRow = existing.rows[0]
-
-      if (!existingRow) {
-        throw new FullStackPreviewControlError(
-          "INTERNAL_ERROR",
-          "Full-stack preview persistence is inconsistent.",
-          500,
+      const preview = toStoredPreview(inserted.rows[0]!)
+      const enqueued = preview.status === "queued"
+      if (enqueued) {
+        // Admission and delivery commit together, including after an API
+        // crash -- see this class's own doc comment.
+        await client.query(
+          `
+            INSERT INTO peephole_fullstack_queue (
+              preview_id, payload, status, available_at, attempts,
+              created_at, updated_at
+            ) VALUES ($1, $2::jsonb, 'queued', now(), 0, now(), now())
+          `,
+          [
+            preview.id,
+            JSON.stringify({
+              previewId: preview.id,
+              repository: preview.repository,
+              frontendSourceRoot: preview.frontendSourceRoot,
+              backendSourceRoot: preview.backendSourceRoot,
+            }),
+          ],
         )
       }
-
-      if (existingRow.request_fingerprint !== input.requestFingerprint) {
-        throw new FullStackPreviewControlError(
-          "CONFLICT",
-          "The idempotency key was already used for a different request.",
-          409,
-        )
-      }
-
-      return { created: false, preview: toStoredPreview(existingRow) }
+      return { created: true, preview, enqueued }
     })
   }
 

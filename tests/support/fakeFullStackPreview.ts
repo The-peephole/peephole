@@ -88,6 +88,7 @@ export class FakeBackendPlanResolver implements BackendPlanResolver {
 export class FakeFullStackPreviewStore implements FullStackPreviewStore {
   private readonly byId = new Map<string, StoredFullStackPreview>()
   private readonly byKey = new Map<string, string>()
+  readonly queuedPreviewIds: string[] = []
 
   async get(previewId: string): Promise<StoredFullStackPreview | null> {
     return this.byId.get(previewId) ?? null
@@ -101,22 +102,21 @@ export class FakeFullStackPreviewStore implements FullStackPreviewStore {
     return { requestFingerprint: preview.requestFingerprint, preview }
   }
 
-  async countActiveByRequester(requesterId: string): Promise<number> {
-    let count = 0
-    for (const preview of this.byId.values()) {
-      if (preview.requesterId === requesterId && ACTIVE.has(preview.status)) {
-        count += 1
-      }
-    }
-    return count
-  }
-
-  async createOrGet(input: {
+  async createOrGetWithCapacity(input: {
     requesterId: string
     idempotencyKey: string
     requestFingerprint: string
     preview: StoredFullStackPreview
+    maxActive: number
   }) {
+    if (!Number.isSafeInteger(input.maxActive) || input.maxActive < 1) {
+      throw new FullStackPreviewControlError(
+        "INTERNAL_ERROR",
+        "The full-stack preview capacity limit is invalid.",
+        500,
+      )
+    }
+
     const key = `${input.requesterId}:${input.idempotencyKey}`
     const existingId = this.byKey.get(key)
     if (existingId) {
@@ -130,8 +130,28 @@ export class FakeFullStackPreviewStore implements FullStackPreviewStore {
       }
       return { created: false, preview: existing }
     }
+
+    let activeCount = 0
+    for (const preview of this.byId.values()) {
+      if (
+        preview.requesterId === input.requesterId &&
+        ACTIVE.has(preview.status)
+      ) {
+        activeCount += 1
+      }
+    }
+    if (activeCount >= input.maxActive) {
+      throw new FullStackPreviewControlError(
+        "RATE_LIMITED",
+        "The active full-stack preview limit has been reached.",
+        429,
+        30,
+      )
+    }
+
     this.byId.set(input.preview.id, input.preview)
     this.byKey.set(key, input.preview.id)
+    this.queuedPreviewIds.push(input.preview.id)
     return {
       created: true,
       preview: input.preview,

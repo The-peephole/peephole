@@ -24,6 +24,7 @@ function compose(
   options: {
     now?: Date
     maxActiveFullStackPreviewsPerRequester?: number
+    createId?: () => string
   } = {},
 ) {
   const store = new FakeFullStackPreviewStore()
@@ -40,6 +41,7 @@ function compose(
       now: () => clock,
       maxActiveFullStackPreviewsPerRequester:
         options.maxActiveFullStackPreviewsPerRequester,
+      createId: options.createId,
     },
   )
   return {
@@ -529,25 +531,57 @@ describe("FullStackPreviewControlPlane", () => {
       ).rejects.toMatchObject({ code: "RATE_LIMITED", status: 429 })
     })
 
-    it("a terminal (cancelled) preview does not consume active capacity", async () => {
-      const { controlPlane } = compose()
+    it.each(["stopped", "failed", "cancelled", "expired"] as const)(
+      "a terminal (%s) preview does not consume active capacity",
+      async (status) => {
+        const { controlPlane, store } = compose()
+        const first = await controlPlane.create(
+          createRequest(),
+          "request-key-first-000000",
+          requester,
+        )
+        await store.update(first.preview.id, (current) => ({
+          ...current,
+          status,
+        }))
+        await expect(
+          controlPlane.create(
+            createRequest(),
+            "request-key-second-00000",
+            requester,
+          ),
+        ).resolves.toMatchObject({ created: true })
+      },
+    )
+
+    it.each([
+      "queued",
+      "building_frontend",
+      "starting_backend",
+      "ready",
+      "stopping",
+    ] as const)("an active (%s) preview consumes capacity", async (status) => {
+      const { controlPlane, store } = compose()
       const first = await controlPlane.create(
         createRequest(),
         "request-key-first-000000",
         requester,
       )
-      await controlPlane.cancel(first.preview.id, requester)
+      await store.update(first.preview.id, (current) => ({
+        ...current,
+        status,
+      }))
       await expect(
         controlPlane.create(
           createRequest(),
           "request-key-second-00000",
           requester,
         ),
-      ).resolves.toMatchObject({ created: true })
+      ).rejects.toMatchObject({ code: "RATE_LIMITED", status: 429 })
     })
 
     it("an idempotent retry is checked before the active-count limit is consumed", async () => {
-      const { controlPlane } = compose({
+      const { controlPlane, frontendResolver, backendResolver } = compose({
         maxActiveFullStackPreviewsPerRequester: 1,
       })
       const first = await controlPlane.create(
@@ -565,6 +599,32 @@ describe("FullStackPreviewControlPlane", () => {
         created: false,
         preview: { id: first.preview.id },
       })
+      expect(frontendResolver.calls).toHaveLength(1)
+      expect(backendResolver.calls).toHaveLength(1)
+    })
+
+    it("a capacity failure creates neither a preview nor a queue row", async () => {
+      const firstId = "fullstack-00000000-0000-0000-0000-000000000001"
+      const secondId = "fullstack-00000000-0000-0000-0000-000000000002"
+      const ids = [firstId, secondId]
+      const { controlPlane, store } = compose({
+        createId: () => ids.shift()!,
+      })
+      await controlPlane.create(
+        createRequest(),
+        "request-key-first-000000",
+        requester,
+      )
+
+      await expect(
+        controlPlane.create(
+          createRequest(),
+          "request-key-second-00000",
+          requester,
+        ),
+      ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+      expect(await store.get(secondId)).toBeNull()
+      expect(store.queuedPreviewIds).toEqual([firstId])
     })
   })
 

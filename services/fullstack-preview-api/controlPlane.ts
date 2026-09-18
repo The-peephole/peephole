@@ -158,18 +158,6 @@ export class FullStackPreviewControlPlane {
       }
     }
 
-    const activeCount = await this.store.countActiveByRequester(
-      requester.subject,
-    )
-    if (activeCount >= this.maxActiveFullStackPreviewsPerRequester) {
-      throw new FullStackPreviewControlError(
-        "RATE_LIMITED",
-        "Only one active full-stack preview is allowed per requester at a time.",
-        429,
-        30,
-      )
-    }
-
     // Support validation only -- neither resolved plan is ever persisted or
     // used to create the underlying PreviewJob/BackendRuntime here. A
     // future worker phase independently re-resolves both again, exactly
@@ -199,11 +187,12 @@ export class FullStackPreviewControlPlane {
       expiresAt: expiresAt.toISOString(),
     }
 
-    const persisted = await this.store.createOrGet({
+    const persisted = await this.store.createOrGetWithCapacity({
       requesterId: requester.subject,
       idempotencyKey,
       requestFingerprint,
       preview,
+      maxActive: this.maxActiveFullStackPreviewsPerRequester,
     })
 
     if (

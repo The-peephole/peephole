@@ -62,11 +62,12 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
     const first = createPreview()
     previewIds.push(first.id)
 
-    const admitted = await store.createOrGet({
+    const admitted = await store.createOrGetWithCapacity({
       requesterId: first.requesterId,
       idempotencyKey: `request-${first.id}`,
       requestFingerprint: `fingerprint-${first.id}`,
       preview: first,
+      maxActive: 1,
     })
     expect(admitted.created).toBe(true)
     expect(admitted.enqueued).toBe(true)
@@ -93,11 +94,12 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
 
     const second = createPreview()
     previewIds.push(second.id)
-    await store.createOrGet({
+    await store.createOrGetWithCapacity({
       requesterId: second.requesterId,
       idempotencyKey: `request-${second.id}`,
       requestFingerprint: `fingerprint-${second.id}`,
       preview: second,
+      maxActive: 1,
     })
     const secondLeaseTime = new Date()
 
@@ -150,11 +152,12 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
     const queue = new PostgresFullStackPreviewQueue(database)
     const released = createPreview()
     previewIds.push(released.id)
-    await store.createOrGet({
+    await store.createOrGetWithCapacity({
       requesterId: released.requesterId,
       idempotencyKey: `request-${released.id}`,
       requestFingerprint: `fingerprint-${released.id}`,
       preview: released,
+      maxActive: 1,
     })
 
     const firstLease = await queue.lease(
@@ -191,11 +194,12 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
 
     const cancelled = createPreview()
     previewIds.push(cancelled.id)
-    await store.createOrGet({
+    await store.createOrGetWithCapacity({
       requesterId: cancelled.requesterId,
       idempotencyKey: `request-${cancelled.id}`,
       requestFingerprint: `fingerprint-${cancelled.id}`,
       preview: cancelled,
+      maxActive: 1,
     })
     await queue.cancel(cancelled.id)
 
@@ -234,6 +238,51 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
     }
   })
 
+  it("admits exactly one of two concurrent distinct requests at limit 1", async () => {
+    const store = new PostgresFullStackPreviewStore(database)
+    const first = createPreview()
+    const second = { ...createPreview(), requesterId: first.requesterId }
+    previewIds.push(first.id, second.id)
+
+    const results = await Promise.allSettled([
+      store.createOrGetWithCapacity({
+        requesterId: first.requesterId,
+        idempotencyKey: `first-${first.id}`,
+        requestFingerprint: `first-${first.id}`,
+        preview: first,
+        maxActive: 1,
+      }),
+      store.createOrGetWithCapacity({
+        requesterId: second.requesterId,
+        idempotencyKey: `second-${second.id}`,
+        requestFingerprint: `second-${second.id}`,
+        preview: second,
+        maxActive: 1,
+      }),
+    ])
+    const fulfilled = results.filter(
+      (
+        result,
+      ): result is PromiseFulfilledResult<
+        Awaited<ReturnType<typeof store.createOrGetWithCapacity>>
+      > => result.status === "fulfilled",
+    )
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    )
+
+    expect(fulfilled).toHaveLength(1)
+    expect(fulfilled[0]!.value.created).toBe(true)
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]!.reason).toMatchObject({
+      code: "RATE_LIMITED",
+      status: 429,
+    })
+    await expect(countAdmissions(database, first.requesterId)).resolves.toEqual(
+      { active: 1, queued: 1 },
+    )
+  })
+
   it("commits one preview and one delivery for concurrent identical requests (atomic create + enqueue)", async () => {
     const first = createPreview()
     const second = { ...createPreview(), requesterId: first.requesterId }
@@ -244,21 +293,91 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
       requesterId: first.requesterId,
       idempotencyKey,
       requestFingerprint: "same-request",
+      maxActive: 1,
     }
 
     const results = await Promise.all([
-      store.createOrGet({ ...input, preview: first }),
-      store.createOrGet({ ...input, preview: second }),
+      store.createOrGetWithCapacity({ ...input, preview: first }),
+      store.createOrGetWithCapacity({ ...input, preview: second }),
     ])
     const created = results.filter((result) => result.created)
     expect(created).toHaveLength(1)
     const wonPreviewId = created[0]!.preview.id
+    expect(new Set(results.map((result) => result.preview.id))).toEqual(
+      new Set([wonPreviewId]),
+    )
 
     const rows = await database.query(
       "SELECT preview_id FROM peephole_fullstack_queue WHERE preview_id = $1",
       [wonPreviewId],
     )
     expect(rows.rowCount).toBe(1)
+  })
+
+  it("admits exactly two of three concurrent distinct requests at limit 2", async () => {
+    const store = new PostgresFullStackPreviewStore(database)
+    const first = createPreview()
+    const previews = [
+      first,
+      { ...createPreview(), requesterId: first.requesterId },
+      { ...createPreview(), requesterId: first.requesterId },
+    ]
+    previewIds.push(...previews.map((preview) => preview.id))
+
+    const results = await Promise.allSettled(
+      previews.map((preview, index) =>
+        store.createOrGetWithCapacity({
+          requesterId: preview.requesterId,
+          idempotencyKey: `request-${index}-${preview.id}`,
+          requestFingerprint: `fingerprint-${index}-${preview.id}`,
+          preview,
+          maxActive: 2,
+        }),
+      ),
+    )
+    const fulfilled = results.filter((result) => result.status === "fulfilled")
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    )
+
+    expect(fulfilled).toHaveLength(2)
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]!.reason).toMatchObject({ code: "RATE_LIMITED" })
+    await expect(countAdmissions(database, first.requesterId)).resolves.toEqual(
+      { active: 2, queued: 2 },
+    )
+  })
+
+  it("admits different requesters independently at limit 1", async () => {
+    const store = new PostgresFullStackPreviewStore(database)
+    const first = createPreview()
+    const second = createPreview()
+    previewIds.push(first.id, second.id)
+
+    const results = await Promise.all([
+      store.createOrGetWithCapacity({
+        requesterId: first.requesterId,
+        idempotencyKey: `request-${first.id}`,
+        requestFingerprint: `fingerprint-${first.id}`,
+        preview: first,
+        maxActive: 1,
+      }),
+      store.createOrGetWithCapacity({
+        requesterId: second.requesterId,
+        idempotencyKey: `request-${second.id}`,
+        requestFingerprint: `fingerprint-${second.id}`,
+        preview: second,
+        maxActive: 1,
+      }),
+    ])
+
+    expect(results.every((result) => result.created)).toBe(true)
+    await expect(countAdmissions(database, first.requesterId)).resolves.toEqual(
+      { active: 1, queued: 1 },
+    )
+    await expect(
+      countAdmissions(database, second.requesterId),
+    ).resolves.toEqual({ active: 1, queued: 1 })
   })
 
   it("rolls back the preview row when queue insertion cannot commit -- no orphan resource is ever left behind", async () => {
@@ -283,11 +402,12 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
     })
 
     await expect(
-      store.createOrGet({
+      store.createOrGetWithCapacity({
         requesterId: preview.requesterId,
         idempotencyKey: `request-${preview.id}`,
         requestFingerprint: "rollback",
         preview,
+        maxActive: 1,
       }),
     ).rejects.toThrow("simulated transaction failure")
 
@@ -311,11 +431,12 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
     const artifactStore = new PostgresProductionArtifactStore(database)
     const preview = createPreview()
     previewIds.push(preview.id)
-    await store.createOrGet({
+    await store.createOrGetWithCapacity({
       requesterId: preview.requesterId,
       idempotencyKey: `request-${preview.id}`,
       requestFingerprint: `fingerprint-${preview.id}`,
       preview,
+      maxActive: 1,
     })
 
     const job = createJob()
@@ -383,11 +504,12 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
 
     const preview = createPreview()
     previewIds.push(preview.id)
-    await previewStore.createOrGet({
+    await previewStore.createOrGetWithCapacity({
       requesterId: preview.requesterId,
       idempotencyKey: `request-${preview.id}`,
       requestFingerprint: `fingerprint-${preview.id}`,
       preview,
+      maxActive: 1,
     })
     await previewStore.update(preview.id, (current) => ({
       ...current,
@@ -423,11 +545,12 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
     const preview = createPreview()
     previewIds.push(preview.id)
     const store = new PostgresFullStackPreviewStore(database)
-    await store.createOrGet({
+    await store.createOrGetWithCapacity({
       requesterId: preview.requesterId,
       idempotencyKey: `request-${preview.id}`,
       requestFingerprint: `fingerprint-${preview.id}`,
       preview,
+      maxActive: 1,
     })
 
     await expect(applyPostgresMigrations(database)).resolves.toBeUndefined()
@@ -443,6 +566,41 @@ function repositoryFixture() {
     owner: "peephole-integration",
     name: "fullstack-fixture",
     commitSha: "0123456789abcdef0123456789abcdef01234567",
+  }
+}
+
+async function countAdmissions(
+  database: PgPoolDatabase,
+  requesterId: string,
+): Promise<{ active: number; queued: number }> {
+  const result = await database.query<{
+    active_count: string
+    queue_count: string
+  }>(
+    `
+      SELECT
+        (
+          SELECT count(*)
+          FROM peephole_fullstack_previews
+          WHERE requester_id = $1
+            AND status IN (
+              'queued', 'building_frontend', 'starting_backend', 'ready',
+              'stopping'
+            )
+        )::text AS active_count,
+        (
+          SELECT count(*)
+          FROM peephole_fullstack_queue AS queue
+          INNER JOIN peephole_fullstack_previews AS preview
+            ON preview.id = queue.preview_id
+          WHERE preview.requester_id = $1
+        )::text AS queue_count
+    `,
+    [requesterId],
+  )
+  return {
+    active: Number(result.rows[0]?.active_count ?? "0"),
+    queued: Number(result.rows[0]?.queue_count ?? "0"),
   }
 }
 

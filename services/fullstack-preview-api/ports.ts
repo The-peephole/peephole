@@ -72,19 +72,16 @@ export interface FullStackPreviewStore {
     requestFingerprint: string
     preview: StoredFullStackPreview
   } | null>
-  /** Counts only non-terminal rows -- see the control plane's
-   * `ACTIVE_STATUSES`. Used solely to enforce
-   * `maxActiveFullStackPreviewsPerRequester`. */
-  countActiveByRequester(requesterId: string): Promise<number>
-  /** Inserts the resource row and its initial queue row atomically (or
-   * returns the existing idempotent resource on a conflicting key) -- see
-   * PostgresFullStackPreviewStore's doc comment for why this must never be
-   * split into two separate calls. */
-  createOrGet(input: {
+  /** Serializes admission for this requester, re-checks idempotency and
+   * active capacity, then inserts the resource row and its initial queue row
+   * atomically. The PostgreSQL implementation provides cross-process
+   * serialization; this operation is the authoritative capacity boundary. */
+  createOrGetWithCapacity(input: {
     requesterId: string
     idempotencyKey: string
     requestFingerprint: string
     preview: StoredFullStackPreview
+    maxActive: number
   }): Promise<{
     created: boolean
     preview: StoredFullStackPreview
