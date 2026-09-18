@@ -9,6 +9,7 @@ import type { LocalPreviewWorkspace } from "../local/localWorkspace"
  */
 export interface GVisorPreviewWorkspace extends LocalPreviewWorkspace {
   readonly bundleDir: string
+  normalizeExtractedTree(signal?: AbortSignal): Promise<void>
   registerContainer(containerId: string): void
   unregisterContainer(containerId: string): void
   listContainers(): string[]

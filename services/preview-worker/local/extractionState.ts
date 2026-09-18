@@ -38,6 +38,8 @@ export class ExtractionState {
       signal,
     })
     signal?.throwIfAborted()
+    await workspace.normalizeExtractedTree?.(signal)
+    signal?.throwIfAborted()
     this.extracted.add(workspace.id)
   }
 }

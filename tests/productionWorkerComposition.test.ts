@@ -145,6 +145,7 @@ describe("composeProductionWorker", () => {
         syncDirectory: async () => undefined,
       }),
     })
+    const normalizedWorkspaceRoots: string[] = []
 
     const worker = composeProductionWorker(control, {
       baseRootfsImage,
@@ -158,6 +159,9 @@ describe("composeProductionWorker", () => {
         nameservers: ["172.31.0.2"],
       }),
       diskManager: new FakeSandboxDiskManager(bundlesRootDir),
+      normalizeWorkspaceOwnership: async (workspaceRoot) => {
+        normalizedWorkspaceRoots.push(workspaceRoot)
+      },
     })
 
     const queuedJob = queue.dequeue()
@@ -181,6 +185,8 @@ describe("composeProductionWorker", () => {
     expect(runCalls).toHaveLength(2)
     expect(runCalls[0]?.args).toContain("--network=sandbox") // npm ci
     expect(runCalls[1]?.args).toContain("--network=none") // npm run build
+    expect(normalizedWorkspaceRoots).toHaveLength(1)
+    expect(normalizedWorkspaceRoots[0]?.startsWith(bundlesRootDir)).toBe(true)
   })
 })
 

@@ -18,6 +18,10 @@ import { NodeProcessRunner } from "../services/preview-worker/gvisor/nodeProcess
 import { RunscCommandRunner } from "../services/preview-worker/gvisor/runscCommandRunner"
 import { LoopbackSandboxDiskManager } from "../services/preview-worker/gvisor/sandboxDisk"
 import {
+  SANDBOX_GID,
+  SANDBOX_UID,
+} from "../services/preview-worker/gvisor/sandboxIdentity"
+import {
   NetworkLeaseManager,
   type NetworkLease,
 } from "../services/preview-worker/gvisor/subnetAllocator"
@@ -184,6 +188,31 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
         validateFetchedArchive(archive, DEFAULT_ARCHIVE_LIMITS)
         const extraction = new ExtractionState()
         await extraction.ensureExtracted(workspace, FIXTURE_COMMIT, byteStore)
+        for (const relative of [
+          ".",
+          "backend",
+          "backend/package.json",
+          "backend/src",
+          "backend/src/server.js",
+        ]) {
+          const candidate =
+            relative === "."
+              ? workspace.rootDir
+              : path.join(workspace.rootDir, relative)
+          const stats = await lstat(candidate)
+          expect(stats.uid, `${relative} uid`).toBe(SANDBOX_UID)
+          expect(stats.gid, `${relative} gid`).toBe(SANDBOX_GID)
+          expect(
+            stats.mode & 0o022,
+            `${relative} writable by group/other`,
+          ).toBe(0)
+          if (stats.isDirectory()) {
+            expect(
+              stats.mode & 0o700,
+              `${relative} owner directory access`,
+            ).toBe(0o700)
+          }
+        }
         expect(
           (
             await lstat(

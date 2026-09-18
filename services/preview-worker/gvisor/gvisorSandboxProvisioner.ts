@@ -22,6 +22,7 @@ import {
   LoopbackSandboxDiskManager,
   type SandboxDiskManager,
 } from "./sandboxDisk"
+import { normalizeSandboxWorkspaceOwnership } from "./sandboxWorkspaceOwnership"
 
 export interface GVisorSandboxProvisionerOptions {
   runscBinaryPath?: string
@@ -32,6 +33,8 @@ export interface GVisorSandboxProvisionerOptions {
   processRunner?: ProcessRunner
   networkProvisioner?: VethNatNetworkProvisioner
   diskManager?: SandboxDiskManager
+  /** Test seam for hosts that cannot perform Linux uid/gid ownership changes. */
+  normalizeWorkspaceOwnership?: typeof normalizeSandboxWorkspaceOwnership
   now?: () => Date
 }
 
@@ -192,6 +195,11 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
         archiveStagingRoot,
         bundleDir: allocation.bundleDir,
         remainingMs: () => deadline - this.now().getTime(),
+        normalizeExtractedTree: (signal) =>
+          (
+            this.options.normalizeWorkspaceOwnership ??
+            normalizeSandboxWorkspaceOwnership
+          )(disk.rootDir, { signal }),
         registerContainer: (containerId) => containers.add(containerId),
         unregisterContainer: (containerId) => containers.delete(containerId),
         listContainers: () => Array.from(containers),

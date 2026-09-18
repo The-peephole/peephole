@@ -93,6 +93,7 @@ function fakeWorkspace(
     rootDir: path.join(bundleDir, "rootfs", "workspace"),
     bundleDir,
     remainingMs: () => 60_000,
+    normalizeExtractedTree: async () => undefined,
     destroy: async () => undefined,
     registerContainer: (id) => containers.add(id),
     unregisterContainer: (id) => containers.delete(id),
