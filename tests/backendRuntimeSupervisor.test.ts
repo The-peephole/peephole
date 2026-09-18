@@ -585,6 +585,62 @@ describe("BackendRuntimeSupervisor", () => {
       await runPromise
     })
 
+    it("unregisters synchronously, with no await first, even while a control-plane isWorkerRuntimeActive check is still in flight", async () => {
+      const { controlPlane, queue, sandbox, liveRuntimeRegistry, supervisor } =
+        compose()
+      const { runtimeId, job } = await createAndLease(controlPlane, queue)
+      createdRoots.push(...sandbox.roots)
+
+      const runPromise = supervisor.run(job)
+      await vi.waitFor(async () => {
+        const runtime = await controlPlane.get(runtimeId, requester)
+        expect(runtime.status).toBe("running")
+      })
+      expect(liveRuntimeRegistry.resolve(runtimeId)).toEqual(FAKE_DIAL_TARGET)
+
+      // Stall the *separate* isWorkerRuntimeActive poller (the one behind
+      // run()'s own `checking` variable, independent of
+      // monitorWhileRunning's shouldContinueRunning poll) so a `checking`
+      // promise is genuinely still pending when teardown begins.
+      let releaseCheck!: (value: boolean) => void
+      const stuckCheck = new Promise<boolean>((resolve) => {
+        releaseCheck = resolve
+      })
+      const isWorkerRuntimeActiveSpy = vi
+        .spyOn(controlPlane, "isWorkerRuntimeActive")
+        .mockReturnValue(stuckCheck)
+      await vi.waitFor(() => {
+        expect(isWorkerRuntimeActiveSpy).toHaveBeenCalled()
+      })
+
+      let runSettled = false
+      void runPromise.then(() => {
+        runSettled = true
+      })
+
+      // Cancellation reaches run() through monitorWhileRunning's own
+      // independent shouldContinueRunning poll, not through the stuck
+      // isWorkerRuntimeActive call -- so this can proceed even though that
+      // call never resolves.
+      await controlPlane.cancel(runtimeId, requester)
+
+      // The route must clear promptly -- proving unregister() ran as the
+      // very first, synchronous statement in the finally block, without
+      // waiting on `checking` -- while run() itself is still blocked on
+      // that same still-pending `checking` promise a few lines later.
+      await vi.waitFor(() => {
+        expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+      })
+      expect(runSettled).toBe(false)
+
+      releaseCheck(true)
+      await runPromise
+
+      const final = await controlPlane.get(runtimeId, requester)
+      expect(final.status).toBe("stopped")
+      expect(runSettled).toBe(true)
+    })
+
     it('registers the route before the control plane is ever told the runtime is "running"', async () => {
       const { controlPlane, queue, sandbox, liveRuntimeRegistry, supervisor } =
         compose()

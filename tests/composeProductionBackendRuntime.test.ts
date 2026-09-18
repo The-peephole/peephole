@@ -18,15 +18,34 @@ function fakeControlPlane(): BackendRuntimeControlPlane {
 }
 
 describe("composeProductionBackendRuntime", () => {
-  it("returns a real BackendRuntimeSupervisor", () => {
+  it("returns a real BackendRuntimeSupervisor when given an explicit registry", () => {
     const supervisor = composeProductionBackendRuntime(fakeControlPlane(), {
       baseRootfsImage: "/tmp/fake-rootfs",
+      liveRuntimeRegistry: new LiveBackendRuntimeRegistry(),
     })
 
     expect(supervisor).toBeInstanceOf(BackendRuntimeSupervisor)
   })
 
-  it("passes an explicitly injected live-route registry instance straight through to the returned supervisor, rather than constructing its own", () => {
+  it("requires an explicit live-route registry at the type level -- omitting it is a compile error", () => {
+    // This is the actual proof that "no hidden/default registry exists":
+    // if composeProductionBackendRuntime ever regressed to defaulting
+    // liveRuntimeRegistry again, the call below would stop being a type
+    // error, `@ts-expect-error` would itself become an unused-directive
+    // error, and `npm run typecheck` would fail -- so this property is
+    // enforced by CI on every change, not just asserted once here. Never
+    // actually invoked at runtime; the point is exercised entirely at
+    // compile time.
+    function callWithoutRegistry(): void {
+      // @ts-expect-error liveRuntimeRegistry is required, not optional.
+      composeProductionBackendRuntime(fakeControlPlane(), {
+        baseRootfsImage: "/tmp/fake-rootfs",
+      })
+    }
+    void callWithoutRegistry
+  })
+
+  it("passes the exact injected live-route registry instance through to the returned supervisor, rather than constructing its own", () => {
     const injectedRegistry = new LiveBackendRuntimeRegistry()
 
     const supervisor = composeProductionBackendRuntime(fakeControlPlane(), {
@@ -43,22 +62,32 @@ describe("composeProductionBackendRuntime", () => {
     expect(privateLiveRuntimeRegistryOf(supervisor)).toBe(injectedRegistry)
   })
 
-  it("defaults to a fresh, empty live-route registry per composition when none is injected", () => {
+  it("keeps two deliberately-different injected registries fully separate across two compositions -- no shared module/global default", () => {
+    const registryA = new LiveBackendRuntimeRegistry()
+    const registryB = new LiveBackendRuntimeRegistry()
+
     const supervisorA = composeProductionBackendRuntime(fakeControlPlane(), {
       baseRootfsImage: "/tmp/fake-rootfs",
+      liveRuntimeRegistry: registryA,
     })
     const supervisorB = composeProductionBackendRuntime(fakeControlPlane(), {
       baseRootfsImage: "/tmp/fake-rootfs",
+      liveRuntimeRegistry: registryB,
     })
 
-    const registryA = privateLiveRuntimeRegistryOf(supervisorA)
-    const registryB = privateLiveRuntimeRegistryOf(supervisorB)
+    expect(privateLiveRuntimeRegistryOf(supervisorA)).toBe(registryA)
+    expect(privateLiveRuntimeRegistryOf(supervisorB)).toBe(registryB)
+    expect(privateLiveRuntimeRegistryOf(supervisorA)).not.toBe(
+      privateLiveRuntimeRegistryOf(supervisorB),
+    )
 
-    expect(registryA).toBeInstanceOf(LiveBackendRuntimeRegistry)
-    expect(registryB).toBeInstanceOf(LiveBackendRuntimeRegistry)
-    // Never a shared module-level singleton -- each composition call gets
-    // its own registry unless the caller explicitly injects one.
-    expect(registryA).not.toBe(registryB)
+    // Behavioral corroboration of the same property: a route registered
+    // through registryA is invisible to registryB and vice versa -- if
+    // composition ever silently shared one registry between the two
+    // compositions, this would fail even though the identity checks above
+    // might not catch every possible split-brain shape.
+    registryA.register("runtime-aaaaaaaa", { host: "10.0.0.1", port: 3000 })
+    expect(registryB.resolve("runtime-aaaaaaaa")).toBeUndefined()
   })
 })
 

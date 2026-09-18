@@ -160,18 +160,24 @@ export class BackendRuntimeSupervisor {
         signal.aborted ? "RUNTIME_UNAVAILABLE" : phaseErrorCode(error),
       )
     } finally {
+      // Unregister first, synchronously, with no `await` before it -- the
+      // very first thing teardown does, before even `checking`'s own
+      // in-flight control-plane poll is awaited below. Once teardown has
+      // begun, no new proxy request may keep resolving this runtime merely
+      // because some other in-flight promise happens to still be pending;
+      // route revocation must not wait on anything. This also still
+      // strictly precedes everything that could release this runtime's
+      // namespace/peerIp back for reuse by an unrelated later sandbox
+      // (`processHandle?.stop()`/`workspace?.destroy()`, below) -- covers
+      // every exit path that reaches this finally block (normal stop,
+      // cancel, expiry, control-plane-unreachable abort, a start/readiness
+      // failure that never registered at all, and an unexpected process
+      // exit noticed by monitorWhileRunning). Idempotent and safe even if
+      // this runtimeId was never registered.
+      this.liveRuntimeRegistry.unregister(queued.runtimeId)
       stopped = true
       clearTimeout(poll)
       await checking
-      // Unregister first, before anything that could release this
-      // runtime's namespace/peerIp back for reuse by an unrelated later
-      // sandbox (workspace.destroy(), below) -- covers every exit path
-      // that reaches this finally block (normal stop, cancel, expiry,
-      // control-plane-unreachable abort, a start/readiness failure that
-      // never registered at all, and an unexpected process exit noticed by
-      // monitorWhileRunning). Idempotent and safe even if this runtimeId
-      // was never registered.
-      this.liveRuntimeRegistry.unregister(queued.runtimeId)
       try {
         await processHandle?.stop()
       } finally {
