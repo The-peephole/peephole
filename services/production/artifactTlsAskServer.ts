@@ -6,7 +6,11 @@ import {
 } from "node:http"
 
 import type { ProductionArtifactStore } from "../preview-api/postgres/productionArtifactStore"
-import { resolveProductionArtifactHostname } from "./artifactDomain"
+import type { FullStackRoutingStore } from "../fullstack-routing/ports"
+import {
+  resolveProductionArtifactHostname,
+  resolveProductionFullStackHostname,
+} from "./artifactDomain"
 
 const LOOPBACK_HOST = "127.0.0.1"
 
@@ -15,6 +19,9 @@ export interface ProductionArtifactTlsAskServerOptions {
   port?: number
   baseDomain?: string
   now?: () => Date
+  fullStackRouting?: {
+    store: FullStackRoutingStore
+  }
   // Deliberately no bind-address option: this is an internal listener.
 }
 
@@ -86,18 +93,32 @@ export class ProductionArtifactTlsAskServer {
         queryIndex === -1 ? "" : target.slice(queryIndex + 1),
       )
       const domains = query.getAll("domain")
-      const artifactId =
-        domains.length === 1
-          ? resolveProductionArtifactHostname(
-              domains[0] ?? "",
-              this.options.baseDomain ?? "peepholeusercontent.dev",
-            )
-          : null
-      if (!artifactId) {
+      const domain = domains.length === 1 ? (domains[0] ?? "") : ""
+      const baseDomain = this.options.baseDomain ?? "peepholeusercontent.dev"
+      const artifactId = resolveProductionArtifactHostname(domain, baseDomain)
+      const fullStackId = this.options.fullStackRouting
+        ? resolveProductionFullStackHostname(domain, baseDomain)
+        : null
+      if (!artifactId && !fullStackId) {
         sendText(response, 403, "Forbidden.")
         return
       }
-      const metadata = await this.options.store.get(artifactId)
+      let authorizedArtifactId = artifactId
+      if (fullStackId) {
+        const routing =
+          await this.options.fullStackRouting!.store.get(fullStackId)
+        if (
+          !routing ||
+          routing.status !== "ready" ||
+          !(routing.expiresAt.getTime() > this.now().getTime()) ||
+          !routing.artifactId
+        ) {
+          sendText(response, 403, "Forbidden.")
+          return
+        }
+        authorizedArtifactId = routing.artifactId
+      }
+      const metadata = await this.options.store.get(authorizedArtifactId!)
       // Positive comparison also rejects invalid dates. Check after the
       // lookup so a row that expired while awaiting DB cannot be allowed.
       if (metadata && metadata.expiresAt.getTime() > this.now().getTime()) {

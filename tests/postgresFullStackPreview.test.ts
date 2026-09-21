@@ -10,6 +10,7 @@ import { PgPoolDatabase } from "../services/preview-api/postgres/database"
 import { applyPostgresMigrations } from "../services/preview-api/postgres/migrate"
 import { PostgresPreviewJobStore } from "../services/preview-api/postgres/jobStore"
 import { PostgresProductionArtifactStore } from "../services/preview-api/postgres/productionArtifactStore"
+import { PostgresFullStackRoutingStore } from "../services/fullstack-routing/postgresFullStackRoutingStore"
 import type { StoredPreviewJob } from "../services/preview-api/ports"
 
 const connectionString = process.env.PEEPHOLE_POSTGRES_TEST_URL
@@ -74,6 +75,15 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
     expect(admitted.preview.frontendJobId).toBeNull()
     expect(admitted.preview.artifactId).toBeNull()
     expect(admitted.preview.backendRuntimeId).toBeNull()
+    await expect(
+      new PostgresFullStackRoutingStore(database).get(first.id),
+    ).resolves.toEqual({
+      id: first.id,
+      status: "queued",
+      artifactId: null,
+      backendRuntimeId: null,
+      expiresAt: new Date(first.expiresAt),
+    })
 
     const now = new Date()
     const leases = await Promise.all([

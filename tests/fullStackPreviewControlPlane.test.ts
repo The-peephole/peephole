@@ -636,6 +636,111 @@ describe("FullStackPreviewControlPlane", () => {
     })
   })
 
+  describe("internal routing activation", () => {
+    const previewId = "fullstack-00000000-0000-0000-0000-000000000001"
+    const artifactId = "artifact-00000000-0000-0000-0000-000000000001"
+    const runtimeId = "runtime-00000001"
+    const url = `${"https://"}${previewId}.peepholeusercontent.dev/`
+
+    async function awaiting() {
+      const harness = compose({ createId: () => previewId })
+      const { preview } = await harness.controlPlane.create(
+        createRequest(),
+        idempotencyKey,
+        requester,
+      )
+      await harness.controlPlane.startWorkerFullStackPreview(preview.id)
+      await harness.controlPlane.recordFrontendJob(preview.id, "frontend-job-1")
+      await harness.controlPlane.recordFrontendArtifact(preview.id, {
+        frontendJobId: "frontend-job-1",
+        artifactId,
+        artifactExpiresAt: new Date("2026-01-01T00:12:00.000Z"),
+      })
+      await harness.controlPlane.recordBackendRuntime(preview.id, runtimeId)
+      await harness.controlPlane.markBackendRunning(preview.id, {
+        backendRuntimeId: runtimeId,
+        backendExpiresAt: new Date("2026-01-01T00:10:00.000Z"),
+      })
+      return harness
+    }
+
+    it("atomically moves awaiting_activation to ready with URL and tightened expiry", async () => {
+      const { controlPlane } = await awaiting()
+      const ready = await controlPlane.activateRouting(previewId, {
+        expectedArtifactId: artifactId,
+        expectedBackendRuntimeId: runtimeId,
+        url,
+        expiresAt: new Date("2026-01-01T00:09:00.000Z"),
+      })
+      expect(ready).toMatchObject({
+        id: previewId,
+        status: "ready",
+        url,
+        expiresAt: "2026-01-01T00:09:00.000Z",
+      })
+      expect(ready).not.toHaveProperty("artifactId")
+      expect(ready).not.toHaveProperty("backendRuntimeId")
+      expect(ready).not.toHaveProperty("peerIp")
+      expect(ready).not.toHaveProperty("port")
+      expect(ready).not.toHaveProperty("dialTarget")
+    })
+
+    it("allows an equivalent idempotent retry but rejects conflicts", async () => {
+      const { controlPlane } = await awaiting()
+      const input = {
+        expectedArtifactId: artifactId,
+        expectedBackendRuntimeId: runtimeId,
+        url,
+        expiresAt: new Date("2026-01-01T00:09:00.000Z"),
+      }
+      const first = await controlPlane.activateRouting(previewId, input)
+      await expect(
+        controlPlane.activateRouting(previewId, {
+          ...input,
+          expiresAt: new Date("2026-01-01T00:10:00.000Z"),
+        }),
+      ).resolves.toEqual(first)
+      await expect(
+        controlPlane.activateRouting(previewId, {
+          ...input,
+          expectedBackendRuntimeId: "runtime-conflict",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_TRANSITION" })
+    })
+
+    it.each([
+      ["wrong artifact", { expectedArtifactId: "artifact-other" }],
+      ["wrong runtime", { expectedBackendRuntimeId: "runtime-other" }],
+      ["later expiry", { expiresAt: new Date("2026-01-01T00:11:00.000Z") }],
+      ["elapsed expiry", { expiresAt: new Date("2025-12-31T23:59:59.000Z") }],
+      ["non-root URL", { url: `${url}path` }],
+    ])("rejects %s", async (_label, override) => {
+      const { controlPlane } = await awaiting()
+      await expect(
+        controlPlane.activateRouting(previewId, {
+          expectedArtifactId: artifactId,
+          expectedBackendRuntimeId: runtimeId,
+          url,
+          expiresAt: new Date("2026-01-01T00:09:00.000Z"),
+          ...override,
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_TRANSITION" })
+    })
+
+    it("rejects a parent outside awaiting_activation", async () => {
+      const { controlPlane } = compose({ createId: () => previewId })
+      await controlPlane.create(createRequest(), idempotencyKey, requester)
+      await expect(
+        controlPlane.activateRouting(previewId, {
+          expectedArtifactId: artifactId,
+          expectedBackendRuntimeId: runtimeId,
+          url,
+          expiresAt: new Date("2026-01-01T00:09:00.000Z"),
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_TRANSITION" })
+    })
+  })
+
   describe("expiry", () => {
     it("a provisioning preview past its deadline fails closed with PROVISIONING_TIMEOUT", async () => {
       const { controlPlane, setNow } = compose()

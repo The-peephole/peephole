@@ -10,6 +10,13 @@ import path from "node:path"
 import type { PreviewArtifactReference } from "../../types/preview"
 import type { PreviewArtifactSigner } from "../preview-api/ports"
 import type { ProductionArtifactStore } from "../preview-api/postgres/productionArtifactStore"
+import type { LiveBackendRuntimeRouteResolver } from "../backend-runtime-worker/liveRuntimeRegistry"
+import type {
+  FullStackBackendProxy,
+  FullStackRoutingStore,
+} from "../fullstack-routing/ports"
+import { validateFullStackRequestTarget } from "../fullstack-routing/httpPath"
+import { previewSecurityHeaders } from "../fullstack-routing/securityHeaders"
 import {
   ARTIFACT_ID_SOURCE,
   acceptsHtml,
@@ -20,7 +27,10 @@ import {
 
 import { validateTrustedAppOrigin } from "./trustedOrigin"
 
-import { resolveProductionArtifactHostname } from "./artifactDomain"
+import {
+  resolveProductionArtifactHostname,
+  resolveProductionFullStackHostname,
+} from "./artifactDomain"
 
 const JOB_ID_PATTERN = /^[a-z\d-]{8,64}$/i
 const ARTIFACT_ID_PATTERN = new RegExp(`^${ARTIFACT_ID_SOURCE}$`, "i")
@@ -46,6 +56,13 @@ export interface ProductionArtifactHostOptions {
   /** Validated again at construction so standalone callers cannot inject CSP. */
   trustedAppOrigin?: string
   now?: () => Date
+  /** Optional by design: Phase 3A does not production-wire full-stack
+   * routing, and omitting this preserves the artifact-only host. */
+  fullStackRouting?: {
+    store: FullStackRoutingStore
+    liveRuntimeResolver: LiveBackendRuntimeRouteResolver
+    backendProxy: FullStackBackendProxy
+  }
 }
 
 /**
@@ -79,6 +96,8 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
   private readonly baseDomain: string
   private readonly trustedAppOrigin: string
   private readonly now: () => Date
+  private readonly fullStackRouting:
+    ProductionArtifactHostOptions["fullStackRouting"] | undefined
   private server: Server | undefined
   private listening: Promise<{ host: string; port: number }> | undefined
   // Per-artifact-id async mutex: sign() and reap() each span a
@@ -98,6 +117,7 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
       options.trustedAppOrigin ?? "https://app.peephole.dev",
     )
     this.now = options.now ?? (() => new Date())
+    this.fullStackRouting = options.fullStackRouting
   }
 
   async listen(): Promise<{ host: string; port: number }> {
@@ -109,7 +129,12 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
       this.listening = new Promise((resolve, reject) => {
         server.once("error", reject)
         server.listen(this.port, LOOPBACK_HOST, () => {
-          resolve({ host: LOOPBACK_HOST, port: this.port })
+          const address = server.address()
+          if (!address || typeof address === "string") {
+            reject(new Error("Artifact listener has no TCP address."))
+            return
+          }
+          resolve({ host: LOOPBACK_HOST, port: address.port })
         })
       })
     }
@@ -287,13 +312,40 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
   ): Promise<void> {
     try {
       if (request.method !== "GET" && request.method !== "HEAD") {
-        sendText(response, 405, "Method not allowed.", { allow: "GET, HEAD" })
+        const hostname = this.resolveHostnameFromHost(request.headers.host)
+        const isFullStack =
+          this.fullStackRouting &&
+          hostname &&
+          resolveProductionFullStackHostname(hostname, this.baseDomain)
+        if (isFullStack) {
+          sendFullStackText(
+            response,
+            405,
+            "Method not allowed.",
+            this.trustedAppOrigin,
+            { allow: "GET, HEAD" },
+          )
+        } else {
+          sendText(response, 405, "Method not allowed.", { allow: "GET, HEAD" })
+        }
         return
       }
 
-      const artifactId = this.resolveArtifactIdFromHost(request.headers.host)
+      const hostname = this.resolveHostnameFromHost(request.headers.host)
+      const artifactId = hostname
+        ? resolveProductionArtifactHostname(hostname, this.baseDomain)
+        : null
 
-      if (!artifactId) {
+      if (artifactId) {
+        await this.handleArtifactRequest(request, response, artifactId)
+        return
+      }
+
+      const fullStackId =
+        hostname && this.fullStackRouting
+          ? resolveProductionFullStackHostname(hostname, this.baseDomain)
+          : null
+      if (!fullStackId) {
         // Wrong domain, extra label, malformed/missing Host, etc. --
         // indistinguishable from "no such artifact" on purpose, to avoid
         // leaking anything about which Host values are even well-formed.
@@ -301,69 +353,209 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
         return
       }
 
-      const metadata = await this.store.get(artifactId)
-
-      if (!metadata) {
-        // A directory can exist on disk (e.g. publish() ran but sign()
-        // never did) without ever being authorized to serve -- the store,
-        // not the filesystem, decides what's servable.
-        sendText(response, 404, "Not found.")
-        return
-      }
-
-      if (metadata.expiresAt.getTime() <= this.now().getTime()) {
-        sendText(response, 410, "Preview expired.")
-        return
-      }
-
-      let artifactRoot: string
-      try {
-        artifactRoot = await resolveVerifiedArtifactRoot(
-          this.storageDir,
-          artifactId,
-        )
-      } catch {
-        // The store says it's authorized, but the on-disk directory is
-        // missing, escapes storageDir, or its index.html isn't a regular
-        // file (e.g. the directory was replaced by a symlink after
-        // sign() ran) -- re-checked on every request, not just once at
-        // sign() time, since this listener outlives any single sign()
-        // call by design.
-        sendText(response, 404, "Not found.")
-        return
-      }
-
-      const pathname = new URL(request.url ?? "/", "http://placeholder")
-        .pathname
-      const requestedPath = decodeURIComponent(pathname).replace(/^\/+/, "")
-      const relativePath = requestedPath || "index.html"
-      let filePath = await resolveRequestedFile(artifactRoot, relativePath)
-
-      if (
-        !filePath &&
-        acceptsHtml(request.headers.accept) &&
-        !path.posix.extname(relativePath)
-      ) {
-        filePath = await resolveRequestedFile(artifactRoot, "index.html")
-      }
-
-      if (!filePath) {
-        sendText(response, 404, "Not found.")
-        return
-      }
-
-      const body = await readFile(filePath)
-      response.writeHead(
-        200,
-        artifactHeaders(filePath, body.byteLength, this.trustedAppOrigin),
-      )
-      response.end(request.method === "HEAD" ? undefined : body)
+      await this.handleFullStackRequest(request, response, fullStackId)
     } catch {
-      sendText(response, 404, "Not found.")
+      const hostname = this.resolveHostnameFromHost(request.headers.host)
+      if (
+        this.fullStackRouting &&
+        hostname &&
+        resolveProductionFullStackHostname(hostname, this.baseDomain)
+      ) {
+        sendFullStackText(response, 404, "Not found.", this.trustedAppOrigin)
+      } else {
+        sendText(response, 404, "Not found.")
+      }
     }
   }
 
-  private resolveArtifactIdFromHost(
+  private async handleArtifactRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+    artifactId: string,
+  ): Promise<void> {
+    const metadata = await this.store.get(artifactId)
+
+    if (!metadata) {
+      sendText(response, 404, "Not found.")
+      return
+    }
+
+    if (metadata.expiresAt.getTime() <= this.now().getTime()) {
+      sendText(response, 410, "Preview expired.")
+      return
+    }
+
+    const pathname = new URL(request.url ?? "/", "http://placeholder").pathname
+    const requestedPath = decodeURIComponent(pathname).replace(/^\/+/, "")
+    await this.serveStatic(
+      request,
+      response,
+      artifactId,
+      requestedPath,
+      "'none'",
+    )
+  }
+
+  private async handleFullStackRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+    fullStackId: string,
+  ): Promise<void> {
+    const routing = this.fullStackRouting
+    if (!routing) {
+      sendText(response, 404, "Not found.")
+      return
+    }
+
+    const record = await routing.store.get(fullStackId)
+    if (!record || record.status !== "ready") {
+      sendFullStackText(response, 404, "Not found.", this.trustedAppOrigin)
+      return
+    }
+    if (!(record.expiresAt.getTime() > this.now().getTime())) {
+      sendFullStackText(
+        response,
+        410,
+        "Preview expired.",
+        this.trustedAppOrigin,
+      )
+      return
+    }
+    if (!record.artifactId || !record.backendRuntimeId) {
+      sendFullStackText(response, 404, "Not found.", this.trustedAppOrigin)
+      return
+    }
+
+    const artifact = await this.store.get(record.artifactId)
+    if (!artifact) {
+      sendFullStackText(response, 404, "Not found.", this.trustedAppOrigin)
+      return
+    }
+    if (!(artifact.expiresAt.getTime() > this.now().getTime())) {
+      sendFullStackText(
+        response,
+        410,
+        "Preview expired.",
+        this.trustedAppOrigin,
+      )
+      return
+    }
+
+    const target = validateFullStackRequestTarget(request.url ?? "")
+    if (!target) {
+      sendFullStackText(
+        response,
+        400,
+        "Invalid request.",
+        this.trustedAppOrigin,
+      )
+      return
+    }
+
+    if (target.routesToBackend) {
+      let dialTarget
+      try {
+        dialTarget = routing.liveRuntimeResolver.resolve(
+          record.backendRuntimeId,
+        )
+      } catch {
+        dialTarget = undefined
+      }
+      if (!dialTarget) {
+        sendFullStackText(
+          response,
+          502,
+          "Backend unavailable.",
+          this.trustedAppOrigin,
+        )
+        return
+      }
+      await routing.backendProxy.proxy(
+        request,
+        response,
+        dialTarget,
+        target.raw,
+      )
+      return
+    }
+
+    const requestedPath = target.decodedPathname.replace(/^\/+/, "")
+    await this.serveStatic(
+      request,
+      response,
+      record.artifactId,
+      requestedPath,
+      "'self'",
+    )
+  }
+
+  private async serveStatic(
+    request: IncomingMessage,
+    response: ServerResponse,
+    artifactId: string,
+    requestedPath: string,
+    connectSource: "'none'" | "'self'",
+  ): Promise<void> {
+    let artifactRoot: string
+    try {
+      artifactRoot = await resolveVerifiedArtifactRoot(
+        this.storageDir,
+        artifactId,
+      )
+    } catch {
+      // The store says it's authorized, but the on-disk directory is
+      // missing, escapes storageDir, or its index.html isn't a regular
+      // file (e.g. the directory was replaced by a symlink after
+      // sign() ran) -- re-checked on every request, not just once at
+      // sign() time, since this listener outlives any single sign()
+      // call by design.
+      this.sendStaticError(response, 404, "Not found.", connectSource)
+      return
+    }
+
+    const relativePath = requestedPath || "index.html"
+    let filePath = await resolveRequestedFile(artifactRoot, relativePath)
+
+    if (
+      !filePath &&
+      acceptsHtml(request.headers.accept) &&
+      !path.posix.extname(relativePath)
+    ) {
+      filePath = await resolveRequestedFile(artifactRoot, "index.html")
+    }
+
+    if (!filePath) {
+      this.sendStaticError(response, 404, "Not found.", connectSource)
+      return
+    }
+
+    const body = await readFile(filePath)
+    response.writeHead(
+      200,
+      artifactHeaders(
+        filePath,
+        body.byteLength,
+        this.trustedAppOrigin,
+        connectSource,
+      ),
+    )
+    response.end(request.method === "HEAD" ? undefined : body)
+  }
+
+  private sendStaticError(
+    response: ServerResponse,
+    status: number,
+    body: string,
+    connectSource: "'none'" | "'self'",
+  ): void {
+    if (connectSource === "'self'") {
+      sendFullStackText(response, status, body, this.trustedAppOrigin)
+    } else {
+      sendText(response, status, body)
+    }
+  }
+
+  private resolveHostnameFromHost(
     hostHeader: string | undefined,
   ): string | null {
     if (!hostHeader) return null
@@ -374,10 +566,7 @@ export class ProductionArtifactHost implements PreviewArtifactSigner {
       const port = host.slice(separator + 1)
       if (port !== "443" && port !== String(this.port)) return null
     }
-    return resolveProductionArtifactHostname(
-      separator === -1 ? host : host.slice(0, separator),
-      this.baseDomain,
-    )
+    return separator === -1 ? host : host.slice(0, separator)
   }
 }
 
@@ -385,24 +574,26 @@ function artifactHeaders(
   filePath: string,
   length: number,
   trustedAppOrigin: string,
+  connectSource: "'none'" | "'self'",
 ): Record<string, string | number> {
   return {
     "content-type": contentTypeFor(filePath),
     "content-length": length,
-    "cache-control": "no-store",
-    // No Access-Control-Allow-Origin, ever: nothing should be able to
-    // fetch() this cross-origin and read the bytes back, only navigate to
-    // it (an iframe's src, which CORS never gated).
-    "cross-origin-resource-policy": "same-origin",
-    "referrer-policy": "no-referrer",
-    "permissions-policy": "camera=(), microphone=(), geolocation=()",
-    "x-content-type-options": "nosniff",
-    // frame-ancestors is the actual domain-separation boundary: only the
-    // trusted control-plane origin (once it exists) and the extension
-    // itself (the real client today, before that origin exists) may embed
-    // preview content -- never an arbitrary website.
-    "content-security-policy": `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; worker-src 'none'; frame-ancestors ${trustedAppOrigin} chrome-extension:`,
+    ...previewSecurityHeaders(trustedAppOrigin, connectSource),
   }
+}
+
+function sendFullStackText(
+  response: ServerResponse,
+  status: number,
+  body: string,
+  trustedAppOrigin: string,
+  headers: Record<string, string> = {},
+): void {
+  sendText(response, status, body, {
+    ...previewSecurityHeaders(trustedAppOrigin, "'self'"),
+    ...headers,
+  })
 }
 
 function sendText(
