@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
+import { GitHubApiError } from "../core/github/client"
 import type { PreviewRepositoryRef } from "../types/preview"
 import type { PreviewQuota } from "../services/preview-api/ports"
 import { FullStackPreviewControlPlane } from "../services/fullstack-preview-api/controlPlane"
@@ -793,6 +794,71 @@ describe("FullStackPreviewControlPlane", () => {
       const refreshed = await controlPlane.get(preview.id, requester)
       expect(refreshed.status).toBe("expired")
       expect(refreshed.errorCode).toBeNull()
+    })
+  })
+
+  describe("upstream GitHub availability mapping", () => {
+    it("maps a frontend rate-limit failure to a safe 503 with Retry-After preserved", async () => {
+      const { controlPlane, frontendResolver } = compose()
+      frontendResolver.nextError = new GitHubApiError(
+        "rate-limited",
+        "GitHub API rate limit reached. Try again after it resets.",
+        403,
+        new Date("2026-01-01T00:01:00.000Z"),
+      )
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => {})
+
+      await expect(
+        controlPlane.create(createRequest(), idempotencyKey, requester),
+      ).rejects.toMatchObject({
+        code: "UPSTREAM_UNAVAILABLE",
+        status: 503,
+        retryAfterSeconds: 60,
+      })
+      expect(errorLog).toHaveBeenCalledWith(
+        expect.stringContaining("upstream GitHub failure"),
+        expect.objectContaining({ code: "rate-limited" }),
+      )
+      errorLog.mockRestore()
+    })
+
+    it("maps a backend network failure to a safe 503 without a fabricated Retry-After", async () => {
+      const { controlPlane, backendResolver } = compose()
+      backendResolver.nextError = new GitHubApiError(
+        "network",
+        "GitHub could not be reached.",
+      )
+
+      await expect(
+        controlPlane.create(createRequest(), idempotencyKey, requester),
+      ).rejects.toMatchObject({
+        code: "UPSTREAM_UNAVAILABLE",
+        status: 503,
+        retryAfterSeconds: null,
+      })
+    })
+
+    it("maps a not-found failure to the existing safe 404 without leaking repository existence", async () => {
+      const { controlPlane, frontendResolver } = compose()
+      frontendResolver.nextError = new GitHubApiError(
+        "not-found",
+        "This repository is unavailable or is not public.",
+        404,
+      )
+
+      await expect(
+        controlPlane.create(createRequest(), idempotencyKey, requester),
+      ).rejects.toMatchObject({ code: "NOT_FOUND", status: 404 })
+    })
+
+    it("does not reclassify an unexpected resolver exception as an upstream failure", async () => {
+      const { controlPlane, frontendResolver } = compose()
+      const boom = new Error("resolver programming bug")
+      frontendResolver.nextError = boom
+
+      await expect(
+        controlPlane.create(createRequest(), idempotencyKey, requester),
+      ).rejects.toBe(boom)
     })
   })
 })

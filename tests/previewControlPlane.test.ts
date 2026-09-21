@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http"
 import { describe, expect, it, vi } from "vitest"
 
+import { GitHubApiError } from "../core/github/client"
 import { FakePreviewRunner } from "../services/preview-api/fakeRunner"
 import {
   FixedWindowPreviewQuota,
@@ -351,6 +352,81 @@ describe("PreviewControlPlane", () => {
     expect([first.created, second.created].sort()).toEqual([false, true])
     expect(harness.queue.size).toBe(1)
   })
+
+  it("maps a GitHub rate-limit failure to a safe 503 with Retry-After preserved", async () => {
+    const resolve = vi
+      .fn<PreviewPlanResolver["resolve"]>()
+      .mockRejectedValue(
+        new GitHubApiError(
+          "rate-limited",
+          "GitHub API rate limit reached. Try again after it resets.",
+          403,
+          new Date("2026-09-01T00:00:45.000Z"),
+        ),
+      )
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {})
+    const harness = createHarness({ resolve })
+
+    await expect(
+      harness.control.create(request, "request-0000000001", requester),
+    ).rejects.toMatchObject({
+      code: "UPSTREAM_UNAVAILABLE",
+      status: 503,
+      retryAfterSeconds: 45,
+    })
+    expect(errorLog).toHaveBeenCalledWith(
+      expect.stringContaining("upstream GitHub failure"),
+      expect.objectContaining({ code: "rate-limited" }),
+    )
+    errorLog.mockRestore()
+  })
+
+  it.each(["network", "unavailable"] as const)(
+    "maps a GitHub %s failure to a safe 503 without a fabricated Retry-After",
+    async (code) => {
+      const resolve = vi
+        .fn<PreviewPlanResolver["resolve"]>()
+        .mockRejectedValue(new GitHubApiError(code, "GitHub is unreachable."))
+      const harness = createHarness({ resolve })
+
+      await expect(
+        harness.control.create(request, "request-0000000001", requester),
+      ).rejects.toMatchObject({
+        code: "UPSTREAM_UNAVAILABLE",
+        status: 503,
+        retryAfterSeconds: null,
+      })
+    },
+  )
+
+  it("maps a GitHub not-found failure to the existing safe 404 without leaking repository existence", async () => {
+    const resolve = vi
+      .fn<PreviewPlanResolver["resolve"]>()
+      .mockRejectedValue(
+        new GitHubApiError(
+          "not-found",
+          "This repository is unavailable or is not public.",
+          404,
+        ),
+      )
+    const harness = createHarness({ resolve })
+
+    await expect(
+      harness.control.create(request, "request-0000000001", requester),
+    ).rejects.toMatchObject({ code: "NOT_FOUND", status: 404 })
+  })
+
+  it("does not reclassify an unexpected resolver exception as an upstream failure", async () => {
+    const boom = new Error("resolver programming bug")
+    const resolve = vi
+      .fn<PreviewPlanResolver["resolve"]>()
+      .mockRejectedValue(boom)
+    const harness = createHarness({ resolve })
+
+    await expect(
+      harness.control.create(request, "request-0000000001", requester),
+    ).rejects.toBe(boom)
+  })
 })
 
 interface HarnessOptions {
@@ -358,16 +434,19 @@ interface HarnessOptions {
   perUserRepository?: number
   resolvedPlan?: BuildPlan | null
   quota?: PreviewQuota
+  resolve?: PreviewPlanResolver["resolve"]
 }
 
 function createHarness(options: HarnessOptions = {}) {
   let now = new Date("2026-09-01T00:00:00.000Z")
   let sequence = 0
-  const resolve = vi
-    .fn<PreviewPlanResolver["resolve"]>()
-    .mockResolvedValue(
-      options.resolvedPlan === undefined ? plan : options.resolvedPlan,
-    )
+  const resolve =
+    options.resolve ??
+    vi
+      .fn<PreviewPlanResolver["resolve"]>()
+      .mockResolvedValue(
+        options.resolvedPlan === undefined ? plan : options.resolvedPlan,
+      )
   const queue = new InMemoryPreviewQueue()
   const control = new PreviewControlPlane(
     { resolve },

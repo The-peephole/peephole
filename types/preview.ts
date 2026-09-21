@@ -77,6 +77,7 @@ export type PreviewApiErrorCode =
   | "CONFLICT"
   | "RATE_LIMITED"
   | "INVALID_TRANSITION"
+  | "UPSTREAM_UNAVAILABLE"
   | "INTERNAL_ERROR"
 
 export interface PreviewRequester {

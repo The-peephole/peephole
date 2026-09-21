@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { GitHubBackendRuntimePlanResolver } from "../services/backend-runtime-api/githubRuntimePlanResolver"
-import type { GitHubClient } from "../core/github/client"
+import { BackendRuntimeControlPlane } from "../services/backend-runtime-api/controlPlane"
+import {
+  InMemoryBackendRuntimeQueue,
+  InMemoryBackendRuntimeStore,
+} from "../services/backend-runtime-api/inMemoryAdapters"
+import { GitHubApiError, type GitHubClient } from "../core/github/client"
 
 const repository = {
   repositoryId: 1,
@@ -67,31 +72,60 @@ describe("GitHubBackendRuntimePlanResolver", () => {
     await expect(resolver.resolve(repository, ".")).resolves.toBeNull()
   })
 
-  it.each(["network error", "rate limit"])(
-    "fails closed when an env authorization read has a %s",
-    async (_label) => {
+  it.each([
+    new GitHubApiError("rate-limited", "GitHub API rate limit reached.", 403),
+    new GitHubApiError("network", "GitHub could not be reached."),
+    new GitHubApiError(
+      "unavailable",
+      "GitHub request failed with status 502.",
+      502,
+    ),
+  ])(
+    "propagates a GitHub $code failure from an env authorization read instead of treating it as unsupported",
+    async (failure) => {
       const resolver = new GitHubBackendRuntimePlanResolver(
-        github(qualifyingFiles(), { ".env.example": new Error(_label) }),
+        github(qualifyingFiles(), { ".env.example": failure }),
       )
 
-      await expect(resolver.resolve(repository, ".")).resolves.toBeNull()
+      await expect(resolver.resolve(repository, ".")).rejects.toBe(failure)
     },
   )
 
-  it("fails closed when package-lock authorization evidence cannot be read", async () => {
+  it("propagates a GitHub upstream failure when package-lock authorization evidence cannot be read", async () => {
+    const failure = new GitHubApiError(
+      "rate-limited",
+      "GitHub API rate limit reached.",
+      429,
+    )
     const resolver = new GitHubBackendRuntimePlanResolver(
-      github(qualifyingFiles(), { "package-lock.json": new Error("network") }),
+      github(qualifyingFiles(), { "package-lock.json": failure }),
     )
 
-    await expect(resolver.resolve(repository, ".")).resolves.toBeNull()
+    await expect(resolver.resolve(repository, ".")).rejects.toBe(failure)
   })
 
-  it("fails closed when package.json authorization evidence cannot be read", async () => {
+  it("propagates a GitHub upstream failure when package.json authorization evidence cannot be read", async () => {
+    const failure = new GitHubApiError(
+      "network",
+      "GitHub could not be reached.",
+    )
     const resolver = new GitHubBackendRuntimePlanResolver(
-      github(qualifyingFiles(), { "package.json": new Error("network") }),
+      github(qualifyingFiles(), { "package.json": failure }),
     )
 
-    await expect(resolver.resolve(repository, ".")).resolves.toBeNull()
+    await expect(resolver.resolve(repository, ".")).rejects.toBe(failure)
+  })
+
+  it("still treats a confirmed missing optional file as absent, not an upstream failure", async () => {
+    // getRepositoryTextFile itself returns null (never throws) for a
+    // confirmed-404 file -- see core/github/client.ts requestOptionalJson.
+    // package.json/package-lock.json/env templates are already covered by
+    // `qualifyingFiles()`'s defaults resolving via `files`, not `failures`.
+    const resolver = new GitHubBackendRuntimePlanResolver(
+      github(qualifyingFiles({ ".env.example": null })),
+    )
+
+    await expect(resolver.resolve(repository, ".")).resolves.not.toBeNull()
   })
 
   it("propagates aborts rather than converting them into unsupported", async () => {
@@ -139,5 +173,38 @@ describe("GitHubBackendRuntimePlanResolver", () => {
     )
 
     await expect(resolver.resolve(repository, ".")).resolves.not.toBeNull()
+  })
+
+  it("surfaces as a real 503 UPSTREAM_UNAVAILABLE through the actual control plane, not a 422 UNSUPPORTED_BACKEND", async () => {
+    // Wires the real (fixed) resolver into the real control plane -- proves
+    // the end-to-end fix, not just that each unit independently behaves as
+    // expected in isolation.
+    const resolver = new GitHubBackendRuntimePlanResolver(
+      github(qualifyingFiles(), {
+        "package.json": new GitHubApiError(
+          "rate-limited",
+          "GitHub API rate limit reached.",
+          403,
+          new Date("2026-01-01T00:01:00.000Z"),
+        ),
+      }),
+    )
+    const controlPlane = new BackendRuntimeControlPlane(
+      resolver,
+      new InMemoryBackendRuntimeStore(),
+      new InMemoryBackendRuntimeQueue(),
+      { now: () => new Date("2026-01-01T00:00:00.000Z") },
+    )
+
+    await expect(
+      controlPlane.create(
+        { repository, contractVersion: "backend-v1" },
+        { subject: "user-1", ip: "203.0.113.10" },
+      ),
+    ).rejects.toMatchObject({
+      code: "UPSTREAM_UNAVAILABLE",
+      status: 503,
+      retryAfterSeconds: 60,
+    })
   })
 })
