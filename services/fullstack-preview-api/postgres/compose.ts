@@ -20,6 +20,7 @@ export interface PostgresFullStackPreviewCompositionOptions {
 
 export interface PostgresFullStackPreviewComposition {
   controlPlane: FullStackPreviewControlPlane
+  store: PostgresFullStackPreviewStore
   queue: PostgresFullStackPreviewQueue
   isReady(): Promise<boolean>
 }
@@ -30,17 +31,18 @@ export interface PostgresFullStackPreviewComposition {
  * function rather than folded into it: that function's signature is fixed
  * to the static `PreviewControlPlane`, and a `FullStackPreview` is its own
  * separate resource with its own store/queue, never a variant of the
- * static one. NOT called from services/production/server.ts yet -- see
- * this phase's PR description.
+ * static one. Production now composes both through the same database and
+ * explicitly shared quota policy.
  */
 export function composePostgresFullStackPreview(
   options: PostgresFullStackPreviewCompositionOptions,
 ): PostgresFullStackPreviewComposition {
   const queue = new PostgresFullStackPreviewQueue(options.database)
+  const store = new PostgresFullStackPreviewStore(options.database)
   const controlPlane = new FullStackPreviewControlPlane(
     options.frontendPlanResolver,
     options.backendPlanResolver,
-    new PostgresFullStackPreviewStore(options.database),
+    store,
     queue,
     options.quota,
     options.controlPlane,
@@ -48,6 +50,7 @@ export function composePostgresFullStackPreview(
 
   return {
     controlPlane,
+    store,
     queue,
     isReady: () => options.database.ping(),
   }

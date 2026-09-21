@@ -262,7 +262,6 @@ export class FullStackPreviewControlPlane {
           : "cancelled"
       return transition(preview, target, this.now())
     })
-    await this.queue.cancel(previewId).catch(() => undefined)
     return toPublicPreview(updated)
   }
 

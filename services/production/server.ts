@@ -20,9 +20,21 @@ import { LoopbackSandboxDiskManager } from "../preview-worker/gvisor/sandboxDisk
 import { NetworkLeaseManager } from "../preview-worker/gvisor/subnetAllocator"
 import { PreviewWorkerLoop } from "../preview-worker/workerLoop"
 import { PostgresProductionArtifactStore } from "../preview-api/postgres/productionArtifactStore"
-import { ProductionArtifactTlsAskServer } from "./artifactTlsAskServer"
-import { ProductionArtifactHost } from "./artifactHost"
+import { PostgresPreviewQuota } from "../preview-api/postgres/quota"
+import { GitHubBackendRuntimePlanResolver } from "../backend-runtime-api/githubRuntimePlanResolver"
+import { BackendRuntimeControlPlane } from "../backend-runtime-api/controlPlane"
+import {
+  InMemoryBackendRuntimeQueue,
+  InMemoryBackendRuntimeStore,
+} from "../backend-runtime-api/inMemoryAdapters"
+import { composeProductionBackendRuntime } from "../preview-worker/gvisor/composeProductionBackendRuntime"
+import { BackendRuntimeWorkerLoop } from "../backend-runtime-worker/backendRuntimeWorkerLoop"
+import { composePostgresFullStackPreview } from "../fullstack-preview-api/postgres/compose"
+import { FullStackPreviewSupervisor } from "../fullstack-preview-worker/fullStackPreviewSupervisor"
+import { FullStackPreviewWorkerLoop } from "../fullstack-preview-worker/fullStackPreviewWorkerLoop"
+import { FullStackPreviewStartupReconciler } from "../fullstack-preview-worker/startupReconciler"
 import { readProductionConfig } from "./config"
+import { createProductionFullStackRoutingInfrastructure } from "./fullStackRoutingInfrastructure"
 import {
   ensureProductionDiskLayout,
   ensureProductionPreflight,
@@ -96,22 +108,15 @@ async function main(): Promise<void> {
   })
 
   const artifactStore = new PostgresProductionArtifactStore(database)
-  const artifactHost = new ProductionArtifactHost({
-    storageDir: productionConfig.artifactStorageDir,
-    store: artifactStore,
-    port: productionConfig.artifactPort,
+  const routing = createProductionFullStackRoutingInfrastructure({
+    database,
+    artifactStore,
+    artifactStorageDir: productionConfig.artifactStorageDir,
+    artifactPort: productionConfig.artifactPort,
+    artifactTlsAskPort: productionConfig.artifactTlsAskPort,
+    artifactBaseDomain: productionConfig.artifactBaseDomain,
     trustedAppOrigin: productionConfig.trustedAppOrigin,
-    baseDomain: productionConfig.artifactBaseDomain,
   })
-  const artifactAddress = await artifactHost.listen()
-  const tlsAskServer = new ProductionArtifactTlsAskServer({
-    store: artifactStore,
-    port: productionConfig.artifactTlsAskPort,
-    baseDomain: productionConfig.artifactBaseDomain,
-  })
-  // Rejection propagates to main's fatal startup handler; API and workers
-  // cannot start without the ask listener.
-  const tlsAskAddress = await tlsAskServer.listen()
 
   const github = new GitHubClient({
     getToken: () => process.env.PEEPHOLE_GITHUB_TOKEN,
@@ -120,13 +125,81 @@ async function main(): Promise<void> {
     github,
     new KnownRepositoryFilesLoader(github),
   )
+  const backendPlanResolver = new GitHubBackendRuntimePlanResolver(github)
+  // One explicit policy instance means standalone static and full-stack
+  // admission use identical limits and durable scope-key semantics.
+  const previewQuota = new PostgresPreviewQuota(database)
 
   const composition = composePostgresControlPlane({
     database,
     planResolver,
-    artifactSigner: artifactHost,
+    artifactSigner: routing.artifactHost,
+    quotaProvider: previewQuota,
     controlPlane: { runnerVersion: "production-2" },
   })
+  const backendQueue = new InMemoryBackendRuntimeQueue()
+  const backendControlPlane = new BackendRuntimeControlPlane(
+    backendPlanResolver,
+    new InMemoryBackendRuntimeStore(),
+    backendQueue,
+  )
+  const fullStackComposition = composePostgresFullStackPreview({
+    database,
+    frontendPlanResolver: planResolver,
+    backendPlanResolver,
+    quota: previewQuota,
+  })
+  const routingActivator = routing.createActivator(
+    fullStackComposition.controlPlane,
+    backendControlPlane,
+  )
+
+  const networkProvisioner = new VethNatNetworkProvisioner({
+    leaseManager: networkLeaseManager,
+    activityRegistry: networkActivityRegistry,
+  })
+  const worker = composeProductionWorker(composition.controlPlane, {
+    baseRootfsImage: productionConfig.baseRootfsImage,
+    bundlesRootDir: productionConfig.bundlesRootDir,
+    runscRootDir: productionConfig.runscRootDir,
+    artifactStorageDir: productionConfig.artifactStorageDir,
+    diskManager,
+    networkProvisioner,
+  })
+  const backendSupervisor = composeProductionBackendRuntime(
+    backendControlPlane,
+    {
+      baseRootfsImage: productionConfig.baseRootfsImage,
+      bundlesRootDir: productionConfig.bundlesRootDir,
+      runscRootDir: productionConfig.runscRootDir,
+      diskManager,
+      networkProvisioner,
+      liveRuntimeRegistry: routing.liveRuntimeRegistry,
+    },
+  )
+  const fullStackSupervisor = new FullStackPreviewSupervisor(
+    fullStackComposition.controlPlane,
+    composition.controlPlane,
+    composition.artifacts,
+    backendControlPlane,
+    {
+      routingActivator,
+      liveRuntimeResolver: routing.liveRuntimeRegistry,
+    },
+  )
+
+  // Physical orphan cleanup above is authoritative for old process-local
+  // backend resources. Only now may durable parents be terminalized, and
+  // this must finish before any listener can serve a stale ready row.
+  await new FullStackPreviewStartupReconciler(
+    fullStackComposition.store,
+    fullStackComposition.queue,
+    fullStackComposition.controlPlane,
+    composition.controlPlane,
+  ).reconcile()
+
+  const artifactAddress = await routing.artifactHost.listen()
+  const tlsAskAddress = await routing.tlsAskServer.listen()
 
   const sessionIssuer = new PreviewSessionIssuer(
     readRequiredSessionSigningSecret(),
@@ -138,6 +211,7 @@ async function main(): Promise<void> {
   const apiConfig = readPreviewApiServerConfig(process.env)
   const api = await startNodePreviewApi({
     controlPlane: composition.controlPlane,
+    fullStackControlPlane: fullStackComposition.controlPlane,
     config: apiConfig,
     resolveRequester: (request) => sessionAuth.resolve(request),
     beginGitHubAuth: (request) =>
@@ -146,22 +220,13 @@ async function main(): Promise<void> {
       githubAppOAuth.completeCallback(request.url ?? "/"),
     issueSession: (_request, body) =>
       githubAppOAuth.issueSession(body, sessionIssuer),
-    isReady: composition.isReady,
+    isReady: async () =>
+      (await composition.isReady()) && (await fullStackComposition.isReady()),
   })
 
-  const worker = composeProductionWorker(composition.controlPlane, {
-    baseRootfsImage: productionConfig.baseRootfsImage,
-    bundlesRootDir: productionConfig.bundlesRootDir,
-    runscRootDir: productionConfig.runscRootDir,
-    artifactStorageDir: productionConfig.artifactStorageDir,
-    diskManager,
-    networkProvisioner: new VethNatNetworkProvisioner({
-      leaseManager: networkLeaseManager,
-      activityRegistry: networkActivityRegistry,
-    }),
-  })
-
-  const workerController = new AbortController()
+  const staticWorkerController = new AbortController()
+  const backendWorkerController = new AbortController()
+  const fullStackWorkerController = new AbortController()
   const workerLoops = Array.from(
     { length: productionConfig.workerConcurrency },
     (_unused, index) =>
@@ -172,7 +237,35 @@ async function main(): Promise<void> {
       }),
   )
   const workerLoopsDone = Promise.all(
-    workerLoops.map((loop) => loop.runUntilStopped(workerController.signal)),
+    workerLoops.map((loop) =>
+      loop.runUntilStopped(staticWorkerController.signal),
+    ),
+  )
+  // Intentional order: child consumers are running before the one
+  // full-stack orchestration loop can enqueue either child type.
+  const backendWorkerLoop = new BackendRuntimeWorkerLoop(
+    backendQueue,
+    backendSupervisor,
+    {
+      workerId: `backend-production-${String(process.pid)}`,
+      onError: (error) =>
+        console.error("[peephole] backend worker loop error", error),
+    },
+  )
+  const backendWorkerDone = backendWorkerLoop.runUntilStopped(
+    backendWorkerController.signal,
+  )
+  const fullStackWorkerLoop = new FullStackPreviewWorkerLoop(
+    fullStackComposition.queue,
+    fullStackSupervisor,
+    {
+      workerId: `fullstack-production-${String(process.pid)}`,
+      onError: (error) =>
+        console.error("[peephole] full-stack worker loop error", error),
+    },
+  )
+  const fullStackWorkerDone = fullStackWorkerLoop.runUntilStopped(
+    fullStackWorkerController.signal,
   )
 
   let maintenanceRunning: Promise<void> | undefined
@@ -181,7 +274,7 @@ async function main(): Promise<void> {
     maintenanceRunning = Promise.all([
       orphanReaper.reap(),
       networkOrphanReaper.reap(),
-      artifactHost.reap(),
+      routing.artifactHost.reap(),
     ])
       .then(() => undefined)
       .catch((error: unknown) =>
@@ -205,7 +298,7 @@ async function main(): Promise<void> {
     `[peephole] artifact host listening on http://${artifactAddress.host}:${String(artifactAddress.port)} (loopback only; not yet reachable as https://<artifact-id>.${productionConfig.artifactBaseDomain}/ -- no reverse proxy/DNS/TLS in front of it yet)`,
   )
   console.log(
-    `[peephole] production worker running with real gVisor sandboxing, concurrency=${String(productionConfig.workerConcurrency)}`,
+    `[peephole] production workers running with real gVisor sandboxing, static concurrency=${String(productionConfig.workerConcurrency)}, backend concurrency=1, full-stack orchestration concurrency=1`,
   )
 
   console.log(
@@ -218,12 +311,16 @@ async function main(): Promise<void> {
     shuttingDown = true
     clearInterval(maintenanceTimer)
     console.log(`[peephole] received ${signal}, shutting down...`)
-    workerController.abort()
+    fullStackWorkerController.abort()
+    await fullStackWorkerDone.catch(() => undefined)
+    backendWorkerController.abort()
+    await backendWorkerDone.catch(() => undefined)
+    staticWorkerController.abort()
     await workerLoopsDone.catch(() => undefined)
     await maintenanceRunning
     await api.stop()
-    await tlsAskServer.close()
-    await artifactHost.close()
+    await routing.tlsAskServer.close()
+    await routing.artifactHost.close()
     await database.close()
     process.exit(0)
   }

@@ -66,6 +66,8 @@ export interface BackendPlanResolver {
 
 export interface FullStackPreviewStore {
   get(previewId: string): Promise<StoredFullStackPreview | null>
+  /** Startup-only raw scan used before listeners/workers exist. */
+  listAll(): Promise<StoredFullStackPreview[]>
   getByIdempotencyKey(
     requesterId: string,
     idempotencyKey: string,

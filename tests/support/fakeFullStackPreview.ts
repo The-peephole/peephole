@@ -95,6 +95,10 @@ export class FakeFullStackPreviewStore implements FullStackPreviewStore {
     return this.byId.get(previewId) ?? null
   }
 
+  async listAll(): Promise<StoredFullStackPreview[]> {
+    return [...this.byId.values()].map((preview) => structuredClone(preview))
+  }
+
   async getByIdempotencyKey(requesterId: string, idempotencyKey: string) {
     const id = this.byKey.get(`${requesterId}:${idempotencyKey}`)
     if (!id) return null
