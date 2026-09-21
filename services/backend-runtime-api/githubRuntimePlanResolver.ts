@@ -58,17 +58,13 @@ export class GitHubBackendRuntimePlanResolver implements BackendRuntimePlanResol
     )
 
     for (const path of candidatePaths) {
-      let candidate
-      try {
-        candidate = await this.loadCandidate(metadata, path)
-      } catch (error) {
-        // These reads are execution authorization evidence. Only the GitHub
-        // client's confirmed-404 result is represented as `null`; a transport,
-        // rate-limit, malformed-response, or size failure cannot be mistaken
-        // for an absent file or bypassed by trying a sibling candidate.
-        if (isAbortError(error)) throw error
-        return null
-      }
+      // These reads are execution authorization evidence. Only the GitHub
+      // client's confirmed-404 result is represented as `null` (handled
+      // inside `loadCandidate` itself); a transport, rate-limit,
+      // malformed-response, or size failure must propagate -- it can never
+      // be mistaken for an absent file or silently bypassed by trying a
+      // sibling candidate.
+      const candidate = await this.loadCandidate(metadata, path)
       if (!candidate) continue
       const plan = resolveBackendRuntimePlan(repository, candidate)
       if (plan) return plan
@@ -160,8 +156,4 @@ export class GitHubBackendRuntimePlanResolver implements BackendRuntimePlanResol
       lockContent !== null,
     )
   }
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError"
 }

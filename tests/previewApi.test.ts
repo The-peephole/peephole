@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
+import { GitHubApiError } from "../core/github/client"
 import { PreviewControlPlane } from "../services/preview-api/controlPlane"
 import { createPreviewHttpHandler } from "../services/preview-api/http"
 import {
@@ -167,13 +168,84 @@ describe("preview HTTP contract", () => {
       body: { error: { code: "NOT_FOUND" } },
     })
   })
+
+  it("returns a safe 503 with Retry-After for a GitHub upstream rate-limit failure, without leaking the server token", async () => {
+    const sentinel = "super-secret-github-token"
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {})
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const handle = createHandler({
+      resolve: async () => {
+        // The sentinel deliberately stands in for a leaked credential inside
+        // the upstream error's own message -- the mapping must never forward
+        // that raw message (or the real token) into the response or a log.
+        throw new GitHubApiError(
+          "rate-limited",
+          `GitHub rejected Authorization: Bearer ${sentinel}`,
+          403,
+          new Date("2026-09-01T00:01:00.000Z"),
+        )
+      },
+    })
+
+    const response = await handle({
+      method: "POST",
+      path: "/v1/preview-jobs",
+      headers: { "idempotency-key": "request-0000000001" },
+      requester,
+      body: { repository, contractVersion: "static-v1" },
+    })
+
+    expect(response).toMatchObject({
+      status: 503,
+      headers: { "retry-after": "60" },
+      body: { error: { code: "UPSTREAM_UNAVAILABLE" } },
+    })
+
+    const bodyText = JSON.stringify(response.body)
+    expect(bodyText).not.toContain(sentinel)
+    expect(bodyText).not.toContain("stack")
+    for (const spy of [consoleLog, consoleError, consoleWarn]) {
+      for (const call of spy.mock.calls) {
+        expect(JSON.stringify(call)).not.toContain(sentinel)
+      }
+      spy.mockRestore()
+    }
+  })
+
+  it("still returns the existing generic safe 500 for an unexpected exception, not a fabricated 503", async () => {
+    const handle = createHandler({
+      resolve: async () => {
+        throw new Error("unexpected resolver bug")
+      },
+    })
+
+    const response = await handle({
+      method: "POST",
+      path: "/v1/preview-jobs",
+      headers: { "idempotency-key": "request-0000000001" },
+      requester,
+      body: { repository, contractVersion: "static-v1" },
+    })
+
+    expect(response).toMatchObject({
+      status: 500,
+      body: { error: { code: "INTERNAL_ERROR" } },
+    })
+    expect(JSON.stringify(response)).not.toContain("stack")
+    expect(JSON.stringify(response)).not.toContain("unexpected resolver bug")
+  })
 })
 
 function createHandler(
-  options: { perUser?: number; resolvedPlan?: BuildPlan } = {},
+  options: {
+    perUser?: number
+    resolvedPlan?: BuildPlan
+    resolve?: () => Promise<BuildPlan | null>
+  } = {},
 ) {
   const control = new PreviewControlPlane(
-    { resolve: async () => options.resolvedPlan ?? plan },
+    { resolve: options.resolve ?? (async () => options.resolvedPlan ?? plan) },
     new InMemoryPreviewJobStore(),
     new InMemoryPreviewQueue(),
     new InMemoryPreviewArtifactCache(),

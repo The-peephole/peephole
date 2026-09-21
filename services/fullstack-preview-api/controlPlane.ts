@@ -18,6 +18,7 @@ import {
   validateBackendRuntimePlan,
 } from "../../core/preview/backendRuntimePlanValidator"
 import { isSafePreviewSourceRoot } from "../../core/preview/sourceRoot"
+import { classifyGitHubUpstreamError } from "../../core/github/upstreamAvailability"
 import { FullStackPreviewControlError } from "./errors"
 import { FULLSTACK_PREVIEW_ID_PATTERN, createFullStackPreviewId } from "./id"
 import type {
@@ -173,8 +174,8 @@ export class FullStackPreviewControlPlane {
     // used to create the underlying PreviewJob/BackendRuntime here. A
     // future worker phase independently re-resolves both again, exactly
     // like every other trust boundary in this codebase.
-    await resolveFrontendPlan(this.frontendPlanResolver, request)
-    await resolveBackendPlan(this.backendPlanResolver, request)
+    await resolveFrontendPlan(this.frontendPlanResolver, request, this.now)
+    await resolveBackendPlan(this.backendPlanResolver, request, this.now)
 
     const now = this.now()
     const id = this.createId()
@@ -701,12 +702,21 @@ function earlierIso(current: string, candidate: Date): string {
 async function resolveFrontendPlan(
   resolver: FrontendPlanResolver,
   request: CreateFullStackPreviewRequest,
+  now: () => Date,
 ): Promise<BuildPlan> {
-  const resolved = await resolver.resolve(
-    structuredClone(request.repository),
-    PREVIEW_CONTRACT_VERSION,
-    { sourceRoot: request.frontendTarget.sourceRoot },
-  )
+  let resolved: BuildPlan | null
+  try {
+    resolved = await resolver.resolve(
+      structuredClone(request.repository),
+      PREVIEW_CONTRACT_VERSION,
+      { sourceRoot: request.frontendTarget.sourceRoot },
+    )
+  } catch (error) {
+    throw (
+      toUpstreamControlError(error, "full-stack admission (frontend)", now) ??
+      error
+    )
+  }
 
   if (!resolved) {
     throw new FullStackPreviewControlError(
@@ -748,11 +758,20 @@ async function resolveFrontendPlan(
 async function resolveBackendPlan(
   resolver: BackendPlanResolver,
   request: CreateFullStackPreviewRequest,
+  now: () => Date,
 ): Promise<BackendRuntimePlan> {
-  const resolved = await resolver.resolve(
-    structuredClone(request.repository),
-    request.backendSourceRoot,
-  )
+  let resolved: BackendRuntimePlan | null
+  try {
+    resolved = await resolver.resolve(
+      structuredClone(request.repository),
+      request.backendSourceRoot,
+    )
+  } catch (error) {
+    throw (
+      toUpstreamControlError(error, "full-stack admission (backend)", now) ??
+      error
+    )
+  }
 
   if (!resolved) {
     throw new FullStackPreviewControlError(
@@ -809,6 +828,46 @@ async function createRequestFingerprint(
   return Array.from(new Uint8Array(digest), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("")
+}
+
+/** Maps a resolver-boundary GitHub failure to this API's own typed control
+ * error, logging only recognized `GitHubApiError` metadata. Returns `null`
+ * for anything else so the caller re-throws the original error unchanged --
+ * an unexpected programming exception must still produce the existing
+ * generic safe 500 response, never a misleading 503. */
+function toUpstreamControlError(
+  error: unknown,
+  logScope: string,
+  now: () => Date,
+): FullStackPreviewControlError | null {
+  const outcome = classifyGitHubUpstreamError(error, now)
+  if (!outcome) return null
+
+  if (outcome.kind === "not-found") {
+    return new FullStackPreviewControlError(
+      "NOT_FOUND",
+      "The requested repository or commit could not be found.",
+      404,
+    )
+  }
+
+  const githubError = error as {
+    code: string
+    status: number | null
+    retryAt: Date | null
+  }
+  console.error(`[peephole] ${logScope} upstream GitHub failure`, {
+    code: githubError.code,
+    status: githubError.status,
+    retryAt: githubError.retryAt ? githubError.retryAt.toISOString() : null,
+  })
+
+  return new FullStackPreviewControlError(
+    "UPSTREAM_UNAVAILABLE",
+    "The GitHub repository service is temporarily unavailable. Try again later.",
+    503,
+    outcome.retryAfterSeconds,
+  )
 }
 
 function assertSameIdempotentRequest(

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
+import { GitHubApiError } from "../core/github/client"
 import { BackendRuntimeControlPlane } from "../services/backend-runtime-api/controlPlane"
 import {
   InMemoryBackendRuntimeQueue,
@@ -50,6 +51,18 @@ function compose(
   const controlPlane = new BackendRuntimeControlPlane(resolver, store, queue, {
     now: () => new Date("2026-01-01T00:00:00.000Z"),
     maxActiveRuntimesPerRequester,
+  })
+  return { store, queue, resolver, controlPlane }
+}
+
+function composeWithResolver(
+  resolve: (...args: unknown[]) => Promise<BackendRuntimePlan | null>,
+) {
+  const store = new InMemoryBackendRuntimeStore()
+  const queue = new InMemoryBackendRuntimeQueue()
+  const resolver = { resolve }
+  const controlPlane = new BackendRuntimeControlPlane(resolver, store, queue, {
+    now: () => new Date("2026-01-01T00:00:00.000Z"),
   })
   return { store, queue, resolver, controlPlane }
 }
@@ -353,5 +366,51 @@ describe("BackendRuntimeControlPlane", () => {
         requester,
       ),
     ).rejects.toMatchObject({ code: "INVALID_REQUEST" })
+  })
+
+  it("maps a GitHub rate-limit failure to a safe 503 with Retry-After preserved", async () => {
+    const { controlPlane } = composeWithResolver(async () => {
+      throw new GitHubApiError(
+        "rate-limited",
+        "GitHub API rate limit reached. Try again after it resets.",
+        403,
+        new Date("2026-01-01T00:01:00.000Z"),
+      )
+    })
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {})
+
+    await expect(controlPlane.create(createRequest(), requester)).rejects.toMatchObject(
+      { code: "UPSTREAM_UNAVAILABLE", status: 503, retryAfterSeconds: 60 },
+    )
+    expect(errorLog).toHaveBeenCalledWith(
+      expect.stringContaining("upstream GitHub failure"),
+      expect.objectContaining({ code: "rate-limited" }),
+    )
+    errorLog.mockRestore()
+  })
+
+  it("maps a GitHub not-found failure to the existing safe 404 without leaking repository existence", async () => {
+    const { controlPlane } = composeWithResolver(async () => {
+      throw new GitHubApiError(
+        "not-found",
+        "This repository is unavailable or is not public.",
+        404,
+      )
+    })
+
+    await expect(
+      controlPlane.create(createRequest(), requester),
+    ).rejects.toMatchObject({ code: "NOT_FOUND", status: 404 })
+  })
+
+  it("does not reclassify an unexpected resolver exception as an upstream failure", async () => {
+    const boom = new Error("resolver programming bug")
+    const { controlPlane } = composeWithResolver(async () => {
+      throw boom
+    })
+
+    await expect(controlPlane.create(createRequest(), requester)).rejects.toBe(
+      boom,
+    )
   })
 })

@@ -4,9 +4,11 @@ import type { QueuedFullStackPreview } from "../../types/fullstackPreview"
 import type { PreviewJobStatus } from "../../types/preview"
 import type { BackendRuntimeStatus } from "../../types/backendRuntime"
 import type { BackendRuntimeControlPlane } from "../backend-runtime-api/controlPlane"
+import { BackendRuntimeControlError } from "../backend-runtime-api/errors"
 import type { FullStackPreviewControlPlane } from "../fullstack-preview-api/controlPlane"
 import type { StoredFullStackPreview } from "../fullstack-preview-api/ports"
 import type { PreviewControlPlane } from "../preview-api/controlPlane"
+import { PreviewControlError } from "../preview-api/errors"
 import type { PreviewArtifactCache } from "../preview-api/ports"
 import type { FullStackRoutingActivator } from "../fullstack-routing/fullStackRoutingActivator"
 import type { LiveBackendRuntimeRouteResolver } from "../backend-runtime-worker/liveRuntimeRegistry"
@@ -141,10 +143,12 @@ export class FullStackPreviewSupervisor {
           frontendIdempotencyKey(authoritative.id),
           authoritative.requesterId,
         )
-      } catch {
+      } catch (error) {
         await this.fullStack.failWorkerFullStackPreview(
           authoritative.id,
-          "FRONTEND_FAILED",
+          isUpstreamUnavailable(error)
+            ? "ORCHESTRATION_UNAVAILABLE"
+            : "FRONTEND_FAILED",
         )
         return
       }
@@ -187,10 +191,12 @@ export class FullStackPreviewSupervisor {
           authoritative.requesterId,
           authoritative.id,
         )
-      } catch {
+      } catch (error) {
         await this.fullStack.failWorkerFullStackPreview(
           authoritative.id,
-          "BACKEND_FAILED",
+          isUpstreamUnavailable(error)
+            ? "ORCHESTRATION_UNAVAILABLE"
+            : "BACKEND_FAILED",
         )
         return
       }
@@ -493,6 +499,20 @@ export function frontendIdempotencyKey(previewId: string): string {
     throw new Error("Full-stack frontend idempotency key is invalid.")
   }
   return key
+}
+
+/** True when a child's `createForOrchestration` failed only because its own
+ * control plane could not authorize/create it right now (e.g. the shared
+ * GitHub upstream mapping produced `UPSTREAM_UNAVAILABLE`) rather than a
+ * real, durable frontend/backend failure. Distinguishing this prevents a
+ * temporary upstream outage from being mislabeled as an actual build or
+ * runtime failure. */
+function isUpstreamUnavailable(error: unknown): boolean {
+  return (
+    (error instanceof PreviewControlError ||
+      error instanceof BackendRuntimeControlError) &&
+    error.code === "UPSTREAM_UNAVAILABLE"
+  )
 }
 
 function sameQueuedPreview(

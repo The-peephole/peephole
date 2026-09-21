@@ -77,6 +77,7 @@ export type FullStackPreviewApiErrorCode =
   | "CONFLICT"
   | "RATE_LIMITED"
   | "INVALID_TRANSITION"
+  | "UPSTREAM_UNAVAILABLE"
   | "INTERNAL_ERROR"
 
 /**

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 
+import { GitHubApiError } from "../core/github/client"
 import { BackendRuntimeControlPlane } from "../services/backend-runtime-api/controlPlane"
 import {
   InMemoryBackendRuntimeQueue,
@@ -34,14 +35,14 @@ const plan: BackendRuntimePlan = {
   },
 }
 
-function compose() {
+function compose(
+  resolve: () => Promise<BackendRuntimePlan | null> = async () => plan,
+) {
   const store = new InMemoryBackendRuntimeStore()
   const queue = new InMemoryBackendRuntimeQueue()
-  const controlPlane = new BackendRuntimeControlPlane(
-    { resolve: async () => plan },
-    store,
-    queue,
-  )
+  const controlPlane = new BackendRuntimeControlPlane({ resolve }, store, queue, {
+    now: () => new Date("2026-09-01T00:00:00.000Z"),
+  })
   return createBackendRuntimeHttpHandler(controlPlane)
 }
 
@@ -125,5 +126,50 @@ describe("createBackendRuntimeHttpHandler", () => {
     })
 
     expect(response.status).toBe(404)
+  })
+
+  it("returns a safe 503 with Retry-After for a GitHub upstream rate-limit failure", async () => {
+    const handle = compose(async () => {
+      throw new GitHubApiError(
+        "rate-limited",
+        "GitHub API rate limit reached.",
+        403,
+        new Date("2026-09-01T00:01:00.000Z"),
+      )
+    })
+
+    const response = await handle({
+      method: "POST",
+      path: "/v1/backend-runtimes",
+      headers: {},
+      body: { repository, contractVersion: "backend-v1" },
+      requester,
+    })
+
+    expect(response).toMatchObject({
+      status: 503,
+      headers: { "retry-after": "60" },
+      body: { error: { code: "UPSTREAM_UNAVAILABLE" } },
+    })
+  })
+
+  it("still returns the existing generic safe 500 for an unexpected exception, not a fabricated 503", async () => {
+    const handle = compose(async () => {
+      throw new Error("unexpected resolver bug")
+    })
+
+    const response = await handle({
+      method: "POST",
+      path: "/v1/backend-runtimes",
+      headers: {},
+      body: { repository, contractVersion: "backend-v1" },
+      requester,
+    })
+
+    expect(response).toMatchObject({
+      status: 500,
+      body: { error: { code: "INTERNAL_ERROR" } },
+    })
+    expect(JSON.stringify(response)).not.toContain("unexpected resolver bug")
   })
 })

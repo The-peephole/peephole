@@ -2,6 +2,7 @@ import { BACKEND_RUNTIME_CONTRACT_VERSION } from "../../types/backendRuntime"
 import type {
   BackendRuntime,
   BackendRuntimeErrorCode,
+  BackendRuntimePlan,
   BackendRuntimeStatus,
   CreateBackendRuntimeRequest,
 } from "../../types/backendRuntime"
@@ -9,6 +10,7 @@ import type { PreviewRequester } from "../../types/preview"
 import { validateRepositoryRef } from "../../core/preview/buildPlan"
 import { isSafePreviewSourceRoot } from "../../core/preview/sourceRoot"
 import { validateBackendRuntimePlan } from "../../core/preview/backendRuntimePlanValidator"
+import { classifyGitHubUpstreamError } from "../../core/github/upstreamAvailability"
 import { BackendRuntimeControlError } from "./errors"
 import type {
   BackendRuntimePlanResolver,
@@ -154,10 +156,18 @@ export class BackendRuntimeControlPlane {
       )
     }
 
-    const resolvedPlan = await this.planResolver.resolve(
-      structuredClone(request.repository),
-      request.sourceRoot,
-    )
+    let resolvedPlan: BackendRuntimePlan | null
+    try {
+      resolvedPlan = await this.planResolver.resolve(
+        structuredClone(request.repository),
+        request.sourceRoot,
+      )
+    } catch (error) {
+      throw (
+        toUpstreamControlError(error, "backend runtime admission", this.now) ??
+        error
+      )
+    }
     if (!resolvedPlan) {
       throw new BackendRuntimeControlError(
         "UNSUPPORTED_BACKEND",
@@ -516,6 +526,46 @@ function invalidTransition(
     "INVALID_TRANSITION",
     `Backend runtime cannot transition from ${from} to ${to}.`,
     409,
+  )
+}
+
+/** Maps a resolver-boundary GitHub failure to this API's own typed control
+ * error, logging only recognized `GitHubApiError` metadata. Returns `null`
+ * for anything else so the caller re-throws the original error unchanged --
+ * an unexpected programming exception must still produce the existing
+ * generic safe 500 response, never a misleading 503. */
+function toUpstreamControlError(
+  error: unknown,
+  logScope: string,
+  now: () => Date,
+): BackendRuntimeControlError | null {
+  const outcome = classifyGitHubUpstreamError(error, now)
+  if (!outcome) return null
+
+  if (outcome.kind === "not-found") {
+    return new BackendRuntimeControlError(
+      "NOT_FOUND",
+      "The requested repository or commit could not be found.",
+      404,
+    )
+  }
+
+  const githubError = error as {
+    code: string
+    status: number | null
+    retryAt: Date | null
+  }
+  console.error(`[peephole] ${logScope} upstream GitHub failure`, {
+    code: githubError.code,
+    status: githubError.status,
+    retryAt: githubError.retryAt ? githubError.retryAt.toISOString() : null,
+  })
+
+  return new BackendRuntimeControlError(
+    "UPSTREAM_UNAVAILABLE",
+    "The GitHub repository service is temporarily unavailable. Try again later.",
+    503,
+    outcome.retryAfterSeconds,
   )
 }
 

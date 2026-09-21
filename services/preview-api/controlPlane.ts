@@ -19,6 +19,7 @@ import {
   validateRepositoryRef,
 } from "../../core/preview/buildPlan"
 import { isSafePreviewSourceRoot } from "../../core/preview/sourceRoot"
+import { classifyGitHubUpstreamError } from "../../core/github/upstreamAvailability"
 import { PreviewControlError } from "./errors"
 import type {
   PreviewArtifactCache,
@@ -168,11 +169,16 @@ export class PreviewControlPlane {
       }
     }
 
-    const resolvedPlan = await this.planResolver.resolve(
-      structuredClone(request.repository),
-      request.contractVersion,
-      structuredClone(target),
-    )
+    let resolvedPlan: BuildPlan | null
+    try {
+      resolvedPlan = await this.planResolver.resolve(
+        structuredClone(request.repository),
+        request.contractVersion,
+        structuredClone(target),
+      )
+    } catch (error) {
+      throw toUpstreamControlError(error, "preview admission", this.now) ?? error
+    }
 
     if (!resolvedPlan) {
       throw new PreviewControlError(
@@ -690,5 +696,45 @@ function asInvalidRequest(error: unknown): PreviewControlError {
       ? error.message
       : "Preview job request is invalid.",
     400,
+  )
+}
+
+/** Maps a resolver-boundary GitHub failure to this API's own typed control
+ * error, logging only recognized `GitHubApiError` metadata. Returns `null`
+ * for anything else so the caller re-throws the original error unchanged --
+ * an unexpected programming exception must still produce the existing
+ * generic safe 500 response, never a misleading 503. */
+function toUpstreamControlError(
+  error: unknown,
+  logScope: string,
+  now: () => Date,
+): PreviewControlError | null {
+  const outcome = classifyGitHubUpstreamError(error, now)
+  if (!outcome) return null
+
+  if (outcome.kind === "not-found") {
+    return new PreviewControlError(
+      "NOT_FOUND",
+      "The requested repository or commit could not be found.",
+      404,
+    )
+  }
+
+  const githubError = error as {
+    code: string
+    status: number | null
+    retryAt: Date | null
+  }
+  console.error(`[peephole] ${logScope} upstream GitHub failure`, {
+    code: githubError.code,
+    status: githubError.status,
+    retryAt: githubError.retryAt ? githubError.retryAt.toISOString() : null,
+  })
+
+  return new PreviewControlError(
+    "UPSTREAM_UNAVAILABLE",
+    "The GitHub repository service is temporarily unavailable. Try again later.",
+    503,
+    outcome.retryAfterSeconds,
   )
 }

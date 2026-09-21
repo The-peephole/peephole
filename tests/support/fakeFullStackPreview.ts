@@ -54,6 +54,9 @@ const ACTIVE = new Set([
 
 export class FakeFrontendPlanResolver implements FrontendPlanResolver {
   nextPlan: BuildPlan | null = validFrontendPlan
+  /** Set to make the next `resolve` call reject instead of resolve --
+   * e.g. a `GitHubApiError` to exercise the upstream-mapping boundary. */
+  nextError: unknown = null
   readonly calls: Array<{
     repository: PreviewRepositoryRef
     contractVersion: string
@@ -66,12 +69,16 @@ export class FakeFrontendPlanResolver implements FrontendPlanResolver {
     target: { sourceRoot: string },
   ): Promise<BuildPlan | null> {
     this.calls.push({ repository, contractVersion, target })
+    if (this.nextError) throw this.nextError
     return this.nextPlan
   }
 }
 
 export class FakeBackendPlanResolver implements BackendPlanResolver {
   nextPlan: BackendRuntimePlan | null = validBackendPlan
+  /** Set to make the next `resolve` call reject instead of resolve --
+   * e.g. a `GitHubApiError` to exercise the upstream-mapping boundary. */
+  nextError: unknown = null
   readonly calls: Array<{
     repository: PreviewRepositoryRef
     sourceRootHint: string | undefined
@@ -82,6 +89,7 @@ export class FakeBackendPlanResolver implements BackendPlanResolver {
     sourceRootHint: string | undefined,
   ): Promise<BackendRuntimePlan | null> {
     this.calls.push({ repository, sourceRootHint })
+    if (this.nextError) throw this.nextError
     return this.nextPlan
   }
 }

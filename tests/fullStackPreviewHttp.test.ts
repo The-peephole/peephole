@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 
+import { GitHubApiError } from "../core/github/client"
 import { FullStackPreviewControlPlane } from "../services/fullstack-preview-api/controlPlane"
 import {
   createFullStackPreviewHttpHandler,
@@ -16,15 +17,19 @@ import {
 const requester = { subject: "user-1", ip: "203.0.113.10" }
 const idempotencyKey = "request-key-0123456789abcdef"
 
-function compose() {
+function compose(
+  frontendResolver = new FakeFrontendPlanResolver(),
+  backendResolver = new FakeBackendPlanResolver(),
+) {
   const store = new FakeFullStackPreviewStore()
   const queue = new FakeFullStackPreviewQueue()
   const controlPlane = new FullStackPreviewControlPlane(
-    new FakeFrontendPlanResolver(),
-    new FakeBackendPlanResolver(),
+    frontendResolver,
+    backendResolver,
     store,
     queue,
     { consume: async () => ({ allowed: true as const }) },
+    { now: () => new Date("2026-01-01T00:00:00.000Z") },
   )
   return createFullStackPreviewHttpHandler(controlPlane)
 }
@@ -244,5 +249,50 @@ describe("createFullStackPreviewHttpHandler", () => {
       requester,
     })
     expect(response.status).toBe(404)
+  })
+
+  it("returns a safe 503 with Retry-After for a GitHub upstream rate-limit failure", async () => {
+    const frontendResolver = new FakeFrontendPlanResolver()
+    frontendResolver.nextError = new GitHubApiError(
+      "rate-limited",
+      "GitHub API rate limit reached.",
+      403,
+      new Date("2026-01-01T00:01:00.000Z"),
+    )
+    const handle = compose(frontendResolver)
+
+    const response = await handle({
+      method: "POST",
+      path: "/v1/fullstack-previews",
+      headers: { "idempotency-key": idempotencyKey },
+      body: validBody,
+      requester,
+    })
+
+    expect(response).toMatchObject({
+      status: 503,
+      headers: { "retry-after": "60" },
+      body: { error: { code: "UPSTREAM_UNAVAILABLE" } },
+    })
+  })
+
+  it("still returns the existing generic safe 500 for an unexpected exception, not a fabricated 503", async () => {
+    const backendResolver = new FakeBackendPlanResolver()
+    backendResolver.nextError = new Error("unexpected resolver bug")
+    const handle = compose(new FakeFrontendPlanResolver(), backendResolver)
+
+    const response = await handle({
+      method: "POST",
+      path: "/v1/fullstack-previews",
+      headers: { "idempotency-key": idempotencyKey },
+      body: validBody,
+      requester,
+    })
+
+    expect(response).toMatchObject({
+      status: 500,
+      body: { error: { code: "INTERNAL_ERROR" } },
+    })
+    expect(JSON.stringify(response)).not.toContain("unexpected resolver bug")
   })
 })

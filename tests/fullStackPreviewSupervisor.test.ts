@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
+import { GitHubApiError } from "../core/github/client"
 import { createBuildCacheKey } from "../core/preview/buildPlan"
 import { BackendRuntimeControlPlane } from "../services/backend-runtime-api/controlPlane"
 import {
@@ -57,8 +58,9 @@ function createHarness(options: { artifacts?: PreviewArtifactCache } = {}) {
   const frontendStore = new InMemoryPreviewJobStore()
   const frontendQueue = new InMemoryPreviewQueue()
   const artifacts = options.artifacts ?? new InMemoryPreviewArtifactCache()
+  const frontendResolve = vi.fn().mockResolvedValue(validFrontendPlan)
   const frontend = new PreviewControlPlane(
-    { resolve: vi.fn().mockResolvedValue(validFrontendPlan) },
+    { resolve: frontendResolve },
     frontendStore,
     frontendQueue,
     artifacts,
@@ -84,8 +86,9 @@ function createHarness(options: { artifacts?: PreviewArtifactCache } = {}) {
   )
   const backendStore = new InMemoryBackendRuntimeStore()
   const backendQueue = new InMemoryBackendRuntimeQueue()
+  const backendResolve = vi.fn().mockResolvedValue(validBackendPlan)
   const backend = new BackendRuntimeControlPlane(
-    { resolve: vi.fn().mockResolvedValue(validBackendPlan) },
+    { resolve: backendResolve },
     backendStore,
     backendQueue,
     {
@@ -120,10 +123,12 @@ function createHarness(options: { artifacts?: PreviewArtifactCache } = {}) {
     frontend,
     frontendStore,
     frontendQueue,
+    frontendResolve,
     artifacts,
     backend,
     backendStore,
     backendQueue,
+    backendResolve,
     createParent,
     queued,
     quotaCalls: () => ({ staticQuotaCalls, fullStackQuotaCalls }),
@@ -577,6 +582,50 @@ describe("FullStackPreviewSupervisor", () => {
     expect(await backendHarness.fullStackStore.get(previewId)).toMatchObject({
       status: "failed",
       errorCode: "BACKEND_FAILED",
+    })
+  })
+
+  it("does not mislabel a temporary upstream GitHub outage during child creation as a real build/runtime failure", async () => {
+    const frontendHarness = createHarness()
+    await frontendHarness.createParent()
+    frontendHarness.frontendResolve.mockRejectedValueOnce(
+      new GitHubApiError(
+        "rate-limited",
+        "GitHub API rate limit reached. Try again after it resets.",
+        403,
+        new Date("2099-01-01T00:01:00.000Z"),
+      ),
+    )
+    const frontendSupervisor = new FullStackPreviewSupervisor(
+      frontendHarness.fullStack,
+      frontendHarness.frontend,
+      frontendHarness.artifacts,
+      frontendHarness.backend,
+    )
+    await frontendSupervisor.run(frontendHarness.queued)
+    expect(await frontendHarness.fullStackStore.get(previewId)).toMatchObject({
+      status: "failed",
+      errorCode: "ORCHESTRATION_UNAVAILABLE",
+      frontendJobId: null,
+    })
+
+    const backendHarness = createHarness()
+    await backendHarness.createParent()
+    backendHarness.backendResolve.mockRejectedValueOnce(
+      new GitHubApiError("network", "GitHub could not be reached."),
+    )
+    const backendSupervisor = new FullStackPreviewSupervisor(
+      backendHarness.fullStack,
+      backendHarness.frontend,
+      backendHarness.artifacts,
+      backendHarness.backend,
+      { wait: async () => completeFrontendAndBackend(backendHarness, false) },
+    )
+    await backendSupervisor.run(backendHarness.queued)
+    expect(await backendHarness.fullStackStore.get(previewId)).toMatchObject({
+      status: "failed",
+      errorCode: "ORCHESTRATION_UNAVAILABLE",
+      backendRuntimeId: null,
     })
   })
 
