@@ -750,3 +750,47 @@ restart-fail-closed behavior in production -- was completed on 2026-09-21;
 see docs/PRODUCTION_SMOKE.md and docs/TEST_PLAN.md for the verification
 record. M9 is complete. UI, M10 (ephemeral env/secrets), and M11 (temporary
 database support) remain out of scope and have not started.
+
+## D-032 - Ephemeral secrets (M10): generated-only first slice, delivered outside the OCI `process.env`/`config.json` path
+
+**Status:** Proposed -- design only, not implemented. M10 remains unchecked
+in docs/MVP_ROADMAP.md.
+
+An audit of the actual M9 data flow found that `BackendRuntimePlan.platformEnvironment`
+(`types/backendRuntime.ts`) is serialized verbatim into the OCI spec's
+`process.env` and written to `<bundleDir>/config.json`
+(`services/preview-worker/gvisor/backendRuntimeProcess.ts`). `bundleDir` sits
+on the host's ordinary persistent ext4 filesystem (`bundlesRootDir`, default
+`/var/lib/peephole/jobs` -- confirmed non-tmpfs via `docs/SANDBOX_DISK_SECURITY.md`'s
+`findmnt` check), not tmpfs, and is deleted only on normal cleanup, periodic
+orphan reap (default 30 minutes), or unconditionally on the next process
+startup. Naively adding secret values to `platformEnvironment` would put
+them in plaintext on persistent disk for the runtime's full lifetime, and
+`core/preview/backendRuntimePlanValidator.ts` already hard-enforces that
+field to exactly `PORT`/`HOST`/`NODE_ENV`. Both facts rule out reusing
+`platformEnvironment` for secrets.
+
+The decision: M10's first slice supports only Peephole-*generated* secrets
+restricted to the existing narrow `preview-generated-candidate` allowlist
+(`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`,
+`core/analyzer/environmentRequirements.ts`) -- never user-supplied
+credentials in this slice, because the backend-v1 ingress-only network
+policy (D-030, unchanged) means most third-party credentials would be
+useless to a backend that cannot originate any outbound connection, while a
+self-consumed signing/session/CSRF secret is not. Values are generated
+worker-side at process start, held only in a process-local ephemeral broker
+keyed by `runtimeId` (mirroring the existing `LiveBackendRuntimeRouteRegistry`
+pattern -- itself already process-local, non-durable, single-process by
+construction, since `services/production/server.ts` runs the API and every
+worker in one Node process), and delivered to the sandbox through a new
+tmpfs-backed bind mount plus a trusted bootstrap entrypoint -- never through
+`process.env`/`config.json`. A server restart clears the broker; any
+in-flight backend runtime is already non-durable and already reaped
+fail-closed today (`InMemoryBackendRuntimeStore`/`InMemoryBackendRuntimeQueue`),
+so this introduces no new restart fragility. The Postgres-durable
+`fullstack-v1` parent row stays exactly as narrow as it is today -- no plan,
+no env, no secret ever joins that schema.
+
+Full design, threat model, architecture comparison, broker/OCI/idempotency/
+failure-semantics detail, and test plan: docs/EPHEMERAL_SECRETS.md. M11
+(temporary database support) is unaffected and has not started.

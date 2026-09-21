@@ -724,8 +724,15 @@ Add coverage in the same order as product development:
    was completed in M9 -- see section 5 (implemented, production-verified)
 9. frontend/backend routing and cross-origin policy (implemented,
    production-verified in M9 -- see the M9 production verification record)
-10. ephemeral secret redaction, scope, and teardown
-11. temporary database tenancy, credentials, lifecycle, and cleanup
+10. ephemeral secret redaction, scope, and teardown -- design only, not
+    implemented; see D-032 and docs/EPHEMERAL_SECRETS.md section 17 for the
+    full portable and real-gVisor-gated test list (durable-store/queue/API
+    non-leakage, OCI `config.json` non-leakage, reserved/client-public name
+    rejection, entropy/uniqueness, broker single-consumer and restart
+    fail-closed behavior, host tmpfs cleanup, and a real-host check that a
+    backend printing a secret to stdout never reaches Peephole's own logs)
+11. temporary database tenancy, credentials, lifecycle, and cleanup -- not
+    started (M11)
 
 The full-stack fixture becomes eligible for these tests only as each required
 contract is actually implemented.
