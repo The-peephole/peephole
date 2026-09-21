@@ -680,7 +680,7 @@ is verified against a real host. A live disk-quota watcher during the
 own hard ext4 quota remains the non-bypassable backstop, matching how disk
 limits are already enforced everywhere else in this codebase.
 
-## D-031 - Full-stack preview orchestration is a durable parent resource and stops at `awaiting_activation` until routing exists
+## D-031 - Full-stack preview orchestration uses a durable parent and a unique same-origin route
 
 **Status:** Accepted
 
@@ -695,17 +695,33 @@ uses the parent full-stack id as a private orchestration identity, preventing
 two parents from sharing one runtime. Child ids are persisted immediately so
 cancellation and reclaimed-lease cleanup never depend on process memory.
 
-A published artifact and running backend advance the parent only to
-`awaiting_activation`, with expiry tightened to both child expiries. `ready`
-is unreachable until a later routing phase can atomically establish an
-authorized origin and `/api` route. Until that phase exists, the supervisor
-deliberately keeps renewing the parent queue lease while awaiting activation
-and monitors parent cancellation/expiry plus backend liveness. Cancellation
-stops active children; a reclaimed partial attempt cancels every recorded
-active child and fails closed with `ORCHESTRATION_UNAVAILABLE`. Production
-does not start this worker yet, so this temporary long-held ownership model
-cannot strand a live production request.
+A published artifact and running backend advance the parent to
+`awaiting_activation`, with expiry tightened to both child expiries. The
+portable Phase 3A routing activator can then re-check the parent, live artifact
+authorization, running requester-owned backend, and current process-local
+runtime route before atomically moving the parent to `ready`. It generates
+only `https://fullstack-<uuid>.<base-domain>/`; no client supplies a URL or
+backend target. The final expiry is the minimum of parent, artifact, and
+runtime expiries.
 
-This decision does not add a full-stack hostname, TLS authorization, proxy,
-CSP change, public backend URL, UI, production startup wiring, secrets, or
-databases. Those remain later phases.
+Phase 3A also defines the portable serving boundary. A narrow routing store
+exposes only id, status, artifact id, backend runtime id, and expiry. The
+unique `fullstack-*` origin serves the referenced shared artifact while only
+case-sensitive `/api` and `/api/*` use that preview's process-local live
+runtime route. The proxy accepts bodyless GET/HEAD, strictly validates the raw
+origin-form target, forwards only `accept` and `accept-language`, creates a
+fresh upstream connection, buffers at most 256 KiB for at most five seconds,
+rejects redirects, and returns only `content-type` plus host-owned security
+headers. Full-stack responses use `connect-src 'self'`; shared `artifact-*`
+origins remain static-only with `connect-src 'none'`. TLS ask authorization
+for a full-stack name requires a ready, unexpired routing row and live
+referenced artifact metadata.
+
+This foundation is deliberately optional in `ProductionArtifactHost` and is
+not composed by `services/production/server.ts`. The supervisor does not call
+the activator automatically; Caddy/deployment changes and real-host gVisor E2E
+also remain Phase 3B work. Before automatic activation, Phase 3B must assign
+durable ownership after `ready`: user cancellation, full-stack expiry, backend
+crash, `ready -> stopping -> stopped`, backend cancellation, and queue
+acknowledgement/cleanup cannot be left to a worker that disappears after
+activation. UI, M10, and M11 remain out of scope.

@@ -401,6 +401,69 @@ export class FullStackPreviewControlPlane {
     })
   }
 
+  /** Internal routing-plane operation. The caller derives the URL and child
+   * expiries from authoritative server-side sources; this atomic update
+   * rechecks that none of those identities changed before publishing it. */
+  async activateRouting(
+    previewId: string,
+    input: {
+      expectedArtifactId: string
+      expectedBackendRuntimeId: string
+      url: string
+      expiresAt: Date
+    },
+  ): Promise<FullStackPreview> {
+    validateChildId(input.expectedArtifactId, "frontend artifact")
+    validateChildId(input.expectedBackendRuntimeId, "backend runtime")
+    validateExpiry(input.expiresAt)
+    validateReadyUrl(input.url)
+
+    const updated = await this.store.update(previewId, (preview) => {
+      const currentExpiry = new Date(preview.expiresAt)
+      const proposedExpiry = input.expiresAt.getTime()
+
+      if (preview.status === "ready") {
+        if (
+          preview.artifactId === input.expectedArtifactId &&
+          preview.backendRuntimeId === input.expectedBackendRuntimeId &&
+          preview.url === input.url &&
+          currentExpiry.getTime() <= proposedExpiry
+        ) {
+          return preview
+        }
+        throw childIdentityConflict("routing activation")
+      }
+
+      if (preview.status !== "awaiting_activation") {
+        throw invalidTransition(preview.status, "ready")
+      }
+      if (
+        preview.artifactId !== input.expectedArtifactId ||
+        preview.backendRuntimeId !== input.expectedBackendRuntimeId ||
+        preview.frontendJobId === null ||
+        preview.url !== null
+      ) {
+        throw childIdentityConflict("routing activation")
+      }
+      if (
+        proposedExpiry <= this.now().getTime() ||
+        proposedExpiry > currentExpiry.getTime()
+      ) {
+        throw new FullStackPreviewControlError(
+          "INVALID_TRANSITION",
+          "The routing activation expiry is invalid.",
+          409,
+        )
+      }
+      return {
+        ...transition(preview, "ready", this.now()),
+        url: input.url,
+        expiresAt: input.expiresAt.toISOString(),
+      }
+    })
+    return toPublicPreview(updated)
+  }
+
   /** Worker-only authoritative read. Never exposed through HTTP. */
   async getWorkerFullStackPreview(
     previewId: string,
@@ -597,6 +660,27 @@ function validateExpiry(value: Date): void {
       "The recorded child expiry is invalid.",
       409,
     )
+  }
+}
+
+function validateReadyUrl(value: string): void {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw childIdentityConflict("routing URL")
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.port ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash ||
+    url.toString() !== value
+  ) {
+    throw childIdentityConflict("routing URL")
   }
 }
 

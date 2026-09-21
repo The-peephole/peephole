@@ -5,8 +5,10 @@ import { ProductionArtifactTlsAskServer } from "../services/production/artifactT
 import type { ProductionArtifactMetadata } from "../services/preview-api/postgres/productionArtifactStore"
 
 const artifactId = "artifact-9f3c1a2b-4d5e-4f67-8a90-123456789abc"
+const fullStackId = "fullstack-9f3c1a2b-4d5e-4f67-8a90-123456789abc"
 const baseDomain = "3.34.44.114.nip.io"
 const domain = `${artifactId}.${baseDomain}`
+const fullStackDomain = `${fullStackId}.${baseDomain}`
 const check = (value: string) => `/check?domain=${encodeURIComponent(value)}`
 
 function getResponse(port: number, path: string, method = "GET") {
@@ -40,15 +42,24 @@ describe("ProductionArtifactTlsAskServer", () => {
   let now: number
   const get =
     vi.fn<(id: string) => Promise<ProductionArtifactMetadata | null>>()
+  const routingGet = vi.fn()
 
   beforeEach(async () => {
     now = Date.parse("2026-09-08T00:00:00Z")
     get.mockReset().mockResolvedValue({ expiresAt: new Date(now + 1) })
+    routingGet.mockReset().mockResolvedValue({
+      id: fullStackId,
+      status: "ready",
+      artifactId,
+      backendRuntimeId: "runtime-a",
+      expiresAt: new Date(now + 1),
+    })
     server = new ProductionArtifactTlsAskServer({
       store: { get },
       port: 0,
       baseDomain,
       now: () => new Date(now),
+      fullStackRouting: { store: { get: routingGet } },
     })
     const address = await server.listen()
     expect(address.host).toBe("127.0.0.1")
@@ -91,6 +102,60 @@ describe("ProductionArtifactTlsAskServer", () => {
     const response = await getResponse(port, check(domain))
     expect(response.status).toBe(403)
     expect(response.body).toBe("Forbidden.")
+  })
+
+  it("allows a ready full-stack hostname only through its live artifact metadata", async () => {
+    const response = await getResponse(port, check(fullStackDomain))
+    expect(response.status).toBe(200)
+    expect(routingGet).toHaveBeenCalledExactlyOnceWith(fullStackId)
+    expect(get).toHaveBeenCalledExactlyOnceWith(artifactId)
+  })
+
+  it("keeps full-stack TLS disabled when the optional routing seam is omitted", async () => {
+    await server.close()
+    server = new ProductionArtifactTlsAskServer({
+      store: { get },
+      port,
+      baseDomain,
+      now: () => new Date(now),
+    })
+    await server.listen()
+    expect((await getResponse(port, check(fullStackDomain))).status).toBe(403)
+    expect(routingGet).not.toHaveBeenCalled()
+    expect(get).not.toHaveBeenCalled()
+    expect((await getResponse(port, check(domain))).status).toBe(200)
+  })
+
+  it.each([
+    ["missing", null],
+    [
+      "not ready",
+      {
+        status: "awaiting_activation",
+        artifactId,
+        expiresAt: new Date("2026-09-08T00:00:00.001Z"),
+      },
+    ],
+    [
+      "expired",
+      {
+        status: "ready",
+        artifactId,
+        expiresAt: new Date("2026-09-08T00:00:00.000Z"),
+      },
+    ],
+    [
+      "artifact cleared",
+      {
+        status: "ready",
+        artifactId: null,
+        expiresAt: new Date("2026-09-08T00:00:00.001Z"),
+      },
+    ],
+  ])("denies full-stack TLS when routing is %s", async (_label, routing) => {
+    routingGet.mockResolvedValue(routing)
+    expect((await getResponse(port, check(fullStackDomain))).status).toBe(403)
+    expect(get).not.toHaveBeenCalled()
   })
 
   it("checks expiry after lookup and rechecks each request without caching", async () => {

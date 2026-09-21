@@ -189,6 +189,12 @@ function readDomain(
   return trimmed
 }
 
+/** Reuses the production configuration's exact domain grammar for trusted
+ * internal components that generate public preview origins. */
+export function validateProductionBaseDomain(value: string): string {
+  return readDomain("baseDomain", value, value)
+}
+
 function readInteger(
   name: string,
   value: string | undefined,
