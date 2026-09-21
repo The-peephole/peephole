@@ -25,27 +25,24 @@ import type {
   FrontendPlanResolver,
   FullStackPreviewQueue,
   FullStackPreviewStore,
+  PreviewQuota,
   PreviewRequester,
   StoredFullStackPreview,
 } from "./ports"
 
-/** Everything except a final resting state -- including "ready"/"stopping",
- * which Phase 2A can never actually produce (no worker/activation exists
- * yet), but which must still count as active once a future phase can reach
- * them, so admission-cap counting and worker-liveness checks stay correct
- * without needing to change again when that phase lands. */
+/** Everything except a final resting state. `ready` remains reserved for the
+ * later routing activation phase but already counts as active. */
 const ACTIVE_STATUSES = new Set<FullStackPreviewStatus>([
   "queued",
   "building_frontend",
   "starting_backend",
+  "awaiting_activation",
   "ready",
   "stopping",
 ])
 
-/** The subset of ACTIVE_STATUSES Phase 2A's own provisioning TTL actually
- * governs -- "ready"/"stopping" are deliberately excluded: they represent a
- * live, already-activated preview, and their (future, tighter) expiry is a
- * distinct concept from "provisioning took too long" (see D-031). */
+/** Only states that have not completed both child provisioning steps time out
+ * as provisioning failures. `awaiting_activation` expires normally. */
 const PROVISIONING_STATUSES = new Set<FullStackPreviewStatus>([
   "queued",
   "building_frontend",
@@ -59,14 +56,12 @@ const TERMINAL_STATUSES = new Set<FullStackPreviewStatus>([
   "expired",
 ])
 
-/** Worker-facing transitions that do not require additional activation
- * prerequisites. "starting_backend" -> "ready" is deliberately never
- * reachable through this map -- see `activateReady`. */
+/** Teardown-only transitions. There is deliberately no Phase 2B path to
+ * `ready`; provisioning uses the atomic child-recording methods. */
 const NEXT_PHASES = new Map<
   FullStackPreviewStatus,
   Set<FullStackPreviewStatus>
 >([
-  ["building_frontend", new Set(["starting_backend"])],
   ["ready", new Set(["stopping"])],
   ["stopping", new Set(["stopped"])],
 ])
@@ -76,6 +71,8 @@ const SAFE_ERROR_MESSAGES: Record<FullStackPreviewErrorCode, string> = {
     "This repository's frontend does not satisfy the full-stack preview contract.",
   UNSUPPORTED_BACKEND:
     "This repository's backend does not satisfy the full-stack preview contract.",
+  FRONTEND_FAILED: "The full-stack preview frontend could not be prepared.",
+  BACKEND_FAILED: "The full-stack preview backend could not be started.",
   PROVISIONING_TIMEOUT:
     "The full-stack preview did not finish provisioning in time.",
   ORCHESTRATION_UNAVAILABLE:
@@ -108,10 +105,9 @@ export interface CreateFullStackPreviewResult {
 /**
  * Fully separate from `PreviewControlPlane` and `BackendRuntimeControlPlane`
  * -- never merged into either. A `FullStackPreview` only ever *pairs*
- * identities those two control planes independently authorize; this phase
- * (M9 Phase 2A) creates and validates that durable pairing but does not yet
- * drive either child resource's creation -- see the module-level "NOT
- * implemented" list in the accompanying PR description.
+ * identities those two control planes independently authorize. The separate
+ * Phase 2B supervisor drives those children through private worker methods;
+ * HTTP callers still see only this parent resource.
  */
 export class FullStackPreviewControlPlane {
   private readonly provisioningTtlMs: number
@@ -124,6 +120,7 @@ export class FullStackPreviewControlPlane {
     private readonly backendPlanResolver: BackendPlanResolver,
     private readonly store: FullStackPreviewStore,
     private readonly queue: FullStackPreviewQueue,
+    private readonly admissionQuota: PreviewQuota,
     options: FullStackPreviewControlPlaneOptions = {},
   ) {
     this.provisioningTtlMs = options.provisioningTtlMs ?? 15 * 60_000
@@ -156,6 +153,20 @@ export class FullStackPreviewControlPlane {
         created: false,
         preview: toPublicPreview(await this.refreshExpiry(existing.preview)),
       }
+    }
+
+    const quota = await this.admissionQuota.consume(
+      requester,
+      request.repository,
+      this.now(),
+    )
+    if (!quota.allowed) {
+      throw new FullStackPreviewControlError(
+        "RATE_LIMITED",
+        "Preview job quota exceeded. Try again later.",
+        429,
+        quota.retryAfterSeconds,
+      )
     }
 
     // Support validation only -- neither resolved plan is ever persisted or
@@ -255,12 +266,11 @@ export class FullStackPreviewControlPlane {
     return toPublicPreview(updated)
   }
 
-  /** Generic worker phase transitions that need no additional resource
-   * prerequisites. Deliberately excludes "ready", which is reachable only
-   * through `activateReady`. */
+  /** Generic teardown transitions. Provisioning transitions use the narrow
+   * child-recording operations below so identities and state move atomically. */
   async markPhase(
     previewId: string,
-    status: "starting_backend" | "stopping" | "stopped",
+    status: "stopping" | "stopped",
   ): Promise<FullStackPreview> {
     const updated = await this.store.update(previewId, (preview) => {
       const allowed = NEXT_PHASES.get(preview.status)
@@ -270,42 +280,137 @@ export class FullStackPreviewControlPlane {
     return toPublicPreview(updated)
   }
 
-  /**
-   * The dedicated, atomic "ready" activation a future worker phase will
-   * call once both children exist. Deliberately re-reads and validates the
-   * *stored* prerequisites itself rather than trusting caller-supplied
-   * ids, so a preview can never become `ready` with a null frontend
-   * artifact or backend runtime -- see D-031's "ready activation must be a
-   * dedicated operation that validates all prerequisites atomically."
-   * Nothing in Phase 2A ever populates `frontendJobId`/`artifactId`/
-   * `backendRuntimeId`, so this always refuses today; it exists now so the
-   * invariant it enforces is fixed and testable before any worker can ever
-   * call it.
-   */
-  async activateReady(previewId: string): Promise<FullStackPreview> {
-    const updated = await this.store.update(previewId, (preview) => {
+  async recordFrontendJob(
+    previewId: string,
+    frontendJobId: string,
+  ): Promise<void> {
+    validateChildId(frontendJobId, "frontend job")
+    await this.store.update(previewId, (preview) => {
+      if (preview.status !== "building_frontend") {
+        throw invalidTransition(preview.status, "building_frontend")
+      }
+      if (
+        preview.frontendJobId !== null &&
+        preview.frontendJobId !== frontendJobId
+      ) {
+        throw childIdentityConflict("frontend job")
+      }
+      return preview.frontendJobId === frontendJobId
+        ? preview
+        : {
+            ...preview,
+            frontendJobId,
+            updatedAt: this.now().toISOString(),
+          }
+    })
+  }
+
+  async recordFrontendArtifact(
+    previewId: string,
+    input: {
+      frontendJobId: string
+      artifactId: string
+      artifactExpiresAt: Date
+    },
+  ): Promise<void> {
+    validateChildId(input.frontendJobId, "frontend job")
+    validateChildId(input.artifactId, "frontend artifact")
+    validateExpiry(input.artifactExpiresAt)
+    await this.store.update(previewId, (preview) => {
+      if (
+        preview.status === "starting_backend" &&
+        preview.frontendJobId === input.frontendJobId &&
+        preview.artifactId === input.artifactId
+      ) {
+        return preview
+      }
+      if (preview.status !== "building_frontend") {
+        throw invalidTransition(preview.status, "starting_backend")
+      }
+      if (preview.frontendJobId !== input.frontendJobId) {
+        throw childIdentityConflict("frontend job")
+      }
+      if (
+        preview.artifactId !== null &&
+        preview.artifactId !== input.artifactId
+      ) {
+        throw childIdentityConflict("frontend artifact")
+      }
+      return {
+        ...transition(preview, "starting_backend", this.now()),
+        artifactId: input.artifactId,
+        expiresAt: earlierIso(preview.expiresAt, input.artifactExpiresAt),
+      }
+    })
+  }
+
+  async recordBackendRuntime(
+    previewId: string,
+    backendRuntimeId: string,
+  ): Promise<void> {
+    validateChildId(backendRuntimeId, "backend runtime")
+    await this.store.update(previewId, (preview) => {
       if (preview.status !== "starting_backend") {
-        throw invalidTransition(preview.status, "ready")
+        throw invalidTransition(preview.status, "starting_backend")
+      }
+      if (
+        preview.backendRuntimeId !== null &&
+        preview.backendRuntimeId !== backendRuntimeId
+      ) {
+        throw childIdentityConflict("backend runtime")
+      }
+      return preview.backendRuntimeId === backendRuntimeId
+        ? preview
+        : {
+            ...preview,
+            backendRuntimeId,
+            updatedAt: this.now().toISOString(),
+          }
+    })
+  }
+
+  async markBackendRunning(
+    previewId: string,
+    input: { backendRuntimeId: string; backendExpiresAt: Date },
+  ): Promise<void> {
+    validateChildId(input.backendRuntimeId, "backend runtime")
+    validateExpiry(input.backendExpiresAt)
+    await this.store.update(previewId, (preview) => {
+      if (
+        preview.status === "awaiting_activation" &&
+        preview.backendRuntimeId === input.backendRuntimeId &&
+        preview.frontendJobId &&
+        preview.artifactId
+      ) {
+        return preview
+      }
+      if (preview.status !== "starting_backend") {
+        throw invalidTransition(preview.status, "awaiting_activation")
       }
       if (
         !preview.frontendJobId ||
         !preview.artifactId ||
-        !preview.backendRuntimeId
+        preview.backendRuntimeId !== input.backendRuntimeId
       ) {
-        throw new FullStackPreviewControlError(
-          "INVALID_TRANSITION",
-          "A full-stack preview cannot become ready before its frontend artifact and backend runtime are both recorded.",
-          409,
-        )
+        throw childIdentityConflict("provisioned child")
       }
-      return transition(preview, "ready", this.now())
+      return {
+        ...transition(preview, "awaiting_activation", this.now()),
+        expiresAt: earlierIso(preview.expiresAt, input.backendExpiresAt),
+      }
     })
-    return toPublicPreview(updated)
+  }
+
+  /** Worker-only authoritative read. Never exposed through HTTP. */
+  async getWorkerFullStackPreview(
+    previewId: string,
+  ): Promise<StoredFullStackPreview | null> {
+    const preview = await this.store.get(previewId)
+    return preview ? this.refreshExpiry(preview) : null
   }
 
   /** Worker-only admission, mirroring `PreviewControlPlane.startWorkerJob`/
-   * `BackendRuntimeControlPlane.startWorkerRuntime` exactly. No worker
-   * calls this yet in Phase 2A. */
+   * `BackendRuntimeControlPlane.startWorkerRuntime`. */
   async startWorkerFullStackPreview(
     previewId: string,
     recovered = false,
@@ -405,11 +510,10 @@ export class FullStackPreviewControlPlane {
           errorMessage: SAFE_ERROR_MESSAGES.PROVISIONING_TIMEOUT,
         }
       }
-      // "ready"/"stopping": unreachable in Phase 2A. Once reachable, aging
-      // out here should become "expired", mirroring the static
-      // artifact/preview-job pattern -- not "failed", since the preview
-      // did successfully activate before its (future, tighter) expiry
-      // simply elapsed.
+      // `awaiting_activation` has completed child provisioning, so expiry is
+      // normal lifecycle expiry rather than a provisioning timeout. The same
+      // applies to future "ready"/"stopping" states. Aging out here becomes
+      // "expired", mirroring the static artifact/preview-job pattern.
       return transition(current, "expired", this.now())
     })
   }
@@ -474,6 +578,41 @@ function validateRequester(requester: PreviewRequester): void {
       400,
     )
   }
+}
+
+function validateChildId(value: string, label: string): void {
+  if (!/^[a-z\d][a-z\d._:-]{0,127}$/i.test(value)) {
+    throw new FullStackPreviewControlError(
+      "INVALID_TRANSITION",
+      `The recorded ${label} identity is invalid.`,
+      409,
+    )
+  }
+}
+
+function validateExpiry(value: Date): void {
+  if (!Number.isFinite(value.getTime())) {
+    throw new FullStackPreviewControlError(
+      "INVALID_TRANSITION",
+      "The recorded child expiry is invalid.",
+      409,
+    )
+  }
+}
+
+function childIdentityConflict(label: string): FullStackPreviewControlError {
+  return new FullStackPreviewControlError(
+    "INVALID_TRANSITION",
+    `The stored ${label} identity does not match.`,
+    409,
+  )
+}
+
+function earlierIso(current: string, candidate: Date): string {
+  const currentDate = new Date(current)
+  return (
+    currentDate.getTime() <= candidate.getTime() ? currentDate : candidate
+  ).toISOString()
 }
 
 async function resolveFrontendPlan(

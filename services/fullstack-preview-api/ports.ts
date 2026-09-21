@@ -4,6 +4,7 @@ import type {
   FullStackPreview,
   QueuedFullStackPreview,
 } from "../../types/fullstackPreview"
+import type { PreviewQuota } from "../preview-api/ports"
 
 /**
  * Internal orchestration record. Every field beyond the public
@@ -128,4 +129,4 @@ export interface FullStackPreviewQueueConsumer {
   ): Promise<boolean>
 }
 
-export type { PreviewRequester }
+export type { PreviewQuota, PreviewRequester }

@@ -8,6 +8,7 @@ import type {
 import type { PreviewRequester } from "../../types/preview"
 import { validateRepositoryRef } from "../../core/preview/buildPlan"
 import { isSafePreviewSourceRoot } from "../../core/preview/sourceRoot"
+import { validateBackendRuntimePlan } from "../../core/preview/backendRuntimePlanValidator"
 import { BackendRuntimeControlError } from "./errors"
 import type {
   BackendRuntimePlanResolver,
@@ -95,20 +96,55 @@ export class BackendRuntimeControlPlane {
     requester: PreviewRequester,
   ): Promise<CreateBackendRuntimeResult> {
     validateRequester(requester)
+    return this.createInternal(request, requester.subject, null)
+  }
+
+  /** Trusted worker-only path. The full-stack id is the durable isolation
+   * identity: retries reuse this preview's active runtime, while another
+   * full-stack preview can never share it. */
+  async createForOrchestration(
+    request: CreateBackendRuntimeRequest,
+    requesterSubject: string,
+    orchestrationKey: string,
+  ): Promise<CreateBackendRuntimeResult> {
+    validateRequesterSubject(requesterSubject)
+    if (!/^fullstack-[a-z\d-]{8,64}$/i.test(orchestrationKey)) {
+      throw new BackendRuntimeControlError(
+        "INVALID_REQUEST",
+        "The backend orchestration identity is invalid.",
+        400,
+      )
+    }
+    return this.createInternal(request, requesterSubject, orchestrationKey)
+  }
+
+  private async createInternal(
+    request: CreateBackendRuntimeRequest,
+    requesterSubject: string,
+    orchestrationKey: string | null,
+  ): Promise<CreateBackendRuntimeResult> {
     validateCreateInput(request)
 
     const fingerprint = await createFingerprint(request)
-    const existing = await this.store.getActiveByFingerprint(
-      requester.subject,
-      fingerprint,
-    )
+    const existing = orchestrationKey
+      ? await this.store.getActiveByOrchestrationKey(
+          requesterSubject,
+          orchestrationKey,
+        )
+      : await this.store.getActiveByFingerprint(requesterSubject, fingerprint)
     if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        throw new BackendRuntimeControlError(
+          "CONFLICT",
+          "The backend orchestration identity was already used for a different request.",
+          409,
+        )
+      }
       return { created: false, runtime: toPublicRuntime(existing) }
     }
 
-    const activeCount = await this.store.countActiveByRequester(
-      requester.subject,
-    )
+    const activeCount =
+      await this.store.countActiveByRequester(requesterSubject)
     if (activeCount >= this.maxActiveRuntimesPerRequester) {
       throw new BackendRuntimeControlError(
         "RATE_LIMITED",
@@ -118,25 +154,31 @@ export class BackendRuntimeControlPlane {
       )
     }
 
-    const plan = await this.planResolver.resolve(
+    const resolvedPlan = await this.planResolver.resolve(
       structuredClone(request.repository),
       request.sourceRoot,
     )
-    if (!plan) {
+    if (!resolvedPlan) {
       throw new BackendRuntimeControlError(
         "UNSUPPORTED_BACKEND",
         "This backend does not satisfy the backend-v1 contract.",
         422,
       )
     }
+    // Preserve standalone backend-v1 behavior. The trusted orchestration
+    // boundary adds its own independent validation before accepting a plan.
+    const plan = orchestrationKey
+      ? validateResolvedPlan(resolvedPlan, request)
+      : resolvedPlan
 
     const now = this.now()
     const id = this.createId()
     const expiresAt = new Date(now.getTime() + this.runtimeTtlMs)
     const runtime: StoredBackendRuntime = {
       id,
-      requesterId: requester.subject,
+      requesterId: requesterSubject,
       fingerprint,
+      orchestrationKey,
       repository: structuredClone(request.repository),
       sourceRoot: plan.sourceRoot,
       adapterId: plan.adapterId,
@@ -165,6 +207,23 @@ export class BackendRuntimeControlPlane {
     return { created: true, runtime: toPublicRuntime(created) }
   }
 
+  async getForOrchestration(
+    runtimeId: string,
+    requesterSubject: string,
+  ): Promise<BackendRuntime> {
+    validateRequesterSubject(requesterSubject)
+    const runtime = await this.getOwnedRuntime(runtimeId, requesterSubject)
+    return toPublicRuntime(await this.refreshExpiry(runtime))
+  }
+
+  async cancelForOrchestration(
+    runtimeId: string,
+    requesterSubject: string,
+  ): Promise<BackendRuntime> {
+    validateRequesterSubject(requesterSubject)
+    return this.cancelOwned(runtimeId, requesterSubject)
+  }
+
   async get(
     runtimeId: string,
     requester: PreviewRequester,
@@ -179,7 +238,14 @@ export class BackendRuntimeControlPlane {
     requester: PreviewRequester,
   ): Promise<BackendRuntime> {
     validateRequester(requester)
-    const current = await this.getOwnedRuntime(runtimeId, requester.subject)
+    return this.cancelOwned(runtimeId, requester.subject)
+  }
+
+  private async cancelOwned(
+    runtimeId: string,
+    requesterSubject: string,
+  ): Promise<BackendRuntime> {
+    const current = await this.getOwnedRuntime(runtimeId, requesterSubject)
     const refreshed = await this.refreshExpiry(current)
 
     if (TERMINAL_STATUSES.has(refreshed.status)) {
@@ -372,6 +438,46 @@ function validateRequester(requester: PreviewRequester): void {
       400,
     )
   }
+}
+
+function validateRequesterSubject(requesterSubject: string): void {
+  if (!requesterSubject || requesterSubject.length > 128) {
+    throw new BackendRuntimeControlError(
+      "INVALID_REQUEST",
+      "A valid backend runtime requester is required.",
+      400,
+    )
+  }
+}
+
+function validateResolvedPlan(
+  value: Parameters<typeof validateBackendRuntimePlan>[0],
+  request: CreateBackendRuntimeRequest,
+): ReturnType<typeof validateBackendRuntimePlan> {
+  const plan = validateBackendRuntimePlan(value)
+  if (
+    !sameRepository(plan.repository, request.repository) ||
+    (request.sourceRoot !== undefined && plan.sourceRoot !== request.sourceRoot)
+  ) {
+    throw new BackendRuntimeControlError(
+      "CONFLICT",
+      "Resolved backend identity does not match the requested commit or source root.",
+      409,
+    )
+  }
+  return plan
+}
+
+function sameRepository(
+  left: CreateBackendRuntimeRequest["repository"],
+  right: CreateBackendRuntimeRequest["repository"],
+): boolean {
+  return (
+    left.repositoryId === right.repositoryId &&
+    left.owner.toLowerCase() === right.owner.toLowerCase() &&
+    left.name.toLowerCase() === right.name.toLowerCase() &&
+    left.commitSha.toLowerCase() === right.commitSha.toLowerCase()
+  )
 }
 
 async function createFingerprint(

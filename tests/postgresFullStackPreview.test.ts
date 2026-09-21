@@ -233,9 +233,32 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
       "backend_host",
       "backend_port",
       "backend_url",
+      "requester_ip",
+      "request_ip",
+      "ip",
     ]) {
       expect(names).not.toContain(forbidden)
     }
+  })
+
+  it("migration 004 persists awaiting_activation and remains idempotent", async () => {
+    const store = new PostgresFullStackPreviewStore(database)
+    const preview = createPreview()
+    previewIds.push(preview.id)
+    await store.createOrGetWithCapacity({
+      requesterId: preview.requesterId,
+      idempotencyKey: `request-${preview.id}`,
+      requestFingerprint: `fingerprint-${preview.id}`,
+      preview,
+      maxActive: 1,
+    })
+    const updated = await store.update(preview.id, (current) => ({
+      ...current,
+      status: "awaiting_activation",
+    }))
+    expect(updated.status).toBe("awaiting_activation")
+    await expect(applyPostgresMigrations(database)).resolves.toBeUndefined()
+    expect((await store.get(preview.id))?.status).toBe("awaiting_activation")
   })
 
   it("admits exactly one of two concurrent distinct requests at limit 1", async () => {
@@ -584,8 +607,8 @@ async function countAdmissions(
           FROM peephole_fullstack_previews
           WHERE requester_id = $1
             AND status IN (
-              'queued', 'building_frontend', 'starting_backend', 'ready',
-              'stopping'
+              'queued', 'building_frontend', 'starting_backend',
+              'awaiting_activation', 'ready', 'stopping'
             )
         )::text AS active_count,
         (

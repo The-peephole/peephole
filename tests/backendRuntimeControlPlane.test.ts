@@ -20,7 +20,7 @@ const plan: BackendRuntimePlan = {
   sourceRoot: "backend",
   adapterId: "express-node-npm-v1",
   packageManager: "npm",
-  install: { command: "npm", args: ["ci"] },
+  install: { command: "npm", args: ["ci", "--no-audit", "--no-fund"] },
   start: { command: "node", args: ["src/server.js"] },
   internalPort: 3000,
   platformEnvironment: {
@@ -40,17 +40,48 @@ function createRequest(overrides: { sourceRoot?: string } = {}) {
   }
 }
 
-function compose(resolvePlan: BackendRuntimePlan | null = plan) {
+function compose(
+  resolvePlan: BackendRuntimePlan | null = plan,
+  maxActiveRuntimesPerRequester = 1,
+) {
   const store = new InMemoryBackendRuntimeStore()
   const queue = new InMemoryBackendRuntimeQueue()
   const resolver = { resolve: vi.fn().mockResolvedValue(resolvePlan) }
   const controlPlane = new BackendRuntimeControlPlane(resolver, store, queue, {
     now: () => new Date("2026-01-01T00:00:00.000Z"),
+    maxActiveRuntimesPerRequester,
   })
   return { store, queue, resolver, controlPlane }
 }
 
 describe("BackendRuntimeControlPlane", () => {
+  it("isolates internal runtimes per full-stack id while reusing the same retry", async () => {
+    const { controlPlane, store } = compose(plan, 2)
+    const firstKey = "fullstack-00000000-0000-0000-0000-000000000001"
+    const secondKey = "fullstack-00000000-0000-0000-0000-000000000002"
+    const first = await controlPlane.createForOrchestration(
+      createRequest({ sourceRoot: "backend" }),
+      requester.subject,
+      firstKey,
+    )
+    const retry = await controlPlane.createForOrchestration(
+      createRequest({ sourceRoot: "backend" }),
+      requester.subject,
+      firstKey,
+    )
+    const second = await controlPlane.createForOrchestration(
+      createRequest({ sourceRoot: "backend" }),
+      requester.subject,
+      secondKey,
+    )
+
+    expect(retry.created).toBe(false)
+    expect(retry.runtime.id).toBe(first.runtime.id)
+    expect(second.runtime.id).not.toBe(first.runtime.id)
+    expect((await store.get(first.runtime.id))?.orchestrationKey).toBe(firstKey)
+    expect(first.runtime).not.toHaveProperty("orchestrationKey")
+  })
+
   it("creates a queued runtime from an independently resolved plan", async () => {
     const { controlPlane, resolver } = compose()
 

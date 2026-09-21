@@ -11,6 +11,8 @@ export interface StoredBackendRuntime extends BackendRuntime {
   /** Identity fingerprint for idempotent active-runtime reuse -- see
    * `controlPlane.ts#create`. */
   fingerprint: string
+  /** Present only for trusted full-stack orchestration. Never public. */
+  orchestrationKey: string | null
 }
 
 /**
@@ -32,6 +34,10 @@ export interface BackendRuntimeStore {
   getActiveByFingerprint(
     requesterId: string,
     fingerprint: string,
+  ): Promise<StoredBackendRuntime | null>
+  getActiveByOrchestrationKey(
+    requesterId: string,
+    orchestrationKey: string,
   ): Promise<StoredBackendRuntime | null>
   countActiveByRequester(requesterId: string): Promise<number>
   create(runtime: StoredBackendRuntime): Promise<StoredBackendRuntime>

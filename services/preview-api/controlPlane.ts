@@ -105,10 +105,37 @@ export class PreviewControlPlane {
     idempotencyKey: string,
     requester: PreviewRequester,
   ): Promise<CreatePreviewJobResult> {
-    const target = validateCreateInput(request, idempotencyKey, requester)
+    validateRequester(requester)
+    return this.createInternal(
+      request,
+      idempotencyKey,
+      requester.subject,
+      requester,
+    )
+  }
+
+  /** Trusted worker-only entry point. Public full-stack admission already
+   * spent quota with the real requester IP, so this path deliberately skips
+   * quota while re-running all repository/plan/cache/store/queue checks. */
+  async createForOrchestration(
+    request: CreatePreviewJobRequest,
+    idempotencyKey: string,
+    requesterSubject: string,
+  ): Promise<CreatePreviewJobResult> {
+    validateRequesterSubject(requesterSubject)
+    return this.createInternal(request, idempotencyKey, requesterSubject)
+  }
+
+  private async createInternal(
+    request: CreatePreviewJobRequest,
+    idempotencyKey: string,
+    requesterSubject: string,
+    quotaRequester?: PreviewRequester,
+  ): Promise<CreatePreviewJobResult> {
+    const target = validateCreateInput(request, idempotencyKey)
     const requestFingerprint = await createRequestFingerprint(request, target)
     const existing = await this.store.getByIdempotencyKey(
-      requester.subject,
+      requesterSubject,
       idempotencyKey,
     )
 
@@ -124,15 +151,21 @@ export class PreviewControlPlane {
     }
 
     const now = this.now()
-    const quota = await this.quota.consume(requester, request.repository, now)
-
-    if (!quota.allowed) {
-      throw new PreviewControlError(
-        "RATE_LIMITED",
-        "Preview job quota exceeded. Try again later.",
-        429,
-        quota.retryAfterSeconds,
+    if (quotaRequester) {
+      const quota = await this.quota.consume(
+        quotaRequester,
+        request.repository,
+        now,
       )
+
+      if (!quota.allowed) {
+        throw new PreviewControlError(
+          "RATE_LIMITED",
+          "Preview job quota exceeded. Try again later.",
+          429,
+          quota.retryAfterSeconds,
+        )
+      }
     }
 
     const resolvedPlan = await this.planResolver.resolve(
@@ -156,7 +189,7 @@ export class PreviewControlPlane {
     const initialExpiry = new Date(now.getTime() + this.jobTimeoutMs)
     let job: StoredPreviewJob = {
       id,
-      requesterId: requester.subject,
+      requesterId: requesterSubject,
       repository: structuredClone(request.repository),
       plan,
       cacheKey,
@@ -187,7 +220,7 @@ export class PreviewControlPlane {
     }
 
     const persisted = await this.store.createOrGet({
-      requesterId: requester.subject,
+      requesterId: requesterSubject,
       idempotencyKey,
       requestFingerprint,
       job,
@@ -214,6 +247,23 @@ export class PreviewControlPlane {
     return { created: persisted.created, job: toPublicJob(persisted.job) }
   }
 
+  async getForOrchestration(
+    jobId: string,
+    requesterSubject: string,
+  ): Promise<PreviewJob> {
+    validateRequesterSubject(requesterSubject)
+    const job = await this.getOwnedJob(jobId, requesterSubject)
+    return toPublicJob(await this.refreshExpiry(job))
+  }
+
+  async cancelForOrchestration(
+    jobId: string,
+    requesterSubject: string,
+  ): Promise<PreviewJob> {
+    validateRequesterSubject(requesterSubject)
+    return this.cancelOwned(jobId, requesterSubject)
+  }
+
   async get(jobId: string, requester: PreviewRequester): Promise<PreviewJob> {
     validateRequester(requester)
     const job = await this.getOwnedJob(jobId, requester.subject)
@@ -225,7 +275,14 @@ export class PreviewControlPlane {
     requester: PreviewRequester,
   ): Promise<PreviewJob> {
     validateRequester(requester)
-    const current = await this.getOwnedJob(jobId, requester.subject)
+    return this.cancelOwned(jobId, requester.subject)
+  }
+
+  private async cancelOwned(
+    jobId: string,
+    requesterSubject: string,
+  ): Promise<PreviewJob> {
+    const current = await this.getOwnedJob(jobId, requesterSubject)
     const refreshed = await this.refreshExpiry(current)
 
     if (refreshed.status === "cancelled") {
@@ -419,10 +476,7 @@ export class PreviewControlPlane {
 function validateCreateInput(
   request: CreatePreviewJobRequest,
   idempotencyKey: string,
-  requester: PreviewRequester,
 ): PreviewTarget {
-  validateRequester(requester)
-
   if (!/^[\x21-\x7e]{16,128}$/.test(idempotencyKey)) {
     throw new PreviewControlError(
       "INVALID_REQUEST",
@@ -468,6 +522,16 @@ function validateCreateInput(
   }
 
   return structuredClone(request.target)
+}
+
+function validateRequesterSubject(requesterSubject: string): void {
+  if (!requesterSubject || requesterSubject.length > 128) {
+    throw new PreviewControlError(
+      "INVALID_REQUEST",
+      "A valid preview requester is required.",
+      400,
+    )
+  }
 }
 
 function validateRequester(requester: PreviewRequester): void {

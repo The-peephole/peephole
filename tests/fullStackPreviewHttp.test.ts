@@ -24,6 +24,7 @@ function compose() {
     new FakeBackendPlanResolver(),
     store,
     queue,
+    { consume: async () => ({ allowed: true as const }) },
   )
   return createFullStackPreviewHttpHandler(controlPlane)
 }
