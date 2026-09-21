@@ -22,7 +22,8 @@ Supported first:
 | Existing repository homepage | External link | Normalized HTTP(S) metadata only; no reachability check or embedded Live Preview |
 | Next.js SSR / Node server | Unsupported | Persistent server runner deferred |
 | Shared-root npm/pnpm/yarn workspace | Analysis only / unsupported | Workspace orchestration remains deferred |
-| Backend, DB, Docker, secrets | Unsupported | Full-stack roadmap; not implemented |
+| One narrow backend shape (`express-node-npm-v1`) paired with its frontend | Production-verified server-side (`fullstack-v1`), no extension UI yet | See section 13a; not offered as a Build Preview option in the extension |
+| Any other backend, DB, Docker, secrets | Unsupported | Arbitrary Node backends, generated secrets, and provisioned databases remain unimplemented (roadmap stages 10-11) |
 | Library repository with no demo app | Analysis only | There may be nothing visual to run |
 
 `react/react` is an example of the last category: it is primarily a library repository and should not be assumed to have a default preview application.
@@ -300,18 +301,29 @@ runtime process never does. See D-030 for how this was made additive to
 `NetworkOrphanReaper`'s existing crash-safety validation instead of
 conflicting with it.
 
-**No public backend URL yet.** The API and UI can only ever report
-"Running" -- never a URL, hostname, or "Open backend" control. There is no
-wildcard public domain, no reverse proxy, no frontend API rewrite, and no
-iframe pointed at the backend. Frontend-to-backend routing is its own,
-later roadmap stage (see stage 9 in `docs/MVP_ROADMAP.md`).
+**No public backend URL on the standalone resource.** The standalone
+`/v1/backend-runtimes` API and UI can only ever report "Running" -- never a
+URL, hostname, or "Open backend" control; there is no wildcard public domain
+scoped to it, no reverse proxy, no frontend API rewrite, and no iframe
+pointed at it directly. Frontend-to-backend routing (stage 9 in
+`docs/MVP_ROADMAP.md`) is production-verified as of M9, but it is a
+*separate* durable parent resource, `fullstack-v1`
+(`/v1/fullstack-previews`, see D-031) -- it pairs one `backend-v1` runtime
+with one static build behind its own single same-origin HTTPS preview and
+routes only `/api`/`/api/*` to that runtime. It does not add a URL to the
+standalone `backend-v1` resource itself.
 
-**Production capability gate.** `WXT_BACKEND_RUNTIME_ENABLED` must be exactly
-`"true"` before the extension creates a backend runtime client or renders
-Start/Stop controls. Production does not set it: the static-preview service
-does not yet wire this control plane or worker, and real Linux/gVisor
-ingress-only validation remains pending. A candidate may be compatible, but
-must not imply that execution is available.
+**Production capability gate.** `WXT_BACKEND_RUNTIME_ENABLED` is a
+client-side (extension) build flag, independent of server wiring: it must be
+exactly `"true"` before the extension creates a backend runtime client or
+renders Start/Stop controls, and there is still no such extension-facing UI.
+Server-side, `backend-v1`'s control plane and worker (and `fullstack-v1`'s)
+are wired into `services/production/server.ts`'s `main()`, and the
+ingress-only network policy has been verified against a real gVisor/Linux
+production host -- both done during M9 (see docs/PRODUCTION_SMOKE.md and
+docs/TEST_PLAN.md's M9 production verification record). A candidate may be
+compatible, but this still must not imply that end-user Build Preview
+execution of a backend is available -- it is not.
 
 **Control plane.** A separate resource, `POST/GET/DELETE
 /v1/backend-runtimes` (`services/backend-runtime-api/`) -- never the
@@ -325,18 +337,17 @@ typed set (`FETCH_FAILED`, `UNSUPPORTED_BACKEND`, `INSTALL_FAILED`,
 stdout/stderr, filesystem paths, and runsc/network internals are never
 exposed to a client.
 
-**Known limitations.** Persistence is in-memory only in this change
+**Known limitations.** Persistence remains in-memory only
 (`InMemoryBackendRuntimeStore`/`InMemoryBackendRuntimeQueue`); a durable
-Postgres-backed store, matching the static path's, is future work. The
-ingress-only network policy has full unit coverage but has not been
-exercised against a real gVisor/Linux host. Nothing in this stage is wired
-into `services/production/server.ts`'s `main()` -- a
-`composeProductionBackendRuntime` composition function exists
-(`services/preview-worker/gvisor/composeProductionBackendRuntime.ts`) but is
-intentionally not called from production startup until the network policy
-is verified on a real host. A live disk-quota watcher during the *running*
-phase is not implemented; the sandbox's fixed-size ext4 workspace remains
-the non-bypassable backstop, matching install/build.
+Postgres-backed store, matching the static path's, is future work (the
+`fullstack-v1` *parent* row is Postgres-backed per D-031, but the
+`backend-v1` child runtime state it references is not). The ingress-only
+network policy initially had only unit coverage; it was exercised against a
+real gVisor/Linux host and `composeProductionBackendRuntime`
+(`services/preview-worker/gvisor/composeProductionBackendRuntime.ts`) was
+wired into production startup during M9. A live disk-quota watcher during
+the *running* phase is not implemented; the sandbox's fixed-size ext4
+workspace remains the non-bypassable backstop, matching install/build.
 
 ## 14. Minimum API Contract
 
@@ -375,7 +386,11 @@ Implemented and verified in the production path:
 - GitHub App requester authentication;
 - artifact-specific HTTPS hostname routing and persisted artifact expiry;
 - real-host gVisor and end-to-end production-path verification recorded in the
-  living roadmap/checklist.
+  living roadmap/checklist;
+- `backend-v1` real gVisor ingress-only execution and `fullstack-v1`
+  frontend/backend routing, both wired into production and production-verified
+  in M9, including fail-closed behavior on a `peephole` service restart (see
+  docs/PRODUCTION_SMOKE.md and docs/TEST_PLAN.md).
 
 Known limitations and follow-up work:
 
@@ -385,14 +400,16 @@ Known limitations and follow-up work:
   automated post-deployment smoke orchestration remain operational work;
 - the dedicated malicious dependency-script suite still needs its recorded
   production-like AWS run;
-- existing-site Live Preview, generalized frontend adapters/targets, and every
-  full-stack runtime feature remain on the ordered product roadmap.
+- generated-secret injection and temporary database provisioning (roadmap
+  stages 10-11) remain unimplemented.
 
 The official current Vite + React pin is
 `The-peephole/peephole-fixture-vite-react@4a2c3b78e15d90865ed565c3d38c4045b5a5235f`
-(repository id `1371620276`). The prepared full-stack fixture
+(repository id `1371620276`). The full-stack fixture
 `The-peephole/peephole-fixture-fullstack@eae411a288b212201933cebb206126dd5bb0d93e`
-is not consumed by the current runtime.
+is now consumed by the current runtime's `backend-v1`/`fullstack-v1` real
+gVisor verification (see docs/TEST_PLAN.md); it does not make arbitrary
+backends supported.
 
 ## 16. Primary References
 

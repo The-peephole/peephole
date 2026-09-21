@@ -131,8 +131,16 @@ documentation-only change.
 | Cache invalidation | `runnerVersion: "production-2"` forced the expected fresh build after the runner security change |
 | Portable CI | Format, lint, typecheck, portable tests, and extension build are enforced by CI |
 | PostgreSQL integration | Passed |
+| Real gVisor `backend-v1` runtime (M9) | Readiness, `/api/hello`, denied egress (public internet/metadata/private/link-local/host/another job), no default route, no runtime NAT, and idempotent cleanup verified on the production host |
+| `fullstack-v1` frontend ↔ backend routing (M9) | An authenticated preview reached `ready`; its HTTPS origin served the frontend and routed `/api/hello` to the real backend |
+| Restart fail-closed (M9) | A `peephole` restart while a preview was `ready` invalidated it and left zero runsc/network residue; backend coordinates were never reconstructed |
+| GitHub upstream availability / rate limit (PR #22, M9) | A server-owned `PEEPHOLE_GITHUB_TOKEN` was configured and verified at 5000 req/hour (from 60/hour unauthenticated) without printing the credential |
 
-Environment-gated real gVisor tests are run separately on the production-like Linux host; they are intentionally not part of portable CI.
+The four M9 rows above were verified directly against the production API and
+host, not through the Chrome extension (there is no extension UI for
+`backend-v1`/`fullstack-v1` yet). Environment-gated real gVisor tests are run
+separately on the production-like Linux host; they are intentionally not
+part of portable CI.
 
 On `main`, the manually dispatched
 [`Real golden-path build tests`](https://github.com/The-peephole/peephole/actions/runs/35069679620)
@@ -152,8 +160,9 @@ smoke described in [Production smoke verification](docs/PRODUCTION_SMOKE.md).
 | Repository structure detection | Reports layout and bounded project-candidate paths; detected frontend candidates can be explicitly selected and receive a separate exact-SHA target analysis |
 | Backend detection | Bounded, read-only evidence (framework, database dependency, unverified entrypoint) for root and nested candidates; never offered as a preview target regardless of execution support |
 | Environment requirement analysis | Classifies declared `.env.example`-family variable *names* only (never a value) as auto-configurable/preview-generated/database/external-routing/user-required/unknown; no value is ever generated, injected, or requested |
-| Backend execution (`backend-v1`, foundation) | The narrow Express + npm runtime foundation is implemented, but production wiring and real Linux/gVisor verification are pending; the UI is disabled by default, with no public URL or frontend/backend routing |
-| Not implemented | Shared-root workspace orchestration, any backend outside that one narrow shape, frontend/backend routing, secret/env provisioning, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
+| Backend execution (`backend-v1`) | The narrow Express + npm runtime is implemented, wired into production, and real-gVisor-verified; the extension UI is still disabled by default (no Build Preview option), and the runtime resource itself never gets a public URL |
+| Frontend ↔ backend routing (`fullstack-v1`) | Implemented and production-verified: a separate resource pairs one `backend-v1` runtime with one static build behind a single same-origin HTTPS preview, routing only `/api`/`/api/*`; not offered as an extension Build Preview option yet |
+| Not implemented | Shared-root workspace orchestration, any backend outside that one narrow shape, secret/env provisioning, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
 
 Analysis support is broader than production execution support. The official
 Vite + React golden path is
@@ -162,12 +171,17 @@ at commit `4a2c3b78e15d90865ed565c3d38c4045b5a5235f` (repository id
 `1371620276`). The separate
 [`peephole-fixture-fullstack`](https://github.com/The-peephole/peephole-fixture-fullstack)
 at `eae411a288b212201933cebb206126dd5bb0d93e` proves the bounded
-frontend-only nested target path. Its `frontend` directory is independently
-installable and buildable; its `backend` directory is the reference fixture
-for `backend-v1` execution (Express, npm, `/health` and `/api/hello`
-routes) but is not started as part of frontend Build Preview and is never
-routed to the built frontend, so the rendered `/api/hello` request may fail
-by design.
+frontend-only nested target path: its `frontend` directory is independently
+installable and buildable as a plain (static-only) Build Preview, and in
+that path its `backend` directory (Express, npm, `/health` and `/api/hello`
+routes) is not started and not routed, so a rendered `/api/hello` request
+under plain Build Preview still fails by design. The same `backend` directory
+is also the pinned fixture for the separate `backend-v1`/`fullstack-v1`
+production contract (see [Preview runtime](docs/PREVIEW_RUNTIME.md)), where
+it is production-verified: `/api/hello` does resolve to a real `backend-v1`
+runtime when created as a `fullstack-v1` preview, which is not the same
+resource as frontend Build Preview and is not yet offered in the extension
+UI.
 
 ## Local development
 
@@ -196,26 +210,30 @@ The production static-preview foundation, GitHub theme synchronization,
 Branch Preview, repository/application structure detection, the explicit
 Build Adapter architecture, bounded frontend target selection, existing
 deployed-site Live Preview, backend detection + environment requirement
-analysis, and the narrow backend execution (`backend-v1`) foundation are implemented.
-Nested build execution remains limited to independently installable React +
-Vite + npm targets with a target-local lockfile; backend execution is
-limited to one narrow adapter (Express + npm + lockfile + no database +
-`PORT`/`HOST`/`NODE_ENV`-only env), with no public URL and no
-frontend/backend routing.
+analysis, the narrow backend execution (`backend-v1`) contract, and
+frontend/backend routing (`fullstack-v1`) are implemented and, as of M9,
+production-verified. Nested build execution remains limited to
+independently installable React + Vite + npm targets with a target-local
+lockfile; backend execution is limited to one narrow adapter (Express + npm
++ lockfile + no database + `PORT`/`HOST`/`NODE_ENV`-only env), and the
+standalone `backend-v1` resource itself still has no public URL -- routing
+is the separate `fullstack-v1` resource's job. Neither has an extension-side
+Build Preview UI yet.
 
 4. Build Adapter generalization (implemented)
 5. frontend target selection / bounded frontend monorepo support (implemented)
 6. existing deployed-site Live Preview (implemented)
 7. backend detection + environment requirement analysis (implemented)
-8. backend-v1 execution foundation implemented; production verification pending
-9. frontend ↔ backend routing
+8. backend-v1 execution foundation implemented; production-verified in M9
+9. frontend ↔ backend routing; production-verified in M9
 10. ephemeral env / secrets
 11. temporary database support
 
-The full-stack stages are roadmap items, not current product support. Separate
-operational debt includes accessibility review, production observability,
-automated production-smoke orchestration, tighter install-stage package egress,
-and the production-like malicious-script run.
+Stages 10-11 are roadmap items, not current product support: no generated
+secret and no provisioned database exist yet. Separate operational debt
+includes accessibility review, production observability, automated
+production-smoke orchestration, tighter install-stage package egress, and
+the production-like malicious-script run.
 
 ## Documentation
 

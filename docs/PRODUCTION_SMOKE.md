@@ -56,8 +56,13 @@ host, or cleanup state passed this smoke gate; only the API and host sequence in
 this document does that.
 
 `The-peephole/peephole-fixture-fullstack` at
-`eae411a288b212201933cebb206126dd5bb0d93e` is not used by this verifier.
-Full-stack runtime support has not been implemented.
+`eae411a288b212201933cebb206126dd5bb0d93e` is not used by this automated
+verifier. Full-stack runtime support (`backend-v1` + `fullstack-v1`, see
+docs/MVP_ROADMAP.md stages 8-9) is implemented and was production-verified
+manually during M9 -- see "M9 production verification record" below. This
+`npm run smoke:production`/`smoke:production:host` gate does not yet exercise
+it; that remains follow-up automation work, not an existing guarantee of
+this command.
 
 ## API smoke
 
@@ -232,3 +237,42 @@ documented ownership-aware recovery path.
 5. Run host mode on EC2 and retain its PASS output.
 6. Treat either non-zero exit as a failed release smoke. Do not use this tool to
    repair the host or bypass authentication.
+
+## M9 production verification record (2026-09-21)
+
+This is a one-off, manually-performed verification record, not a claim that
+the automated commands above now cover these gates. Each item below was
+exercised directly against production, separately from
+`npm run smoke:production`/`smoke:production:host`:
+
+- **Real gVisor backend runtime**: `tests/realBackendRuntime.test.ts`
+  (`PEEPHOLE_REAL_GVISOR_TESTS=1`) run on the idle production host, 2/2
+  passed -- readiness, `/health`, `/api/hello`, denied egress to the public
+  internet/metadata/private-RFC1918/link-local/host-control-plane/another
+  job, no default route, no runtime NAT, idempotent cleanup, and abandoned-
+  runtime reaping all confirmed. See docs/TEST_PLAN.md's own M9 record for
+  the host-quiescence incident and recovery encountered on the first attempt.
+- **FullStack browser E2E**: an authenticated `fullstack-v1` preview for the
+  pinned `peephole-fixture-fullstack` fixture reached `ready`; its public
+  HTTPS origin served the frontend and routed `/api/hello` to the real
+  `backend-v1` runtime with the expected body.
+- **Restart fail-closed**: restarting only the `peephole` service while a
+  `ready` full-stack preview was live invalidated it
+  (`failed`/`ORCHESTRATION_UNAVAILABLE`), revoked its on-demand TLS
+  authorization, stopped its backend route from resolving, and left zero
+  runsc/network residue -- process-local backend coordinates are never
+  reconstructed after a restart.
+- **Production host smoke**: `npm run smoke:production:host` passed 13/13
+  after the above, confirming zero active jobs/queue rows and zero owned
+  residue.
+- **GitHub upstream-availability/rate-limit hardening (PR #22)**: production
+  was deployed at PR #22's merge commit and a server-owned
+  `PEEPHOLE_GITHUB_TOKEN` was configured; authenticated GitHub REST primary
+  capacity was verified at 5000 requests/hour (up from the unauthenticated
+  60/hour budget) without printing the credential, and the pinned static and
+  full-stack fixtures both resolved successfully through the real production
+  resolvers using it.
+
+None of the above changed this document's own automated commands or their
+security model; wiring M9's gates into `npm run smoke:production` remains
+follow-up work (see docs/MVP_ROADMAP.md's Cross-Cutting Work).
