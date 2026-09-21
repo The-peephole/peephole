@@ -597,6 +597,52 @@ process (not just the local `runsc run` CLI), and a worker restart with a
 live `running`/`starting` runtime is correctly reaped as stale on the next
 startup reconciliation.
 
+### Production-host safety for privileged real-gVisor suites
+
+Privileged real-gVisor tests that create or reconcile Peephole host resources
+must not run concurrently with live production preview workloads on the same
+host.
+
+This includes tests that may create or mutate:
+
+- `peephole-*` network namespaces;
+- `veph*` / `vpph*` veth interfaces;
+- `ppe*` / `ppi*` / `ppr*` iptables chains or hooks;
+- runsc containers;
+- network lease markers;
+- Peephole-owned bundle, mount, loop-device, or workspace resources.
+
+`NetworkOrphanReaper` deliberately fails closed when it encounters a
+Peephole-shaped network resource whose ownership cannot be proven from the
+current lease set. Such a resource must not be treated as safe to delete
+automatically.
+
+Before running an orphan/reconciliation real-gVisor suite on a
+production-like host:
+
+1. require the host to be quiescent, with no live preview workload;
+2. record the current Peephole runsc, network, firewall, lease, and disk
+   resource baseline;
+3. run the privileged suite only after that baseline is clean;
+4. after the suite, require zero unexpected Peephole-shaped residue;
+5. if a failed test leaves residue, preserve the failed result rather than
+   deleting the residue merely to obtain a passing test result.
+
+If test-created residue prevents the production service from starting,
+ownership and liveness must first be established before manual recovery.
+Such cleanup is incident recovery and does not convert the failed test into a
+passing result.
+
+During the 2026-09-21 M9 production verification, an orphan-reconciliation
+backend test was initially run while a live FullStackPreview network namespace
+was present. The test reaper failed closed on that unrelated live namespace
+before cleaning its own test-created resources. The remaining test resource
+then caused the next production startup reconciliation to fail closed.
+
+After incident recovery, the same `tests/realBackendRuntime.test.ts` suite was
+rerun from a clean, quiescent host and passed 2/2 with no runsc, network, or
+iptables residue.
+
 ## 6. Failure and Security Cases
 
 Maintain coverage for missing/conflicting lockfiles, malformed manifests,
@@ -615,11 +661,18 @@ or secret values.
 Follow [Production smoke verification](PRODUCTION_SMOKE.md) for the operator
 gate. The API half authenticates through the normal Peephole session, creates a
 job for the pinned Vite fixture, validates the artifact, and checks a cache hit.
+
 The host half verifies service/readiness state, queue quiescence, known error
 logs, and absence of owned runsc/network/disk residue.
 
 Record the deployed revision, command outputs, and job identifiers. Do not
 claim a production-smoke pass from the successful `main` golden-path Action.
+
+Production smoke and privileged real-gVisor mutation tests are separate gates.
+Do not run orphan/reconciliation real-gVisor suites concurrently with
+production smoke or live preview workloads on the same host. Privileged
+host-mutation suites require a quiescent test window and a clean resource
+baseline.
 
 ## 8. Roadmap Test Expansion
 
