@@ -656,29 +656,36 @@ This is why "ingress allowed, egress denied" was achievable without any
 `network=host`, wildcard proxy, or public hostname.
 
 **Explicitly not implemented in this change**, all deferred to their own
-future roadmap stages: any public backend URL/hostname/proxy (the API and
-UI can only ever say "Running", never a location), frontend-to-backend
-routing or rewriting, ephemeral env/secret provisioning beyond the fixed
-`PORT`/`HOST`/`NODE_ENV`, and temporary/provisioned application databases
-(a `backend_runtime_jobs`-shaped table in Peephole's own control-plane
-Postgres is permitted infrastructure for this stage's persistence, but is
-unrelated to and must never be confused with future *repository*
-database provisioning).
+future roadmap stages: any public backend URL/hostname/proxy on this
+resource itself (the API and UI can only ever say "Running", never a
+location), frontend-to-backend routing or rewriting, ephemeral env/secret
+provisioning beyond the fixed `PORT`/`HOST`/`NODE_ENV`, and
+temporary/provisioned application databases (a `backend_runtime_jobs`-shaped
+table in Peephole's own control-plane Postgres is permitted infrastructure
+for this stage's persistence, but is unrelated to and must never be confused
+with future *repository* database provisioning). Frontend-to-backend
+routing was implemented and production-verified later, as its own separate
+`fullstack-v1` contract -- see D-031; this `backend-v1` resource itself
+still never gains a URL. Env/secret provisioning and application databases
+remain unimplemented.
 
-**Known limitations, disclosed rather than worked around:** persistence in
-this change is in-memory only (`InMemoryBackendRuntimeStore`/
+**Known limitations, disclosed rather than worked around:** persistence
+remains in-memory only (`InMemoryBackendRuntimeStore`/
 `InMemoryBackendRuntimeQueue`); a durable Postgres-backed store is future
-work, same shape as the static path's. The ingress-only network policy has
-full unit coverage (rule generation, reconciliation, and cleanup, all
-against a fake process runner) but has not been exercised against a real
-gVisor/Linux host -- this session has no such host available. Nothing in
-this stage is wired into `services/production/server.ts`'s `main()`; a
-`composeProductionBackendRuntime` composition function exists but is
-intentionally not called from production startup until the network policy
-is verified against a real host. A live disk-quota watcher during the
-*running* phase (as opposed to install) is not implemented; the sandbox's
-own hard ext4 quota remains the non-bypassable backstop, matching how disk
-limits are already enforced everywhere else in this codebase.
+work, same shape as the static path's (D-031's `fullstack-v1` *parent* row is
+Postgres-backed, but the `backend-v1` child runtime state it references is
+not). The ingress-only network policy initially had full unit coverage
+(rule generation, reconciliation, and cleanup, all against a fake process
+runner) but had not been exercised against a real gVisor/Linux host when
+this decision was first accepted -- no such host was available in that
+session. It was later exercised against a real gVisor/Linux production host
+and `composeProductionBackendRuntime` was wired into
+`services/production/server.ts`'s `main()` during M9 (2026-09-21); see
+docs/PRODUCTION_SMOKE.md and docs/TEST_PLAN.md for that verification record.
+A live disk-quota watcher during the *running* phase (as opposed to install)
+is not implemented; the sandbox's own hard ext4 quota remains the
+non-bypassable backstop, matching how disk limits are already enforced
+everywhere else in this codebase.
 
 ## D-031 - Full-stack preview orchestration uses a durable parent and a unique same-origin route
 
@@ -736,7 +743,10 @@ cancelled. A durable frontend child is cancelled when it is still active, but
 shared completed artifact bytes are retained. No backend target is ever
 reconstructed after restart.
 
-This is production composition code, not a deployment. Live Caddy, systemd,
-EC2, and firewall configuration are unchanged, and real-host full-stack gVisor
-E2E remains Phase 3B2. M9 is not complete until that deployment proof passes;
-UI, M10, and M11 remain out of scope.
+This was production composition code, not yet a deployment, when first
+written. Phase 3B2 -- deploying this composition and proving real-host
+full-stack gVisor E2E, frontend/backend routing, browser E2E, and
+restart-fail-closed behavior in production -- was completed on 2026-09-21;
+see docs/PRODUCTION_SMOKE.md and docs/TEST_PLAN.md for the verification
+record. M9 is complete. UI, M10 (ephemeral env/secrets), and M11 (temporary
+database support) remain out of scope and have not started.

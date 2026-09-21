@@ -81,6 +81,25 @@ is no embedded deployed-site iframe.
 - [x] end-to-end Chrome extension -> production API -> PostgreSQL -> gVisor ->
       artifact -> Side Panel verification recorded
 
+### Backend runtime and full-stack routing (M9)
+
+- [x] `backend-v1`: one narrowly-supported adapter (`express-node-npm-v1`),
+      independently re-derived and re-validated server-side, executed inside
+      its own ingress-only gVisor network namespace
+- [x] `fullstack-v1`: a durable parent resource pairing one `backend-v1`
+      runtime with one static build behind a single same-origin HTTPS
+      preview, routing only `/api`/`/api/*` to the backend
+- [x] real gVisor host verification of both, plus fail-closed behavior on a
+      `peephole` service restart (a `ready` full-stack preview is
+      invalidated, never reconstructed)
+- [x] production host smoke passes with both wired into
+      `services/production/server.ts`
+
+This remains narrowly scoped: one supported backend adapter, no arbitrary
+Node backend, no generated secret, and no provisioned database. Stage 8 was
+implemented before this milestone but only production-verified here; see
+"Next Development Sequence" below for exact stage numbering.
+
 ## Next Development Sequence
 
 These stages are ordered. A later stage must not be presented as supported
@@ -93,8 +112,8 @@ because a fixture or interface for it exists.
 5. [x] frontend target selection / bounded frontend monorepo support
 6. [x] existing deployed-site Live Preview
 7. [x] backend detection + environment requirement analysis
-8. [ ] backend-v1 execution foundation implemented; production verification pending
-9. [ ] frontend ↔ backend routing
+8. [x] backend-v1 execution foundation implemented; production-verified in M9
+9. [x] frontend ↔ backend routing; production-verified in M9
 10. [ ] ephemeral env / secrets
 11. [ ] temporary database support
 
@@ -105,8 +124,12 @@ adapter. It does **not** mean more frameworks or runners are supported.
 Vue/Svelte and pnpm/yarn/bun remain non-runnable. Stage 5 supports only an
 explicitly selected, independently installable nested React + Vite + npm target
 with its own package.json and package-lock.json. Shared-root workspace
-orchestration remains deferred. The full-stack fixture proves frontend-only
-static build output; its backend and `/api/hello` route remain unavailable.
+orchestration remains deferred. At this stage the full-stack fixture proved
+only frontend-only static build output; its backend and `/api/hello` route
+were not yet reachable. Both are now production-verified as of M9 (see
+stages 8-9 below) through the separate, narrow `fullstack-v1` contract --
+this did not change or extend Stage 5's own frontend target-selection
+contract.
 
 Theme synchronization uses computed GitHub/Primer semantic colors rather than
 a theme-name palette table. Theme changes update the injected action through
@@ -222,13 +245,22 @@ environment requirement already classified `auto-configurable`
 (`PORT`/`HOST`/`NODE_ENV` only); everything else keeps showing "Execution:
 Not supported yet" exactly as stage 7 left it. The runtime gets its own
 ingress-only network namespace (no NAT, no default route, an unconditional
-egress `DROP`) instead of the install/build sandbox's NAT'd egress policy,
-and there is still no public backend URL, no frontend/backend routing, no
-generated secret, and no provisioned database -- those remain stages 9-11.
-`static-v1`/`static-v2`/`BuildPlan`/the static artifact pipeline are
-unchanged. Persistence in this stage is in-memory only and the ingress-only
-network policy is unit-tested but not yet verified against a real
-gVisor/Linux host; production startup does not wire this in yet.
+egress `DROP`) instead of the install/build sandbox's NAT'd egress policy.
+At the time this contract was first implemented there was still no public
+backend URL, no frontend/backend routing, no generated secret, and no
+provisioned database. Frontend/backend routing (stage 9) was later
+production-verified in M9 through the separate `fullstack-v1` parent
+resource (`/v1/fullstack-previews`), which reports its own public HTTPS
+origin and routes only `/api`/`/api/*` to the backend; the standalone
+`backend-v1` resource (`/v1/backend-runtimes`) still never reports a URL of
+its own. A generated secret and a provisioned database remain unimplemented
+(stages 10-11). `static-v1`/`static-v2`/`BuildPlan`/the static artifact
+pipeline are unchanged. Persistence in this stage remains in-memory only
+(see D-030); the ingress-only network policy was initially unit-tested only
+and was later verified against a real gVisor/Linux production host and
+wired into production startup during M9 -- see
+docs/PREVIEW_RUNTIME.md's "Backend Runtime (backend-v1)" section and
+docs/PRODUCTION_SMOKE.md for the verification record.
 
 ## Fixture Status
 
@@ -245,18 +277,24 @@ PR #6 updated the shared fixture metadata on `main` at merge commit
 `Real golden-path build tests` run on that `main` revision succeeded. This is a
 live-network workflow result, not a production smoke result.
 
-The full-stack fixture is reserved for future roadmap work:
+The full-stack fixture:
 
 ```text
 repository: The-peephole/peephole-fixture-fullstack
 commit: eae411a288b212201933cebb206126dd5bb0d93e
 ```
 
-It is not connected to a supported full-stack runtime contract today. Its
-`frontend`/`backend` layout is now a real verification target for repository
-structure detection (both are surfaced as bounded project candidates); this
-is structure-detection evidence only, not full-stack preview, backend, or
-routing support.
+was originally reserved for future roadmap work and, at earlier stages, only
+served as a real verification target for repository structure detection
+(its `frontend`/`backend` layout is surfaced as bounded project candidates --
+structure-detection evidence only, not full-stack preview, backend, or
+routing support). It is now also the pinned fixture for the narrow
+`fullstack-v1` contract (stages 8-9), production-verified in M9: a real
+gVisor `backend-v1` process (`express-node-npm-v1` adapter only) and
+frontend/backend routing through a dedicated `FullStackPreview` origin. This
+remains the one narrow supported backend shape -- it does not imply support
+for arbitrary Node backends, generated secrets, or provisioned databases
+(stages 10-11).
 
 ## Cross-Cutting Work
 

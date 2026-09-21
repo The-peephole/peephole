@@ -40,16 +40,21 @@ The package-free static golden path currently uses the pinned public
 `octocat/Spoon-Knife` commit declared in
 `tests/realStaticHtmlGoldenPath.test.ts`.
 
-Future full-stack fixture:
+Full-stack fixture:
 
 ```text
 repository: The-peephole/peephole-fixture-fullstack
 commit: eae411a288b212201933cebb206126dd5bb0d93e
 ```
 
-No current test should treat that repository as a supported runtime target.
-Full-stack detection, execution, routing, secrets, and databases require their
-own later contracts and gates.
+No *portable* test should treat that repository as a supported runtime
+target -- portable tests still use it only for structure-detection evidence
+(bounded project candidates). The environment-gated real gVisor layer
+(`tests/realBackendRuntime.test.ts`, section 5) does execute it as the
+pinned `backend-v1`/`fullstack-v1` fixture, and that execution was
+production-verified in M9 (see section 5 and the M9 record near the end of
+this document). Secrets and databases (roadmap stages 10-11) still have no
+test at any layer -- those contracts are not implemented.
 
 ## 3. Portable Tests
 
@@ -543,10 +548,13 @@ docs/PREVIEW_RUNTIME.md's "Backend Runtime (backend-v1)" and D-030.
   `renderBackendRuntimeControls` render prop; a non-qualifying candidate is
   unchanged ("Not supported yet"); still never a preview-target option.
 
-Not yet portable-tested: `BackendRuntimeSupervisor`/`GVisorBackendRuntimeProcess`
-against a *real* gVisor sandbox (see section 5), and the composition
-function `composeProductionBackendRuntime` end to end (it is not wired into
-production `main()` in this change).
+Not portable-tested (by design -- these require a privileged real host): a
+*real* gVisor sandbox exercise of `BackendRuntimeSupervisor`/
+`GVisorBackendRuntimeProcess` lives in the environment-gated real gVisor
+layer instead (`tests/realBackendRuntime.test.ts`, see section 5); it and
+the composition function `composeProductionBackendRuntime` end to end were
+both verified against a real gVisor/Linux production host and wired into
+`services/production/server.ts`'s `main()` during M9.
 
 ## 4. Live-Network Golden Paths
 
@@ -586,16 +594,20 @@ recorded production result until that run is completed and retained.
 
 The `backend-v1` ingress-only network policy (`VethNatNetworkProvisioner
 .createIngressOnly`, the `policy` field on `NetworkLease`) has full portable
-coverage (see section 3) but has **not** been exercised against a real
-gVisor/Linux host by this change -- there was no such host available. Before
-`composeProductionBackendRuntime` is wired into production `main()`, verify
-on a real host: the sandbox can accept a host-initiated TCP connection with
-zero firewall exceptions added, the sandbox cannot reach the public
-internet/host services/metadata/another job's namespace/the control plane,
-`GVisorBackendRuntimeProcess.stop()` actually terminates the sandboxed
-process (not just the local `runsc run` CLI), and a worker restart with a
-live `running`/`starting` runtime is correctly reaped as stale on the next
-startup reconciliation.
+coverage (see section 3) and, as of M9 (2026-09-21), has also been exercised
+against a real gVisor/Linux production host via
+`tests/realBackendRuntime.test.ts`. All of the following were confirmed on
+that host: the sandbox can accept a host-initiated TCP connection with zero
+firewall exceptions added (readiness); the sandbox cannot reach the public
+internet, host services, cloud metadata, private RFC1918/link-local space,
+another job's namespace, or the control plane (all denied); no default
+route and no runtime NAT; `GVisorBackendRuntimeProcess.stop()` actually
+terminates the sandboxed process, not just the local `runsc run` CLI
+(idempotent, repeated `stop()` included); and a worker restart with a live
+`running`/`starting` runtime is correctly reaped as stale on the next
+startup reconciliation. `composeProductionBackendRuntime` is now wired into
+production `main()`. See the M9 production verification record below and in
+docs/PRODUCTION_SMOKE.md.
 
 ### Production-host safety for privileged real-gVisor suites
 
@@ -643,12 +655,27 @@ After incident recovery, the same `tests/realBackendRuntime.test.ts` suite was
 rerun from a clean, quiescent host and passed 2/2 with no runsc, network, or
 iptables residue.
 
+The same M9 production deployment also verified FullStack browser E2E
+(authenticated preview creation through `ready`, frontend serving, and
+`/api/hello` routed to the real backend), restart fail-closed behavior (a
+`ready` full-stack preview invalidated, never reconstructed, after a
+`peephole` restart), production host smoke, and -- after PR #22 --
+authenticated GitHub REST capacity with a server-owned
+`PEEPHOLE_GITHUB_TOKEN`. See docs/PRODUCTION_SMOKE.md's "M9 production
+verification record" for the full account; it is not repeated here.
+
 ## 6. Failure and Security Cases
 
 Maintain coverage for missing/conflicting lockfiles, malformed manifests,
 unsupported runner targets, install/build/publish failure, oversized archives
 or outputs, too many files, unsafe paths, timeout, cancellation, worker crash,
 artifact expiry, GitHub failure/rate limiting, and stale navigation results.
+GitHub upstream availability (rate-limit, network, and malformed-response
+failures) is mapped to a safe `UPSTREAM_UNAVAILABLE`/503 at the shared
+`core/github/upstreamAvailability.ts` boundary, applied consistently across
+static Preview, `backend-v1`, and `fullstack-v1` admission, and is
+production-verified with a server-owned `PEEPHOLE_GITHUB_TOKEN` -- see the
+M9 production verification record and `tests/githubUpstreamAvailability.test.ts`.
 
 Security tests should verify only the controls present in the relevant
 environment. Do not infer host isolation from a fake command runner or infer
@@ -693,9 +720,10 @@ Add coverage in the same order as product development:
    re-validation, control plane lifecycle/ownership/quota, the gVisor
    runtime process primitive, ingress-only network policy generation and
    reconciliation, and supervisor orchestration are all covered by portable
-   tests (implemented); real-gVisor-host verification of the ingress-only
-   network policy specifically is not yet done -- see section 5
-9. frontend/backend routing and cross-origin policy
+   tests; real-gVisor-host verification of the ingress-only network policy
+   was completed in M9 -- see section 5 (implemented, production-verified)
+9. frontend/backend routing and cross-origin policy (implemented,
+   production-verified in M9 -- see the M9 production verification record)
 10. ephemeral secret redaction, scope, and teardown
 11. temporary database tenancy, credentials, lifecycle, and cleanup
 
