@@ -40,9 +40,14 @@ function compose(
 ) {
   const store = new InMemoryBackendRuntimeStore()
   const queue = new InMemoryBackendRuntimeQueue()
-  const controlPlane = new BackendRuntimeControlPlane({ resolve }, store, queue, {
-    now: () => new Date("2026-09-01T00:00:00.000Z"),
-  })
+  const controlPlane = new BackendRuntimeControlPlane(
+    { resolve },
+    store,
+    queue,
+    {
+      now: () => new Date("2026-09-01T00:00:00.000Z"),
+    },
+  )
   return createBackendRuntimeHttpHandler(controlPlane)
 }
 

@@ -105,7 +105,10 @@ describe("GitHubBackendRuntimePlanResolver", () => {
   })
 
   it("propagates a GitHub upstream failure when package.json authorization evidence cannot be read", async () => {
-    const failure = new GitHubApiError("network", "GitHub could not be reached.")
+    const failure = new GitHubApiError(
+      "network",
+      "GitHub could not be reached.",
+    )
     const resolver = new GitHubBackendRuntimePlanResolver(
       github(qualifyingFiles(), { "package.json": failure }),
     )

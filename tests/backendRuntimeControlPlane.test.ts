@@ -379,9 +379,13 @@ describe("BackendRuntimeControlPlane", () => {
     })
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {})
 
-    await expect(controlPlane.create(createRequest(), requester)).rejects.toMatchObject(
-      { code: "UPSTREAM_UNAVAILABLE", status: 503, retryAfterSeconds: 60 },
-    )
+    await expect(
+      controlPlane.create(createRequest(), requester),
+    ).rejects.toMatchObject({
+      code: "UPSTREAM_UNAVAILABLE",
+      status: 503,
+      retryAfterSeconds: 60,
+    })
     expect(errorLog).toHaveBeenCalledWith(
       expect.stringContaining("upstream GitHub failure"),
       expect.objectContaining({ code: "rate-limited" }),

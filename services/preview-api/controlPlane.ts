@@ -177,7 +177,9 @@ export class PreviewControlPlane {
         structuredClone(target),
       )
     } catch (error) {
-      throw toUpstreamControlError(error, "preview admission", this.now) ?? error
+      throw (
+        toUpstreamControlError(error, "preview admission", this.now) ?? error
+      )
     }
 
     if (!resolvedPlan) {

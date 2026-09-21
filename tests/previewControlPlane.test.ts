@@ -418,7 +418,9 @@ describe("PreviewControlPlane", () => {
 
   it("does not reclassify an unexpected resolver exception as an upstream failure", async () => {
     const boom = new Error("resolver programming bug")
-    const resolve = vi.fn<PreviewPlanResolver["resolve"]>().mockRejectedValue(boom)
+    const resolve = vi
+      .fn<PreviewPlanResolver["resolve"]>()
+      .mockRejectedValue(boom)
     const harness = createHarness({ resolve })
 
     await expect(
