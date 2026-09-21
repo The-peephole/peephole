@@ -4,6 +4,7 @@ import {
   type FullStackPreviewControlPlaneOptions,
 } from "../controlPlane"
 import type { BackendPlanResolver, FrontendPlanResolver } from "../ports"
+import type { PreviewQuota } from "../../preview-api/ports"
 import { PostgresFullStackPreviewStore } from "./previewStore"
 import { PostgresFullStackPreviewQueue } from "./queue"
 
@@ -11,6 +12,9 @@ export interface PostgresFullStackPreviewCompositionOptions {
   database: PostgresDatabase
   frontendPlanResolver: FrontendPlanResolver
   backendPlanResolver: BackendPlanResolver
+  /** Public full-stack admission consumes the existing preview quota once;
+   * the orchestration worker's static child path deliberately does not. */
+  quota: PreviewQuota
   controlPlane?: FullStackPreviewControlPlaneOptions
 }
 
@@ -38,6 +42,7 @@ export function composePostgresFullStackPreview(
     options.backendPlanResolver,
     new PostgresFullStackPreviewStore(options.database),
     queue,
+    options.quota,
     options.controlPlane,
   )
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type { PreviewRepositoryRef } from "../types/preview"
+import type { PreviewQuota } from "../services/preview-api/ports"
 import { FullStackPreviewControlPlane } from "../services/fullstack-preview-api/controlPlane"
 import {
   FakeBackendPlanResolver,
@@ -25,6 +26,7 @@ function compose(
     now?: Date
     maxActiveFullStackPreviewsPerRequester?: number
     createId?: () => string
+    quota?: PreviewQuota
   } = {},
 ) {
   const store = new FakeFullStackPreviewStore()
@@ -37,6 +39,7 @@ function compose(
     backendResolver,
     store,
     queue,
+    options.quota ?? { consume: async () => ({ allowed: true as const }) },
     {
       now: () => clock,
       maxActiveFullStackPreviewsPerRequester:
@@ -326,30 +329,76 @@ describe("FullStackPreviewControlPlane", () => {
   })
 
   describe("state machine (H)", () => {
-    it("cannot jump queued -> ready through any control-plane method", async () => {
+    it("records child identities in order and stops at awaiting_activation", async () => {
+      const { controlPlane, store } = compose()
+      const { preview } = await controlPlane.create(
+        createRequest(),
+        idempotencyKey,
+        requester,
+      )
+      expect(await controlPlane.startWorkerFullStackPreview(preview.id)).toBe(
+        true,
+      )
+      await controlPlane.recordFrontendJob(preview.id, "frontend-job-1")
+      await controlPlane.recordFrontendJob(preview.id, "frontend-job-1")
+      expect((await store.get(preview.id))?.status).toBe("building_frontend")
+
+      await controlPlane.recordFrontendArtifact(preview.id, {
+        frontendJobId: "frontend-job-1",
+        artifactId: "artifact-1",
+        artifactExpiresAt: new Date("2026-01-01T00:10:00.000Z"),
+      })
+      await controlPlane.recordFrontendArtifact(preview.id, {
+        frontendJobId: "frontend-job-1",
+        artifactId: "artifact-1",
+        artifactExpiresAt: new Date("2026-01-01T00:10:00.000Z"),
+      })
+      await controlPlane.recordBackendRuntime(preview.id, "backend-runtime-1")
+      await controlPlane.recordBackendRuntime(preview.id, "backend-runtime-1")
+      await controlPlane.markBackendRunning(preview.id, {
+        backendRuntimeId: "backend-runtime-1",
+        backendExpiresAt: new Date("2026-01-01T00:05:00.000Z"),
+      })
+      await controlPlane.markBackendRunning(preview.id, {
+        backendRuntimeId: "backend-runtime-1",
+        backendExpiresAt: new Date("2026-01-01T00:05:00.000Z"),
+      })
+
+      const stored = await store.get(preview.id)
+      expect(stored).toMatchObject({
+        status: "awaiting_activation",
+        frontendJobId: "frontend-job-1",
+        artifactId: "artifact-1",
+        backendRuntimeId: "backend-runtime-1",
+        expiresAt: "2026-01-01T00:05:00.000Z",
+        url: null,
+      })
+      expect(stored?.status).not.toBe("ready")
+      expect("activateReady" in controlPlane).toBe(false)
+    })
+
+    it("rejects replacement or mismatched child identities", async () => {
       const { controlPlane } = compose()
       const { preview } = await controlPlane.create(
         createRequest(),
         idempotencyKey,
         requester,
       )
-      expect(preview.status).toBe("queued")
-      // markPhase's type signature already makes "ready" unreachable from
-      // it at compile time; activateReady is the only method that could
-      // ever produce "ready", and it refuses a still-queued preview both
-      // because the status guard fails and because its child identities
-      // are still null.
+      await controlPlane.startWorkerFullStackPreview(preview.id)
+      await controlPlane.recordFrontendJob(preview.id, "frontend-job-1")
       await expect(
-        controlPlane.activateReady(preview.id),
-      ).rejects.toMatchObject({
-        code: "INVALID_TRANSITION",
-      })
-      expect((await controlPlane.get(preview.id, requester)).status).toBe(
-        "queued",
-      )
+        controlPlane.recordFrontendJob(preview.id, "frontend-job-2"),
+      ).rejects.toMatchObject({ code: "INVALID_TRANSITION" })
+      await expect(
+        controlPlane.recordFrontendArtifact(preview.id, {
+          frontendJobId: "frontend-job-2",
+          artifactId: "artifact-1",
+          artifactExpiresAt: new Date("2026-01-01T00:10:00.000Z"),
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_TRANSITION" })
     })
 
-    it("accepts provisioning and teardown phases only in order", async () => {
+    it("requires all persisted prerequisites before awaiting activation", async () => {
       const { controlPlane, store } = compose()
       const { preview } = await controlPlane.create(
         createRequest(),
@@ -358,40 +407,24 @@ describe("FullStackPreviewControlPlane", () => {
       )
       await store.update(preview.id, (current) => ({
         ...current,
-        status: "building_frontend",
+        status: "starting_backend",
+        backendRuntimeId: "backend-runtime-1",
       }))
       await expect(
-        controlPlane.markPhase(preview.id, "starting_backend"),
-      ).resolves.toMatchObject({ status: "starting_backend" })
-
-      await store.update(preview.id, (current) => ({
-        ...current,
-        frontendJobId: "job-1",
-        artifactId: "artifact-1",
-        backendRuntimeId: "runtime-1",
-      }))
-      await expect(
-        controlPlane.activateReady(preview.id),
-      ).resolves.toMatchObject({ status: "ready" })
-      await expect(
-        controlPlane.markPhase(preview.id, "stopping"),
-      ).resolves.toMatchObject({ status: "stopping" })
-      await expect(
-        controlPlane.markPhase(preview.id, "stopped"),
-      ).resolves.toMatchObject({ status: "stopped" })
+        controlPlane.markBackendRunning(preview.id, {
+          backendRuntimeId: "backend-runtime-1",
+          backendExpiresAt: new Date("2026-01-01T00:05:00.000Z"),
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_TRANSITION" })
     })
 
-    it("markPhase rejects an out-of-order transition", async () => {
+    it("markPhase rejects an out-of-order teardown transition", async () => {
       const { controlPlane } = compose()
       const { preview } = await controlPlane.create(
         createRequest(),
         idempotencyKey,
         requester,
       )
-      // Still "queued" -- markPhase's only legal source is "building_frontend".
-      await expect(
-        controlPlane.markPhase(preview.id, "starting_backend"),
-      ).rejects.toMatchObject({ code: "INVALID_TRANSITION" })
       await expect(
         controlPlane.markPhase(preview.id, "stopping"),
       ).rejects.toMatchObject({ code: "INVALID_TRANSITION" })
@@ -415,87 +448,6 @@ describe("FullStackPreviewControlPlane", () => {
       ).toBe(false)
     })
 
-    it("activateReady refuses null child identities even when status is starting_backend", async () => {
-      const { controlPlane, store } = compose()
-      const { preview } = await controlPlane.create(
-        createRequest(),
-        idempotencyKey,
-        requester,
-      )
-      await store.update(preview.id, (current) => ({
-        ...current,
-        status: "starting_backend",
-      }))
-      await expect(
-        controlPlane.activateReady(preview.id),
-      ).rejects.toMatchObject({
-        code: "INVALID_TRANSITION",
-      })
-    })
-
-    it("activateReady refuses starting_backend with only some child identities recorded", async () => {
-      const { controlPlane, store } = compose()
-      const { preview } = await controlPlane.create(
-        createRequest(),
-        idempotencyKey,
-        requester,
-      )
-      await store.update(preview.id, (current) => ({
-        ...current,
-        status: "starting_backend",
-        frontendJobId: "job-1",
-        artifactId: "artifact-1",
-        // backendRuntimeId intentionally still null
-      }))
-      await expect(
-        controlPlane.activateReady(preview.id),
-      ).rejects.toMatchObject({
-        code: "INVALID_TRANSITION",
-      })
-    })
-
-    it("activateReady succeeds once starting_backend and all three child identities are recorded", async () => {
-      const { controlPlane, store } = compose()
-      const { preview } = await controlPlane.create(
-        createRequest(),
-        idempotencyKey,
-        requester,
-      )
-      await store.update(preview.id, (current) => ({
-        ...current,
-        status: "starting_backend",
-        frontendJobId: "job-1",
-        artifactId: "artifact-1",
-        backendRuntimeId: "runtime-1",
-      }))
-      await expect(
-        controlPlane.activateReady(preview.id),
-      ).resolves.toMatchObject({
-        status: "ready",
-      })
-    })
-
-    it("activateReady refuses a preview not currently in starting_backend", async () => {
-      const { controlPlane, store } = compose()
-      const { preview } = await controlPlane.create(
-        createRequest(),
-        idempotencyKey,
-        requester,
-      )
-      await store.update(preview.id, (current) => ({
-        ...current,
-        frontendJobId: "job-1",
-        artifactId: "artifact-1",
-        backendRuntimeId: "runtime-1",
-      }))
-      // Still "queued".
-      await expect(
-        controlPlane.activateReady(preview.id),
-      ).rejects.toMatchObject({
-        code: "INVALID_TRANSITION",
-      })
-    })
-
     it("startWorkerFullStackPreview transitions queued -> building_frontend exactly once", async () => {
       const { controlPlane } = compose()
       const { preview } = await controlPlane.create(
@@ -511,6 +463,39 @@ describe("FullStackPreviewControlPlane", () => {
       )
       const current = await controlPlane.get(preview.id, requester)
       expect(current.status).toBe("building_frontend")
+    })
+  })
+
+  describe("preview admission quota", () => {
+    it("consumes once for a new request and not for its idempotent retry", async () => {
+      const calls: Array<{ subject: string; ip: string }> = []
+      const { controlPlane } = compose({
+        quota: {
+          consume: async (value) => {
+            calls.push({ subject: value.subject, ip: value.ip })
+            return { allowed: true as const }
+          },
+        },
+      })
+      await controlPlane.create(createRequest(), idempotencyKey, requester)
+      await controlPlane.create(createRequest(), idempotencyKey, requester)
+      expect(calls).toEqual([requester])
+    })
+
+    it("rejects before support resolution when quota is exhausted", async () => {
+      const { controlPlane, frontendResolver, backendResolver } = compose({
+        quota: {
+          consume: async () => ({
+            allowed: false as const,
+            retryAfterSeconds: 7,
+          }),
+        },
+      })
+      await expect(
+        controlPlane.create(createRequest(), idempotencyKey, requester),
+      ).rejects.toMatchObject({ code: "RATE_LIMITED", retryAfterSeconds: 7 })
+      expect(frontendResolver.calls).toHaveLength(0)
+      expect(backendResolver.calls).toHaveLength(0)
     })
   })
 
@@ -558,6 +543,7 @@ describe("FullStackPreviewControlPlane", () => {
       "queued",
       "building_frontend",
       "starting_backend",
+      "awaiting_activation",
       "ready",
       "stopping",
     ] as const)("an active (%s) preview consumes capacity", async (status) => {
@@ -640,6 +626,7 @@ describe("FullStackPreviewControlPlane", () => {
       expect(json).not.toHaveProperty("frontendJobId")
       expect(json).not.toHaveProperty("artifactId")
       expect(json).not.toHaveProperty("backendRuntimeId")
+      expect(json).not.toHaveProperty("orchestrationKey")
       expect(json).not.toHaveProperty("peerIp")
       expect(json).not.toHaveProperty("dialTarget")
       expect(json).not.toHaveProperty("internalPort")
@@ -661,6 +648,23 @@ describe("FullStackPreviewControlPlane", () => {
       const refreshed = await controlPlane.get(preview.id, requester)
       expect(refreshed.status).toBe("failed")
       expect(refreshed.errorCode).toBe("PROVISIONING_TIMEOUT")
+    })
+
+    it("awaiting_activation expires normally instead of timing out", async () => {
+      const { controlPlane, store, setNow } = compose()
+      const { preview } = await controlPlane.create(
+        createRequest(),
+        idempotencyKey,
+        requester,
+      )
+      await store.update(preview.id, (current) => ({
+        ...current,
+        status: "awaiting_activation",
+      }))
+      setNow(new Date("2026-01-01T00:16:00.000Z"))
+      const refreshed = await controlPlane.get(preview.id, requester)
+      expect(refreshed.status).toBe("expired")
+      expect(refreshed.errorCode).toBeNull()
     })
   })
 })

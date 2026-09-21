@@ -32,6 +32,7 @@ export class InMemoryBackendRuntimeStore implements BackendRuntimeStore {
       if (
         runtime.requesterId === requesterId &&
         runtime.fingerprint === fingerprint &&
+        runtime.orchestrationKey === null &&
         ACTIVE_STATUSES.has(runtime.status)
       ) {
         return runtime
@@ -51,6 +52,22 @@ export class InMemoryBackendRuntimeStore implements BackendRuntimeStore {
       }
     }
     return count
+  }
+
+  async getActiveByOrchestrationKey(
+    requesterId: string,
+    orchestrationKey: string,
+  ): Promise<StoredBackendRuntime | null> {
+    for (const runtime of this.runtimes.values()) {
+      if (
+        runtime.requesterId === requesterId &&
+        runtime.orchestrationKey === orchestrationKey &&
+        ACTIVE_STATUSES.has(runtime.status)
+      ) {
+        return runtime
+      }
+    }
+    return null
   }
 
   async create(runtime: StoredBackendRuntime): Promise<StoredBackendRuntime> {

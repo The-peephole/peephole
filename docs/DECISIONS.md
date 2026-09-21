@@ -679,3 +679,33 @@ is verified against a real host. A live disk-quota watcher during the
 *running* phase (as opposed to install) is not implemented; the sandbox's
 own hard ext4 quota remains the non-bypassable backstop, matching how disk
 limits are already enforced everywhere else in this codebase.
+
+## D-031 - Full-stack preview orchestration is a durable parent resource and stops at `awaiting_activation` until routing exists
+
+**Status:** Accepted
+
+`fullstack-v1` owns a durable parent row and queue delivery that coordinate,
+but do not merge, the existing static preview and `backend-v1` lifecycles.
+Public admission spends the existing preview quota exactly once while the
+real requester IP is present. Only the requester subject is persisted. The
+worker uses private subject-owned child operations: static child creation
+revalidates the build plan and uses the normal cache/store/queue/signing path
+without spending quota again; backend child creation revalidates its plan and
+uses the parent full-stack id as a private orchestration identity, preventing
+two parents from sharing one runtime. Child ids are persisted immediately so
+cancellation and reclaimed-lease cleanup never depend on process memory.
+
+A published artifact and running backend advance the parent only to
+`awaiting_activation`, with expiry tightened to both child expiries. `ready`
+is unreachable until a later routing phase can atomically establish an
+authorized origin and `/api` route. Until that phase exists, the supervisor
+deliberately keeps renewing the parent queue lease while awaiting activation
+and monitors parent cancellation/expiry plus backend liveness. Cancellation
+stops active children; a reclaimed partial attempt cancels every recorded
+active child and fails closed with `ORCHESTRATION_UNAVAILABLE`. Production
+does not start this worker yet, so this temporary long-held ownership model
+cannot strand a live production request.
+
+This decision does not add a full-stack hostname, TLS authorization, proxy,
+CSP change, public backend URL, UI, production startup wiring, secrets, or
+databases. Those remain later phases.

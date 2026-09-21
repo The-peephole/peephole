@@ -14,6 +14,7 @@ export type FullStackPreviewStatus =
   | "queued"
   | "building_frontend"
   | "starting_backend"
+  | "awaiting_activation"
   | "ready"
   | "stopping"
   | "stopped"
@@ -24,6 +25,8 @@ export type FullStackPreviewStatus =
 export type FullStackPreviewErrorCode =
   | "UNSUPPORTED_FRONTEND"
   | "UNSUPPORTED_BACKEND"
+  | "FRONTEND_FAILED"
+  | "BACKEND_FAILED"
   | "PROVISIONING_TIMEOUT"
   | "ORCHESTRATION_UNAVAILABLE"
 

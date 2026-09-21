@@ -47,6 +47,7 @@ const ACTIVE = new Set([
   "queued",
   "building_frontend",
   "starting_backend",
+  "awaiting_activation",
   "ready",
   "stopping",
 ])

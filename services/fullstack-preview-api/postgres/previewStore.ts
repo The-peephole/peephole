@@ -39,6 +39,7 @@ const ACTIVE_STATUSES = [
   "queued",
   "building_frontend",
   "starting_backend",
+  "awaiting_activation",
   "ready",
   "stopping",
 ] as const

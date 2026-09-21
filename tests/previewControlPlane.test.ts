@@ -10,7 +10,10 @@ import {
   InMemoryPreviewQueue,
 } from "../services/preview-api/inMemoryAdapters"
 import { PreviewControlPlane } from "../services/preview-api/controlPlane"
-import type { PreviewPlanResolver } from "../services/preview-api/ports"
+import type {
+  PreviewPlanResolver,
+  PreviewQuota,
+} from "../services/preview-api/ports"
 import { resolveRequesterIp } from "../services/preview-api/requesterIp"
 import type {
   BuildPlan,
@@ -90,6 +93,22 @@ describe("PreviewControlPlane", () => {
     expect(harness.queue.size).toBe(1)
     expect(harness.resolve).toHaveBeenCalledTimes(1)
     expect(first.job).not.toHaveProperty("requesterId")
+  })
+
+  it("skips a second quota charge only for trusted orchestration creation", async () => {
+    const consume = vi.fn(async () => ({ allowed: true as const }))
+    const harness = createHarness({ quota: { consume } })
+    await harness.control.create(request, "request-public-000001", requester)
+    const internal = await harness.control.createForOrchestration(
+      request,
+      "fullstack:preview-00000001:frontend",
+      requester.subject,
+    )
+
+    expect(consume).toHaveBeenCalledTimes(1)
+    await expect(
+      harness.control.getForOrchestration(internal.job.id, "another-user"),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 
   it("rejects reuse of an idempotency key for another commit", async () => {
@@ -338,6 +357,7 @@ interface HarnessOptions {
   jobTimeoutMs?: number
   perUserRepository?: number
   resolvedPlan?: BuildPlan | null
+  quota?: PreviewQuota
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -358,9 +378,10 @@ function createHarness(options: HarnessOptions = {}) {
       "peephole.run",
       "test-signing-secret-with-at-least-32-bytes",
     ),
-    new FixedWindowPreviewQuota({
-      perUserRepository: options.perUserRepository,
-    }),
+    options.quota ??
+      new FixedWindowPreviewQuota({
+        perUserRepository: options.perUserRepository,
+      }),
     {
       runnerVersion: "runner-v1",
       jobTimeoutMs: options.jobTimeoutMs,
