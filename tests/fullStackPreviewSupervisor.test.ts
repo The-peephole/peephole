@@ -164,6 +164,146 @@ async function completeFrontendAndBackend(
 }
 
 describe("FullStackPreviewSupervisor", () => {
+  function productionSupervisor(
+    harness: ReturnType<typeof createHarness>,
+    onReady: (controls: {
+      unregister(): void
+      signal: AbortController
+    }) => Promise<void>,
+  ) {
+    let routeLive = true
+    let readyObserved = false
+    const signal = new AbortController()
+    const activate = vi.fn(async (id: string) => {
+      const parent = await harness.fullStackStore.get(id)
+      return harness.fullStack.activateRouting(id, {
+        expectedArtifactId: parent!.artifactId!,
+        expectedBackendRuntimeId: parent!.backendRuntimeId!,
+        url: `https://${id}.peepholeusercontent.dev/`,
+        expiresAt: new Date(parent!.expiresAt),
+      })
+    })
+    const supervisor = new FullStackPreviewSupervisor(
+      harness.fullStack,
+      harness.frontend,
+      harness.artifacts,
+      harness.backend,
+      {
+        routingActivator: { activate },
+        liveRuntimeResolver: {
+          resolve: () =>
+            routeLive ? { host: "10.0.0.2", port: 3000 } : undefined,
+        },
+        wait: async () => {
+          await completeFrontendAndBackend(harness, false)
+          const parent = await harness.fullStackStore.get(previewId)
+          if (parent?.status === "ready" && !readyObserved) {
+            readyObserved = true
+            await onReady({
+              unregister: () => {
+                routeLive = false
+              },
+              signal,
+            })
+          }
+          if (parent?.backendRuntimeId) {
+            const runtime = await harness.backend.getForOrchestration(
+              parent.backendRuntimeId,
+              requester.subject,
+            )
+            if (runtime.status === "stopping") {
+              routeLive = false
+              await harness.backend.markStopped(runtime.id)
+            }
+          }
+        },
+      },
+    )
+    return { supervisor, activate, signal }
+  }
+
+  it("activates awaiting_activation, retains ready ownership, and preserves ready on shutdown abort", async () => {
+    const harness = createHarness()
+    await harness.createParent()
+    const composed = productionSupervisor(harness, async ({ signal }) => {
+      signal.abort(new Error("production shutdown"))
+    })
+
+    await expect(
+      composed.supervisor.run(harness.queued, {
+        signal: composed.signal.signal,
+        shutdownSignal: composed.signal.signal,
+      }),
+    ).rejects.toThrow("production shutdown")
+    expect(composed.activate).toHaveBeenCalledOnce()
+    expect(await harness.fullStackStore.get(previewId)).toMatchObject({
+      status: "ready",
+      url: `https://${previewId}.peepholeusercontent.dev/`,
+      errorCode: null,
+    })
+  })
+
+  it("owns DELETE ready through backend teardown, route removal, and stopped", async () => {
+    const harness = createHarness()
+    await harness.createParent()
+    const composed = productionSupervisor(harness, async () => {
+      await harness.fullStack.cancel(previewId, requester)
+    })
+
+    await composed.supervisor.run(harness.queued)
+    expect(await harness.fullStackStore.get(previewId)).toMatchObject({
+      status: "stopped",
+    })
+    expect(
+      await harness.backend.getForOrchestration(
+        "backend-runtime-1",
+        requester.subject,
+      ),
+    ).toMatchObject({ status: "stopped" })
+    expect(harness.fullStackQueue.cancelled).toEqual([])
+  })
+
+  it("cleans up the backend when a ready parent expires", async () => {
+    const harness = createHarness()
+    await harness.createParent()
+    const composed = productionSupervisor(harness, async () => {
+      await harness.fullStackStore.update(previewId, (parent) => ({
+        ...parent,
+        expiresAt: "2098-12-31T23:59:59.000Z",
+      }))
+    })
+
+    await composed.supervisor.run(harness.queued)
+    expect(await harness.fullStackStore.get(previewId)).toMatchObject({
+      status: "expired",
+      errorCode: null,
+    })
+    expect(
+      await harness.backend.getForOrchestration(
+        "backend-runtime-1",
+        requester.subject,
+      ),
+    ).toMatchObject({ status: "stopped" })
+  })
+
+  it("fails closed and cleans up after the ready backend route disappears", async () => {
+    const harness = createHarness()
+    await harness.createParent()
+    const composed = productionSupervisor(harness, async ({ unregister }) => {
+      unregister()
+      await harness.backend.failWorkerRuntime(
+        "backend-runtime-1",
+        "RUNTIME_EXITED",
+      )
+    })
+
+    await composed.supervisor.run(harness.queued)
+    expect(await harness.fullStackStore.get(previewId)).toMatchObject({
+      status: "failed",
+      errorCode: "BACKEND_FAILED",
+    })
+  })
+
   it("runs fresh children to awaiting_activation, records ids early, and never reaches ready", async () => {
     const harness = createHarness()
     await harness.createParent()
@@ -195,6 +335,27 @@ describe("FullStackPreviewSupervisor", () => {
     )
     expect(JSON.stringify(parent)).not.toContain(requester.ip)
     expect(JSON.stringify(harness.queued)).not.toContain(requester.ip)
+  })
+
+  it("drains a delivery cancelled before leasing without creating either child", async () => {
+    const harness = createHarness()
+    await harness.createParent()
+    await harness.fullStack.cancel(previewId, requester)
+    const supervisor = new FullStackPreviewSupervisor(
+      harness.fullStack,
+      harness.frontend,
+      harness.artifacts,
+      harness.backend,
+    )
+
+    await supervisor.run(harness.queued)
+    expect(await harness.fullStackStore.get(previewId)).toMatchObject({
+      status: "cancelled",
+      frontendJobId: null,
+      backendRuntimeId: null,
+    })
+    expect(harness.frontendQueue.size).toBe(0)
+    expect(await harness.backendQueue.lease("test-worker")).toBeNull()
   })
 
   it("uses a static cache hit without queueing another build", async () => {

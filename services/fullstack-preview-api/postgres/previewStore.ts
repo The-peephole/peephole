@@ -64,6 +64,13 @@ export class PostgresFullStackPreviewStore implements FullStackPreviewStore {
     return result.rows[0] ? toStoredPreview(result.rows[0]) : null
   }
 
+  async listAll(): Promise<StoredFullStackPreview[]> {
+    const result = await this.database.query<FullStackPreviewRow>(
+      `${SELECT_PREVIEW} ORDER BY created_at ASC`,
+    )
+    return result.rows.map(toStoredPreview)
+  }
+
   async getByIdempotencyKey(
     requesterId: string,
     idempotencyKey: string,

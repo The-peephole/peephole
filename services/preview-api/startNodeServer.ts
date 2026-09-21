@@ -7,9 +7,15 @@ import { createPreviewHttpHandler } from "./http"
 import { NodePreviewApiServer } from "./nodeHttpServer"
 import type { IssuedPreviewSession } from "./previewSession"
 import type { PreviewApiServerConfig } from "./serverConfig"
+import type { FullStackPreviewControlPlane } from "../fullstack-preview-api/controlPlane"
+import {
+  createFullStackPreviewHttpHandler,
+  isFullStackPreviewHttpPath,
+} from "../fullstack-preview-api/http"
 
 export interface StartNodePreviewApiOptions {
   controlPlane: PreviewControlPlane
+  fullStackControlPlane?: FullStackPreviewControlPlane
   config: PreviewApiServerConfig
   resolveRequester: (
     request: IncomingMessage,
@@ -31,8 +37,15 @@ export interface RunningNodePreviewApi {
 export async function startNodePreviewApi(
   options: StartNodePreviewApiOptions,
 ): Promise<RunningNodePreviewApi> {
+  const handlePreviewRequest = createPreviewHttpHandler(options.controlPlane)
+  const handleFullStackRequest = options.fullStackControlPlane
+    ? createFullStackPreviewHttpHandler(options.fullStackControlPlane)
+    : undefined
   const server = new NodePreviewApiServer({
-    handlePreviewRequest: createPreviewHttpHandler(options.controlPlane),
+    handlePreviewRequest: (request) =>
+      handleFullStackRequest && isFullStackPreviewHttpPath(request.path)
+        ? handleFullStackRequest(request)
+        : handlePreviewRequest(request),
     resolveRequester: options.resolveRequester,
     beginGitHubAuth: options.beginGitHubAuth,
     completeGitHubAuth: options.completeGitHubAuth,

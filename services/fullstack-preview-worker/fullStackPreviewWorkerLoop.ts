@@ -139,6 +139,7 @@ export class FullStackPreviewWorkerLoop {
     try {
       await this.worker.run(lease.preview, {
         signal,
+        shutdownSignal: shutdown,
         recovered: lease.attempts > 1,
         abandon: lease.attempts > this.maxAttempts,
       })

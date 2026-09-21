@@ -434,7 +434,7 @@ describe("FullStackPreviewControlPlane", () => {
     })
 
     it("terminal statuses do not become active again", async () => {
-      const { controlPlane } = compose()
+      const { controlPlane, queue } = compose()
       const { preview } = await controlPlane.create(
         createRequest(),
         idempotencyKey,
@@ -446,6 +446,29 @@ describe("FullStackPreviewControlPlane", () => {
       expect(
         await controlPlane.isWorkerFullStackPreviewActive(preview.id),
       ).toBe(false)
+      expect(queue.cancelled).toEqual([])
+    })
+
+    it("signals ready cancellation through stopping without revoking the lifecycle lease", async () => {
+      const { controlPlane, store, queue } = compose()
+      const { preview } = await controlPlane.create(
+        createRequest(),
+        idempotencyKey,
+        requester,
+      )
+      await store.update(preview.id, (current) => ({
+        ...current,
+        status: "ready",
+        url: `https://${preview.id}.peepholeusercontent.dev/`,
+      }))
+
+      await expect(
+        controlPlane.cancel(preview.id, requester),
+      ).resolves.toMatchObject({ status: "stopping" })
+      await expect(
+        controlPlane.cancel(preview.id, requester),
+      ).resolves.toMatchObject({ status: "stopping" })
+      expect(queue.cancelled).toEqual([])
     })
 
     it("startWorkerFullStackPreview transitions queued -> building_frontend exactly once", async () => {

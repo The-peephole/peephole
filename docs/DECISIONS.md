@@ -717,11 +717,26 @@ origins remain static-only with `connect-src 'none'`. TLS ask authorization
 for a full-stack name requires a ready, unexpired routing row and live
 referenced artifact metadata.
 
-This foundation is deliberately optional in `ProductionArtifactHost` and is
-not composed by `services/production/server.ts`. The supervisor does not call
-the activator automatically; Caddy/deployment changes and real-host gVisor E2E
-also remain Phase 3B work. Before automatic activation, Phase 3B must assign
-durable ownership after `ready`: user cancellation, full-stack expiry, backend
-crash, `ready -> stopping -> stopped`, backend cancellation, and queue
-acknowledgement/cleanup cannot be left to a worker that disappears after
-activation. UI, M10, and M11 remain out of scope.
+Phase 3B1 composes this foundation in the production process code. One
+process-owned `LiveBackendRuntimeRegistry` is injected into the backend
+supervisor, routing activator, artifact host, and ready monitor. The durable
+full-stack queue lease remains owned through `awaiting_activation`, `ready`,
+and `stopping`; it is acknowledged only after cancellation, expiry, or backend
+failure cleanup has finished. Public cancellation changes the parent status
+without revoking that active lease. The backend worker unregisters a route
+before releasing its namespace/IP, and the full-stack owner waits for both a
+terminal backend status and route removal before finishing.
+
+Backend runtime state and network coordinates remain process-local. Startup
+therefore runs physical gVisor/network orphan cleanup first, then reconciles
+durable full-stack rows before opening any listener: queued rows remain
+runnable; stale provisioning/awaiting/ready rows fail closed with
+`ORCHESTRATION_UNAVAILABLE`; stopping becomes stopped; terminal deliveries are
+cancelled. A durable frontend child is cancelled when it is still active, but
+shared completed artifact bytes are retained. No backend target is ever
+reconstructed after restart.
+
+This is production composition code, not a deployment. Live Caddy, systemd,
+EC2, and firewall configuration are unchanged, and real-host full-stack gVisor
+E2E remains Phase 3B2. M9 is not complete until that deployment proof passes;
+UI, M10, and M11 remain out of scope.

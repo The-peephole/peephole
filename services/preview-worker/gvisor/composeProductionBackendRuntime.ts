@@ -30,8 +30,8 @@ export interface ComposeProductionBackendRuntimeOptions {
    * plane's own runtime TTL -- see GVisorBackendRuntimeProcess's doc
    * comment. */
   maxRuntimeMs?: number
-  /** Process-local live-route registry the future same-process full-stack
-   * proxy resolver will also read from -- REQUIRED, not defaulted, and
+  /** Process-local live-route registry the same-process full-stack proxy
+   * resolver also reads from -- REQUIRED, not defaulted, and
    * deliberately never constructed by this function. The one process
    * composing both the backend supervisor and (later) the proxy resolver
    * must own exactly one registry instance and pass the SAME instance to
@@ -49,13 +49,11 @@ export interface ComposeProductionBackendRuntimeOptions {
  * new `GVisorBackendRuntimeProcess`, an ingress-only network namespace, never
  * `network: "sandbox"`'s NAT'd egress) -> supervised until stopped.
  *
- * Deliberately NOT wired into `services/production/server.ts`'s `main()` in
- * this change -- see docs/PREVIEW_RUNTIME.md's "Known limitations". The
+ * Wired into `services/production/server.ts` for M9 Phase 3B1. The
  * ingress-only network policy this depends on
  * (`VethNatNetworkProvisioner.createIngressOnly`,
  * `NetworkOrphanReaper`/`subnetAllocator.ts`'s `policy` field) has full unit
- * coverage but has not been exercised against a real gVisor/Linux host from
- * this change; production wiring should happen only after that verification.
+ * coverage; live-host deployment and real full-stack E2E remain Phase 3B2.
  */
 export function composeProductionBackendRuntime(
   controlPlane: BackendRuntimeControlPlane,

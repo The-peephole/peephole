@@ -8,9 +8,13 @@ import type { FullStackPreviewControlPlane } from "../fullstack-preview-api/cont
 import type { StoredFullStackPreview } from "../fullstack-preview-api/ports"
 import type { PreviewControlPlane } from "../preview-api/controlPlane"
 import type { PreviewArtifactCache } from "../preview-api/ports"
+import type { FullStackRoutingActivator } from "../fullstack-routing/fullStackRoutingActivator"
+import type { LiveBackendRuntimeRouteResolver } from "../backend-runtime-worker/liveRuntimeRegistry"
 
 export interface FullStackPreviewRunOptions {
   signal?: AbortSignal
+  /** The process shutdown source, kept separate from lease-loss aborts. */
+  shutdownSignal?: AbortSignal
   recovered?: boolean
   abandon?: boolean
 }
@@ -19,6 +23,8 @@ export interface FullStackPreviewSupervisorOptions {
   pollIntervalMs?: number
   now?: () => Date
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>
+  routingActivator?: Pick<FullStackRoutingActivator, "activate">
+  liveRuntimeResolver?: LiveBackendRuntimeRouteResolver
 }
 
 const ACTIVE_FRONTEND = new Set<PreviewJobStatus>([
@@ -39,10 +45,9 @@ const ACTIVE_BACKEND = new Set<BackendRuntimeStatus>([
 
 /**
  * Coordinates, but never executes, the static and backend child pipelines.
- * While Phase 3 routing is absent this supervisor intentionally retains its
- * queue lease in `awaiting_activation`, monitoring cancellation, expiry, and
- * backend liveness. Tests finish that temporary ownership period by cancelling
- * the parent; production does not start this worker yet.
+ * The durable parent queue lease is the lifecycle ownership token. This
+ * supervisor does not return at `ready`: it owns cancellation, expiry and
+ * backend-failure cleanup through a final terminal state.
  */
 export class FullStackPreviewSupervisor {
   private readonly pollIntervalMs: number
@@ -51,6 +56,10 @@ export class FullStackPreviewSupervisor {
     milliseconds: number,
     signal: AbortSignal,
   ) => Promise<void>
+  private readonly routingActivator:
+    Pick<FullStackRoutingActivator, "activate"> | undefined
+  private readonly liveRuntimeResolver:
+    LiveBackendRuntimeRouteResolver | undefined
 
   constructor(
     private readonly fullStack: FullStackPreviewControlPlane,
@@ -71,6 +80,8 @@ export class FullStackPreviewSupervisor {
     }
     this.now = options.now ?? (() => new Date())
     this.wait = options.wait ?? waitForAbortableDelay
+    this.routingActivator = options.routingActivator
+    this.liveRuntimeResolver = options.liveRuntimeResolver
   }
 
   async run(
@@ -86,11 +97,11 @@ export class FullStackPreviewSupervisor {
     if (!authoritative) return
 
     if (!sameQueuedPreview(queued, authoritative)) {
-      await this.cleanup(authoritative)
       await this.fullStack.failWorkerFullStackPreview(
         queued.previewId,
         "ORCHESTRATION_UNAVAILABLE",
       )
+      await this.cleanup(authoritative, undefined, undefined, signal)
       return
     }
 
@@ -98,11 +109,11 @@ export class FullStackPreviewSupervisor {
       options.abandon ||
       (options.recovered && authoritative.status !== "queued")
     ) {
-      await this.cleanup(authoritative)
       await this.fullStack.failWorkerFullStackPreview(
         queued.previewId,
         "ORCHESTRATION_UNAVAILABLE",
       )
+      await this.cleanup(authoritative, undefined, undefined, signal)
       return
     }
 
@@ -203,21 +214,27 @@ export class FullStackPreviewSupervisor {
         backendExpiresAt: new Date(runtime.expiresAt),
       })
 
-      await this.monitorAwaitingActivation(
+      await this.monitorLifecycle(
         authoritative.id,
         backendRuntimeId,
         authoritative.requesterId,
         signal,
       )
     } catch (error) {
+      // A normal process shutdown deliberately leaves the durable parent for
+      // next-start fail-closed reconciliation. The backend worker is aborted
+      // and awaited separately by production shutdown; do not rewrite a
+      // valid ready parent merely because this process is exiting.
+      if (signal.aborted && options.shutdownSignal?.aborted) throw error
+      await this.fullStack.failWorkerFullStackPreview(
+        authoritative.id,
+        "ORCHESTRATION_UNAVAILABLE",
+      )
       await this.cleanup(
         await this.fullStack.getWorkerFullStackPreview(authoritative.id),
         frontendJobId,
         backendRuntimeId,
-      )
-      await this.fullStack.failWorkerFullStackPreview(
-        authoritative.id,
-        "ORCHESTRATION_UNAVAILABLE",
+        signal.aborted ? undefined : signal,
       )
       throw error
     }
@@ -260,7 +277,7 @@ export class FullStackPreviewSupervisor {
     for (;;) {
       signal.throwIfAborted()
       if (!(await this.parentIsActive(previewId))) {
-        await this.cancelBackend(runtimeId, requesterSubject)
+        await this.stopBackendAndWait(runtimeId, requesterSubject, signal)
         return null
       }
       const runtime = await this.backend.getForOrchestration(
@@ -273,13 +290,14 @@ export class FullStackPreviewSupervisor {
           previewId,
           "BACKEND_FAILED",
         )
+        await this.stopBackendAndWait(runtimeId, requesterSubject, signal)
         return null
       }
       await this.wait(this.pollIntervalMs, signal)
     }
   }
 
-  private async monitorAwaitingActivation(
+  private async monitorLifecycle(
     previewId: string,
     runtimeId: string,
     requesterSubject: string,
@@ -288,24 +306,116 @@ export class FullStackPreviewSupervisor {
     for (;;) {
       signal.throwIfAborted()
       const parent = await this.fullStack.getWorkerFullStackPreview(previewId)
-      if (!parent || parent.status !== "awaiting_activation") {
-        if (parent?.status !== "ready") {
-          await this.cancelBackend(runtimeId, requesterSubject)
-        }
+      if (!parent) {
+        await this.stopBackendAndWait(runtimeId, requesterSubject, signal)
         return
       }
-      const runtime = await this.backend.getForOrchestration(
-        runtimeId,
-        requesterSubject,
-      )
-      if (runtime.status !== "running") {
+
+      if (parent.status === "awaiting_activation") {
+        // Kept only for unit/backward-compatible portable composition. The
+        // production composition always injects both routing dependencies.
+        if (!this.routingActivator || !this.liveRuntimeResolver) {
+          const runtime = await this.backend.getForOrchestration(
+            runtimeId,
+            requesterSubject,
+          )
+          if (runtime.status !== "running") {
+            await this.fullStack.failWorkerFullStackPreview(
+              previewId,
+              "BACKEND_FAILED",
+            )
+            await this.stopBackendAndWait(runtimeId, requesterSubject, signal)
+            return
+          }
+          await this.wait(this.pollIntervalMs, signal)
+          continue
+        }
+        try {
+          await this.routingActivator.activate(previewId)
+        } catch {
+          signal.throwIfAborted()
+          await this.fullStack.failWorkerFullStackPreview(
+            previewId,
+            "ORCHESTRATION_UNAVAILABLE",
+          )
+          await this.stopBackendAndWait(runtimeId, requesterSubject, signal)
+          return
+        }
+        continue
+      }
+
+      if (parent.status === "ready") {
+        let running: boolean
+        try {
+          const runtime = await this.backend.getForOrchestration(
+            runtimeId,
+            requesterSubject,
+          )
+          running =
+            runtime.status === "running" &&
+            this.liveRuntimeResolver?.resolve(runtimeId) !== undefined
+        } catch {
+          running = false
+        }
+        if (running) {
+          await this.wait(this.pollIntervalMs, signal)
+          continue
+        }
         await this.fullStack.failWorkerFullStackPreview(
           previewId,
           "BACKEND_FAILED",
         )
-        await this.cancelBackend(runtimeId, requesterSubject)
+        await this.stopBackendAndWait(runtimeId, requesterSubject, signal)
         return
       }
+
+      if (parent.status === "stopping") {
+        await this.stopBackendAndWait(runtimeId, requesterSubject, signal)
+        const current =
+          await this.fullStack.getWorkerFullStackPreview(previewId)
+        if (current?.status === "stopping") {
+          await this.fullStack.markPhase(previewId, "stopped")
+        }
+        return
+      }
+
+      // cancelled/expired/failed/stopped are terminal. Cleanup must finish
+      // before the caller returns and the durable delivery is ACKed.
+      await this.stopBackendAndWait(runtimeId, requesterSubject, signal)
+      if (parent.status !== "stopped") {
+        await this.cancelFrontend(parent.frontendJobId, requesterSubject)
+      }
+      return
+    }
+  }
+
+  private async stopBackendAndWait(
+    runtimeId: string | null | undefined,
+    requesterSubject: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!runtimeId) return
+    await this.cancelBackend(runtimeId, requesterSubject)
+    if (!this.liveRuntimeResolver) return
+    for (;;) {
+      signal.throwIfAborted()
+      let active: boolean
+      try {
+        const runtime = await this.backend.getForOrchestration(
+          runtimeId,
+          requesterSubject,
+        )
+        active = ACTIVE_BACKEND.has(runtime.status)
+      } catch {
+        active = false
+      }
+      let routeExists: boolean
+      try {
+        routeExists = this.liveRuntimeResolver?.resolve(runtimeId) !== undefined
+      } catch {
+        routeExists = false
+      }
+      if (!active && !routeExists) return
       await this.wait(this.pollIntervalMs, signal)
     }
   }
@@ -324,13 +434,16 @@ export class FullStackPreviewSupervisor {
     preview: StoredFullStackPreview | null,
     frontendJobId?: string,
     backendRuntimeId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const requesterSubject = preview?.requesterId
     if (!requesterSubject) return
-    await this.cancelBackend(
-      backendRuntimeId ?? preview.backendRuntimeId,
-      requesterSubject,
-    )
+    const runtimeId = backendRuntimeId ?? preview.backendRuntimeId
+    if (signal && this.liveRuntimeResolver) {
+      await this.stopBackendAndWait(runtimeId, requesterSubject, signal)
+    } else {
+      await this.cancelBackend(runtimeId, requesterSubject)
+    }
     await this.cancelFrontend(
       frontendJobId ?? preview.frontendJobId,
       requesterSubject,

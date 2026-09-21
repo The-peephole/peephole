@@ -125,7 +125,7 @@ describe("FullStackPreviewWorkerLoop", () => {
     expect(queue.acknowledge).not.toHaveBeenCalled()
   })
 
-  it("renews a long-held awaiting_activation lease", async () => {
+  it("renews the lifecycle lease while the supervisor remains alive through ready", async () => {
     vi.useFakeTimers()
     const queue = new FakeQueue()
     queue.leases.push({ preview: queued, attempts: 1 })

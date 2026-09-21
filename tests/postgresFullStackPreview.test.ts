@@ -11,6 +11,9 @@ import { applyPostgresMigrations } from "../services/preview-api/postgres/migrat
 import { PostgresPreviewJobStore } from "../services/preview-api/postgres/jobStore"
 import { PostgresProductionArtifactStore } from "../services/preview-api/postgres/productionArtifactStore"
 import { PostgresFullStackRoutingStore } from "../services/fullstack-routing/postgresFullStackRoutingStore"
+import { FullStackPreviewControlPlane } from "../services/fullstack-preview-api/controlPlane"
+import { FullStackPreviewStartupReconciler } from "../services/fullstack-preview-worker/startupReconciler"
+import type { PreviewControlPlane } from "../services/preview-api/controlPlane"
 import type { StoredPreviewJob } from "../services/preview-api/ports"
 
 const connectionString = process.env.PEEPHOLE_POSTGRES_TEST_URL
@@ -590,6 +593,88 @@ describeWithPostgres("PostgreSQL integration: FullStackPreview", () => {
     await expect(applyPostgresMigrations(database)).resolves.toBeUndefined()
 
     expect(await store.get(preview.id)).not.toBeNull()
+  })
+
+  it("reconciles restart states and fences terminal deliveries from future leases", async () => {
+    const store = new PostgresFullStackPreviewStore(database)
+    const queue = new PostgresFullStackPreviewQueue(database)
+    // Other cases in this integration file intentionally leave durable queued
+    // parents behind. Fence their deliveries so this restart scenario can
+    // prove that its one valid queued parent is the only lease candidate.
+    for (const existing of await store.listAll()) {
+      await queue.cancel(existing.id)
+    }
+    const control = new FullStackPreviewControlPlane(
+      { resolve: async () => null },
+      { resolve: async () => null },
+      store,
+      queue,
+      { consume: async () => ({ allowed: true as const }) },
+      { now: () => new Date() },
+    )
+    const originalStatuses = [
+      "queued",
+      "building_frontend",
+      "starting_backend",
+      "awaiting_activation",
+      "ready",
+      "stopping",
+      "failed",
+    ] as const
+    const ids = new Map<(typeof originalStatuses)[number], string>()
+
+    for (const status of originalStatuses) {
+      const preview = createPreview()
+      preview.requesterId = `restart-${status}-${preview.id}`
+      preview.status = status
+      preview.url =
+        status === "ready"
+          ? `https://${preview.id}.peepholeusercontent.dev/`
+          : null
+      previewIds.push(preview.id)
+      ids.set(status, preview.id)
+      await store.createOrGetWithCapacity({
+        requesterId: preview.requesterId,
+        idempotencyKey: `request-${preview.id}`,
+        requestFingerprint: `fingerprint-${preview.id}`,
+        preview,
+        maxActive: 1,
+      })
+    }
+
+    await new FullStackPreviewStartupReconciler(
+      store,
+      queue,
+      control,
+      {} as PreviewControlPlane,
+    ).reconcile()
+
+    expect((await store.get(ids.get("queued")!))?.status).toBe("queued")
+    for (const status of [
+      "building_frontend",
+      "starting_backend",
+      "awaiting_activation",
+      "ready",
+    ] as const) {
+      expect(await store.get(ids.get(status)!)).toMatchObject({
+        status: "failed",
+        errorCode: "ORCHESTRATION_UNAVAILABLE",
+      })
+    }
+    expect((await store.get(ids.get("stopping")!))?.status).toBe("stopped")
+    expect((await store.get(ids.get("failed")!))?.status).toBe("failed")
+
+    const routingStore = new PostgresFullStackRoutingStore(database)
+    expect((await routingStore.get(ids.get("ready")!))?.status).toBe("failed")
+    const lease = await queue.lease("restart-worker", new Date(), 10_000)
+    expect(lease?.preview.previewId).toBe(ids.get("queued"))
+    expect(await queue.lease("restart-worker", new Date(), 10_000)).toBeNull()
+
+    const queueRows = await database.query<{ status: string }>(
+      `SELECT status FROM peephole_fullstack_queue WHERE preview_id <> $1 AND preview_id = ANY($2::text[])`,
+      [ids.get("queued"), [...ids.values()]],
+    )
+    expect(queueRows.rows.every((row) => row.status === "cancelled")).toBe(true)
   })
 })
 
