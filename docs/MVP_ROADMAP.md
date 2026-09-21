@@ -117,6 +117,13 @@ because a fixture or interface for it exists.
 10. [ ] ephemeral env / secrets
 11. [ ] temporary database support
 
+Stage 10 has a design (not an implementation): a generated-secrets-only
+first slice restricted to the existing `preview-generated-candidate`
+allowlist, delivered outside the OCI `process.env`/`config.json` path found
+to persist to real disk. See D-032 and docs/EPHEMERAL_SECRETS.md. Stage 10
+stays unchecked until that design is actually built, tested, and
+production-verified; stage 11 is untouched and has not started.
+
 Build Adapter generalization is complete as an architecture change: an
 explicit resolver selects `static-html-v1` or `vite-react-npm-v1`, detects
 ambiguous matches, and assigns command/output validation to the selected

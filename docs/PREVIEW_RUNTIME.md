@@ -349,6 +349,24 @@ wired into production startup during M9. A live disk-quota watcher during
 the *running* phase is not implemented; the sandbox's fixed-size ext4
 workspace remains the non-bypassable backstop, matching install/build.
 
+## 13b. Ephemeral Environment / Secrets (M10): Planned, Not Implemented
+
+M10 is design-only as of this writing -- see D-032 and
+docs/EPHEMERAL_SECRETS.md for the full architecture, threat model, and test
+plan. Nothing described there exists in the codebase yet; `WXT_BACKEND_RUNTIME_ENABLED`-gated
+UI does not exist for it, no new HTTP surface exists, and
+`BackendRuntimePlan.platformEnvironment` is unchanged (still exactly
+`PORT`/`HOST`/`NODE_ENV`). In short: the recommended first slice generates
+only the existing narrow `preview-generated-candidate` allowlist
+(`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`) server-side,
+holds it only in a process-local ephemeral broker, and delivers it to the
+sandbox through a new tmpfs-backed bind mount and trusted bootstrap
+entrypoint rather than through the OCI `process.env`/`config.json` path
+audited above -- because `config.json` lives on persistent (non-tmpfs)
+host disk today. User-supplied secrets, `database-requirement` variables,
+and any relaxation of the ingress-only network policy above remain
+explicitly out of scope for this first slice.
+
 ## 14. Minimum API Contract
 
 Create:
