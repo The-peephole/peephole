@@ -608,7 +608,7 @@ user-supplied phase):
 
 | Bound | Value |
 |---|---|
-| Max secret count per runtime | 8 (headroom over today's 4-name allowlist) |
+| Max secret count per runtime | 4 (current fixed allowlist size) |
 | Max variable name length | 64 bytes |
 | Max individual value size | 4096 bytes |
 | Max total secret bytes per runtime | 16 KiB |
