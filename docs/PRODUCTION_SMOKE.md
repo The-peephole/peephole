@@ -238,6 +238,115 @@ documented ownership-aware recovery path.
 6. Treat either non-zero exit as a failed release smoke. Do not use this tool to
    repair the host or bypass authentication.
 
+## M10 generated-secret verification (C4B; prepared, not executed)
+
+M10-C4A (see docs/EPHEMERAL_SECRETS.md and docs/TEST_PLAN.md's "M10
+generated-secret real-host harness" section) built an environment-gated real
+gVisor test harness and documented this procedure for the actual EC2
+verification, but did **not** run any of it. Nothing below has been executed;
+this is preparation only, so a future session doing the real-host run does not
+have to redesign the sequence.
+
+### 1. Verify the deployed base rootfs has the trusted bootstrap
+
+`scripts/gvisor/build-base-rootfs.sh` installs
+`/opt/peephole/secret-bootstrap.mjs` into the base rootfs image. C4B must not
+assume an already-deployed rootfs was built with this step -- it may predate
+M10-B. Before restarting `peephole`, read-only-verify on the host:
+
+```bash
+ls -la "$PEEPHOLE_GVISOR_BASE_ROOTFS/opt/peephole/secret-bootstrap.mjs"
+```
+
+If missing, rebuild the base rootfs from the current, reviewed
+`scripts/gvisor/build-base-rootfs.sh` **before** starting the C3/C4
+production server. Do not weaken `ensureGeneratedSecretInjectionCapability`
+(services/production/preflight.ts) to tolerate a stale rootfs; a missing
+bootstrap must keep failing production startup closed, by design.
+
+### 2. Generated-secret capability preflight (dry run, no restart)
+
+`ensureGeneratedSecretInjectionCapability` already runs automatically on every
+production startup (`services/production/generatedSecretRuntime.ts`, wired
+into `services/production/server.ts`), so restarting `peephole` after step 1
+*is* this check. To verify it independently first, without restarting the
+live service, run this on the host with the real production environment
+loaded (reuses the exact production functions -- no new script):
+
+```bash
+npx tsx --eval '
+import { readProductionConfig } from "./services/production/config";
+import { ensureGeneratedSecretInjectionCapability } from "./services/production/preflight";
+
+const config = readProductionConfig(process.env);
+await ensureGeneratedSecretInjectionCapability({
+  secretRootDir: config.generatedSecretRootDir,
+  baseRootfsImage: config.baseRootfsImage,
+});
+console.log("generated-secret capability check passed");
+'
+```
+
+This must prove: the configured secret root (default `/run/peephole/secrets`)
+resolves as tmpfs via real `findmnt`; the root is a regular directory with no
+symlink traversal; and the trusted bootstrap exists as a regular file in the
+actual configured base rootfs. A non-zero exit means production startup would
+also fail closed here -- do not proceed to restart `peephole` until this
+passes.
+
+### 3. Run the real-host generated-secret harness
+
+```bash
+PEEPHOLE_REAL_GVISOR_TESTS=1 npx vitest run tests/realBackendRuntime.test.ts
+```
+
+On a host whose base rootfs is not at the default
+`/var/lib/peephole/base-rootfs`, also set `PEEPHOLE_GVISOR_BASE_ROOTFS`. This
+must be run from a quiescent host per the existing "Production-host safety for
+privileged real-gVisor suites" section in docs/TEST_PLAN.md -- the same
+concurrency and residue rules apply, unchanged, to the generated-secret
+scenarios.
+
+### 4. Production journal log-leak check (requires a new fixture capability)
+
+This is the one M10 acceptance gate the standalone harness above cannot cover,
+because Peephole's own production runtime deliberately captures and discards a
+sandboxed backend's stdout/stderr -- proving nothing leaks into the `peephole`
+journal requires a real admitted, server-composed runtime, not a direct
+`GVisorBackendRuntimeProcess` test.
+
+**Fixture gap:** the currently pinned
+`peephole-fixture-fullstack@eae411a288b212201933cebb206126dd5bb0d93e` does not
+declare any generated-secret requirement and must not be described as
+exercising M10. C4B needs either an update to that fixture or a new
+first-party pinned fixture declaring:
+
+```text
+SESSION_SECRET=
+```
+
+in its backend env template, plus:
+
+1. `GET /api/secret-check` returning only `{ "configured": true, "sha256":
+   "<64 hex chars>" }` (never the raw value);
+2. one deliberate, fixed diagnostic line at startup:
+   `console.log("PEEPHOLE_M10_SECRET_LOG_PROBE:" + process.env.SESSION_SECRET)`.
+
+C4B does not need to know or print the generated value to run this check --
+only to search for the fixed marker prefix:
+
+```bash
+journalctl --unit peephole --since "<window covering the test run>" \
+  --no-pager --output cat | grep -c 'PEEPHOLE_M10_SECRET_LOG_PROBE:'
+```
+
+Because Peephole's runtime supervision intentionally never forwards a
+sandboxed backend's stdout/stderr into the `peephole` journal, this count must
+be `0`. A non-zero count is a real log-leak finding, not a fixture problem.
+
+This slice (M10-C4A) does not add or modify any fixture repository -- that
+decision and its implementation belong to C4B.
+
 ## M9 production verification record (2026-09-21)
 
 This is a one-off, manually-performed verification record, not a claim that

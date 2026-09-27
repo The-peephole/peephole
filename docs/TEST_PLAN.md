@@ -609,6 +609,61 @@ startup reconciliation. `composeProductionBackendRuntime` is now wired into
 production `main()`. See the M9 production verification record below and in
 docs/PRODUCTION_SMOKE.md.
 
+### M10 generated-secret real-host harness (M10-C4A; not yet run)
+
+`tests/realBackendRuntime.test.ts` (same file, same `PEEPHOLE_REAL_GVISOR_TESTS
+=1` gate and resource-ownership/cleanup model as above) now also carries two
+generated-secret scenarios, added in M10-C4A. **Neither has been executed on a
+real host in this slice** -- both were only confirmed to load, typecheck, and
+correctly skip in the portable environment; see docs/EPHEMERAL_SECRETS.md's
+M10-C4A status paragraph for exactly what each one asserts and why. In
+summary, they exercise the real `InMemoryBackendRuntimeSecretBroker
+.issue()/.take()` lifecycle and a real `TmpfsGeneratedSecretFilesystem`
+against a dedicated, uniquely-named tmpfs root under `/run/peephole/
+real-gvisor-secrets-*` -- never production's own `/run/peephole/secrets` --
+and a dedicated per-test `runsc --root` state directory, so the persistence
+inspection below reads only this-test-owned state, never a shared or
+production root:
+
+- child-environment injection, proven only via a SHA-256 digest returned by
+  the sandboxed process, compared against a locally computed digest of the
+  same generated value (the raw value itself is never printed, returned, or
+  embedded in any assertion that could echo it on failure);
+- `config.json` and argv non-leakage, plus the expected single read-only
+  `/run/secrets` bind mount and unchanged platform-only `process.env`;
+- host tmpfs directory/file permissions and ownership while running, and
+  their removal after `stop()`;
+- real trusted-bootstrap PID 1 `SIGTERM` forwarding, proven by a fixed,
+  non-secret sentinel file the sandboxed child writes on receipt, through the
+  real `RuntimeProcessHandle.stop()` -- this required a small production fix
+  (`stop()` previously always sent the uncatchable `SIGKILL`; it now sends
+  `SIGTERM` with a bounded grace period before the existing forceful `delete
+  --force` backstop). See docs/EPHEMERAL_SECRETS.md's M10-C4A status
+  paragraph for the full rationale;
+- a bounded, symlink-refusing, device/socket-skipping scan of the dedicated
+  runsc state root for the raw value, both while the container is active and
+  after `stop()`/`delete`, plus a narrow no-default-route egress-regression
+  check alongside the unmodified pre-existing ingress-only suite in the same
+  file;
+- a separate, no-live-process test proving `GeneratedSecretOrphanReaper`
+  reaps only a backdated, test-created, runtime-id-shaped directory from a
+  real tmpfs root, leaving a fresh entry, an unrelated non-runtime-shaped
+  entry, and the root itself untouched.
+
+**M10-C4B is the actual real-host execution of this harness**, plus the one
+acceptance gate it structurally cannot cover: proving that a backend
+deliberately printing its injected secret does not leak into the `peephole`
+systemd journal (Peephole captures/discards the sandboxed process's own
+stdout/stderr, so this needs a real admitted, server-composed runtime, not a
+standalone `GVisorBackendRuntimeProcess` test). That requires a first-party
+pinned fixture that declares a generated secret and exposes `/api/secret-check`
+-- the current `peephole-fixture-fullstack@eae411a...` does not exercise M10 at
+all and must not be described as if it does. See docs/PRODUCTION_SMOKE.md for
+the proposed fixture contract and the prepared-but-not-executed C4B command
+sequence (generated-secret preflight check, the real-host suite above, and the
+journal marker check). D-032 remains Proposed and M10 remains incomplete until
+M10-C4B actually runs and its results are recorded.
+
 ### Production-host safety for privileged real-gVisor suites
 
 Privileged real-gVisor tests that create or reconcile Peephole host resources

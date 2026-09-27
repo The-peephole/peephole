@@ -103,6 +103,14 @@ describe("runsc CLI argument construction", () => {
       "SIGKILL",
     ])
 
+    expect(runscKillArgs(global, "job-1-abcd", "SIGTERM")).toEqual([
+      "--root",
+      "/var/run/peephole/runsc",
+      "kill",
+      "job-1-abcd",
+      "SIGTERM",
+    ])
+
     expect(runscDeleteArgs(global, "job-1-abcd")).toEqual([
       "--root",
       "/var/run/peephole/runsc",
