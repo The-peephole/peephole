@@ -39,6 +39,12 @@ const plan: BackendRuntimePlan = {
 function compose(
   resolve: () => Promise<BackendRuntimePlan | null> = async () => plan,
 ) {
+  return composeContext(resolve).handle
+}
+
+function composeContext(
+  resolve: () => Promise<BackendRuntimePlan | null> = async () => plan,
+) {
   const store = new InMemoryBackendRuntimeStore()
   const queue = new InMemoryBackendRuntimeQueue()
   const controlPlane = new BackendRuntimeControlPlane(
@@ -49,7 +55,10 @@ function compose(
       now: () => new Date("2026-09-01T00:00:00.000Z"),
     },
   )
-  return createBackendRuntimeHttpHandler(controlPlane)
+  return {
+    controlPlane,
+    handle: createBackendRuntimeHttpHandler(controlPlane),
+  }
 }
 
 const requester = { subject: "user-1", ip: "203.0.113.10" }
@@ -78,6 +87,39 @@ describe("createBackendRuntimeHttpHandler", () => {
     expect(response.status).toBe(202)
     expect(JSON.stringify(response.body).toLowerCase()).not.toContain("url")
     expect(JSON.stringify(response.body)).not.toContain("generatedSecretNames")
+  })
+
+  it("returns only the safe SECRET_UNAVAILABLE code and message", async () => {
+    const { controlPlane, handle } = composeContext()
+    const created = await handle({
+      method: "POST",
+      path: "/v1/backend-runtimes",
+      headers: {},
+      body: { repository, contractVersion: "backend-v1" },
+      requester,
+    })
+    const id = (created.body as { runtime: { id: string } }).runtime.id
+    await controlPlane.fail(id, "SECRET_UNAVAILABLE")
+
+    const response = await handle({
+      method: "GET",
+      path: `/v1/backend-runtimes/${id}`,
+      headers: {},
+      requester,
+    })
+
+    expect(response).toMatchObject({
+      status: 200,
+      body: {
+        errorCode: "SECRET_UNAVAILABLE",
+        errorMessage:
+          "The backend runtime's secret material is no longer available. Start a new preview.",
+      },
+    })
+    const serialized = JSON.stringify(response.body)
+    expect(serialized).not.toContain("generatedSecretNames")
+    expect(serialized).not.toContain("GeneratedSecretMaterial")
+    expect(serialized).not.toContain("values")
   })
 
   it("gets and cancels a runtime by id", async () => {

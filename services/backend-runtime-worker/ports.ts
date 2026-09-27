@@ -62,8 +62,8 @@ export interface BackendRuntimeProcessStarter {
   start(
     workspace: LocalPreviewWorkspace,
     plan: BackendRuntimePlan,
-    /** Server-only material, already issued elsewhere. `null` preserves the
-     * current production behavior; M10-B does not connect a broker here. */
+    /** Server-only material, already destructively consumed from the broker
+     * by the supervisor. `null` is valid only for an empty names list. */
     secrets: GeneratedSecretMaterial | null,
   ): Promise<RuntimeProcessHandle>
 }

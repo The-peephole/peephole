@@ -46,6 +46,8 @@ const SAFE_ERROR_MESSAGES: Record<BackendRuntimeErrorCode, string> = {
   FETCH_FAILED: "The repository source could not be fetched.",
   UNSUPPORTED_BACKEND: "This backend does not satisfy the backend-v1 contract.",
   INSTALL_FAILED: "Backend dependencies could not be installed.",
+  SECRET_UNAVAILABLE:
+    "The backend runtime's secret material is no longer available. Start a new preview.",
   RUNTIME_START_FAILED: "The backend process could not be started.",
   RUNTIME_READINESS_TIMEOUT: "The backend did not become ready in time.",
   RUNTIME_EXITED: "The backend process exited unexpectedly.",

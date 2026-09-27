@@ -43,6 +43,11 @@ const plan: BackendRuntimePlan = {
   generatedSecretNames: [],
 }
 
+const secretPlan: BackendRuntimePlan = {
+  ...plan,
+  generatedSecretNames: ["SESSION_SECRET"],
+}
+
 class FakeProcessRunner implements ProcessRunner {
   readonly calls: Array<{ command: string; args: string[] }> = []
   private runResolve: ((result: ProcessRunResult) => void) | null = null
@@ -406,7 +411,7 @@ describe("GVisorBackendRuntimeProcess", () => {
     }
     const handle = await runtime.start(
       fakeWorkspace(bundleDir, "127.0.0.1"),
-      { ...plan, internalPort: port },
+      { ...secretPlan, internalPort: port },
       secrets,
     )
     const serialized = await readFile(
@@ -443,6 +448,58 @@ describe("GVisorBackendRuntimeProcess", () => {
     await expect(readdir(secretRoot)).resolves.toEqual([])
   })
 
+  it("fails closed when a non-empty plan is started without secret material", async () => {
+    const processRunner = new FakeProcessRunner()
+    const runtime = new GVisorBackendRuntimeProcess({ processRunner })
+
+    await expect(
+      runtime.start(
+        fakeWorkspace(bundleDir, "127.0.0.1"),
+        { ...secretPlan, internalPort: port },
+        null,
+      ),
+    ).rejects.toThrow(/does not match/)
+    expect(processRunner.calls).toEqual([])
+  })
+
+  it("fails closed when secret material does not exactly match the plan names", async () => {
+    const processRunner = new FakeProcessRunner()
+    const runtime = new GVisorBackendRuntimeProcess({ processRunner })
+
+    await expect(
+      runtime.start(
+        fakeWorkspace(bundleDir, "127.0.0.1"),
+        { ...secretPlan, internalPort: port },
+        {
+          runtimeId: "job-backend",
+          values: new Map([
+            ["JWT_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+          ]),
+        },
+      ),
+    ).rejects.toThrow(/does not match/)
+    expect(processRunner.calls).toEqual([])
+  })
+
+  it("fails closed when an empty plan receives secret material", async () => {
+    const processRunner = new FakeProcessRunner()
+    const runtime = new GVisorBackendRuntimeProcess({ processRunner })
+
+    await expect(
+      runtime.start(
+        fakeWorkspace(bundleDir, "127.0.0.1"),
+        { ...plan, internalPort: port },
+        {
+          runtimeId: "job-backend",
+          values: new Map([
+            ["SESSION_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+          ]),
+        },
+      ),
+    ).rejects.toThrow(/does not match/)
+    expect(processRunner.calls).toEqual([])
+  })
+
   it("cleans secret material when OCI bundle creation fails", async () => {
     const processRunner = new FakeProcessRunner()
     const generatedSecretFilesystem = new TmpfsGeneratedSecretFilesystem({
@@ -464,7 +521,7 @@ describe("GVisorBackendRuntimeProcess", () => {
     await expect(
       runtime.start(
         fakeWorkspace(path.join(bundleDir, "missing"), "127.0.0.1"),
-        { ...plan, internalPort: port },
+        { ...secretPlan, internalPort: port },
         secrets,
       ),
     ).rejects.toThrow()
@@ -493,7 +550,7 @@ describe("GVisorBackendRuntimeProcess", () => {
     await expect(
       runtime.start(
         fakeWorkspace(bundleDir, "127.0.0.1"),
-        { ...plan, internalPort: port },
+        { ...secretPlan, internalPort: port },
         otherMaterial,
       ),
     ).rejects.toThrow(/does not match/)
@@ -521,7 +578,7 @@ describe("GVisorBackendRuntimeProcess", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined)
     const handle = await runtime.start(
       fakeWorkspace(bundleDir, "127.0.0.1"),
-      { ...plan, internalPort: port },
+      { ...secretPlan, internalPort: port },
       {
         runtimeId: "job-backend",
         values: new Map([

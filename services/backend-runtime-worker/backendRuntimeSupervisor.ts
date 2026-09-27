@@ -25,11 +25,13 @@ import type {
   SourceArchiveFetcher,
 } from "../preview-worker/ports"
 import { BackendRuntimeReadinessTimeoutError } from "../preview-worker/gvisor/backendRuntimeProcess"
+import type { GeneratedSecretMaterial } from "../../types/backendRuntimeSecrets"
 import type {
   BackendRuntimeProcessStarter,
   RuntimeProcessHandle,
 } from "./ports"
 import type { LiveBackendRuntimeRouteRegistry } from "./liveRuntimeRegistry"
+import type { BackendRuntimeSecretBroker } from "./secretBroker"
 
 export interface BackendRuntimeSupervisorOptions {
   archiveLimits?: ArchiveLimits
@@ -38,6 +40,9 @@ export interface BackendRuntimeSupervisorOptions {
   cancellationPollMs?: number
   monitorPollMs?: number
   cleanup?: (runtimeId: string) => void | Promise<void>
+  /** Optional until production deliberately activates generated secrets.
+   * A non-empty plan fails closed when this dependency is absent. */
+  secretBroker?: BackendRuntimeSecretBroker
 }
 
 export interface BackendRuntimeRunOptions {
@@ -86,14 +91,26 @@ export class BackendRuntimeSupervisor {
     queued: QueuedBackendRuntime,
     options: BackendRuntimeRunOptions = {},
   ): Promise<void> {
-    options.signal?.throwIfAborted()
-    if (
-      !(await this.controlPlane.startWorkerRuntime(
+    try {
+      options.signal?.throwIfAborted()
+    } catch (error) {
+      this.discardSecretMaterial(queued.runtimeId)
+      throw error
+    }
+
+    let started: boolean
+    try {
+      started = await this.controlPlane.startWorkerRuntime(
         queued.runtimeId,
         options.recovered,
         options.abandon,
-      ))
-    ) {
+      )
+    } catch (error) {
+      this.discardSecretMaterial(queued.runtimeId)
+      throw error
+    }
+    if (!started) {
+      this.discardSecretMaterial(queued.runtimeId)
       return
     }
 
@@ -175,6 +192,9 @@ export class BackendRuntimeSupervisor {
       // exit noticed by monitorWhileRunning). Idempotent and safe even if
       // this runtimeId was never registered.
       this.liveRuntimeRegistry.unregister(queued.runtimeId)
+      // Broker cleanup is unconditional and best-effort. A bookkeeping
+      // failure must never prevent process/container/workspace teardown.
+      this.discardSecretMaterial(queued.runtimeId)
       stopped = true
       clearTimeout(poll)
       await checking
@@ -221,11 +241,9 @@ export class BackendRuntimeSupervisor {
       ),
     )
     await this.controlPlane.markPhase(runtimeId, "starting")
+    const secrets = this.issueAndTakeGeneratedSecrets(runtimeId, plan)
     const handle = await runPhase("RUNTIME_START_FAILED", () =>
-      // M10-B adds the delivery capability only. Broker issuance/take and
-      // eligibility wiring remain later work, so production is explicitly
-      // secret-free here.
-      this.runtimeProcessStarter.start(workspace, plan, null),
+      this.runtimeProcessStarter.start(workspace, plan, secrets),
     )
 
     try {
@@ -251,6 +269,42 @@ export class BackendRuntimeSupervisor {
     this.liveRuntimeRegistry.register(runtimeId, handle.dialTarget)
     await this.controlPlane.markPhase(runtimeId, "running")
     return handle
+  }
+
+  private issueAndTakeGeneratedSecrets(
+    runtimeId: string,
+    plan: ReturnType<typeof validateBackendRuntimePlan>,
+  ): GeneratedSecretMaterial | null {
+    if (plan.generatedSecretNames.length === 0) return null
+
+    const broker = this.options.secretBroker
+    if (!broker) throw secretUnavailableError()
+
+    try {
+      // Deliberately ignore issue()'s return value: only destructive take()
+      // may supply the process-starter argument.
+      broker.issue(runtimeId, plan.generatedSecretNames)
+      const material = broker.take(runtimeId)
+      if (
+        !material ||
+        material.runtimeId !== runtimeId ||
+        material.values.size !== plan.generatedSecretNames.length ||
+        plan.generatedSecretNames.some((name) => !material.values.has(name))
+      ) {
+        throw new Error("Generated-secret material did not match its plan.")
+      }
+      return material
+    } catch {
+      throw secretUnavailableError()
+    }
+  }
+
+  private discardSecretMaterial(runtimeId: string): void {
+    try {
+      this.options.secretBroker?.discard(runtimeId)
+    } catch {
+      // Do not expose material or internal broker state while cleaning up.
+    }
   }
 
   private async install(
@@ -465,4 +519,11 @@ function runPhaseSync<T>(code: BackendRuntimeErrorCode, action: () => T): T {
 
 function phaseErrorCode(error: unknown): BackendRuntimeErrorCode {
   return error instanceof RuntimePhaseError ? error.code : "RUNTIME_UNAVAILABLE"
+}
+
+function secretUnavailableError(): RuntimePhaseError {
+  return new RuntimePhaseError(
+    "SECRET_UNAVAILABLE",
+    new Error("Generated-secret material is unavailable."),
+  )
 }

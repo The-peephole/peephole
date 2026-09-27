@@ -753,9 +753,10 @@ database support) remain out of scope and have not started.
 
 ## D-032 - Ephemeral secrets (M10): generated-only first slice, delivered outside the OCI `process.env`/`config.json` path
 
-**Status:** Proposed -- M10-A/M10-B foundations are implemented, but the
-feature is not wired, enabled, accepted, or real-host verified. M10 remains
-unchecked in docs/MVP_ROADMAP.md.
+**Status:** Proposed -- M10-A/M10-B foundations and M10-C1/M10-C2 internal
+contracts are implemented, but the feature is not eligible, production
+activated, accepted, or real-host verified. M10 remains unchecked in
+docs/MVP_ROADMAP.md.
 
 An audit of the actual M9 data flow found that `BackendRuntimePlan.platformEnvironment`
 (`types/backendRuntime.ts`) is serialized verbatim into the OCI spec's
@@ -833,3 +834,22 @@ rejects every `preview-generated-candidate` requirement. No broker orchestration
 secret-filesystem activation, public HTTP field, PostgreSQL/FullStack durable
 field, or production activation was added. Real-gVisor verification remains
 pending and M10 remains incomplete.
+
+**M10-C2 internal orchestration status (still not Accepted):** an optionally
+injected broker now lets `BackendRuntimeSupervisor` fail closed for synthetic,
+already-validated non-empty plans. At the START boundary the supervisor calls
+`issue(runtimeId, names)` once, calls destructive `take(runtimeId)` once,
+validates the returned material against the runtime and requested names, and
+passes only that material to `BackendRuntimeProcessStarter`; the process
+starter remains responsible only for tmpfs/OCI/bootstrap delivery. Missing or
+stale material, a missing broker, and equivalent broker lifecycle failures map
+to the public-safe `SECRET_UNAVAILABLE` category. Broker discard is attempted
+on every supervisor exit and cannot block runtime/workspace teardown.
+
+This remains an internal, unreachable production path: real GitHub admission
+still emits only `generatedSecretNames: []`, `preview-generated-candidate`
+eligibility remains blocked, and `services/production/server.ts` constructs no
+broker or generated-secret filesystem/reaper/preflight activation. FullStack
+durable/public schemas and backend egress are unchanged. Real-gVisor
+verification and production deployment remain pending; D-032 remains Proposed
+and M10 remains incomplete.
