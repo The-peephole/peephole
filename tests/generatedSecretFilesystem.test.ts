@@ -237,10 +237,8 @@ describe("GeneratedSecretOrphanReaper", () => {
       verifyMemoryBackedRoot: async () => undefined,
     })
 
-    await expect(reaper.reapAll()).resolves.toEqual([
-      "runtime-1111",
-      "runtime-2222",
-    ])
+    const removed = await reaper.reapAll()
+    expect([...removed].sort()).toEqual(["runtime-1111", "runtime-2222"])
     await expect(
       readFile(path.join(secretRoot, "operator-note"), "utf8"),
     ).resolves.toBe("keep")
