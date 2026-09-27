@@ -1,5 +1,7 @@
 import { BACKEND_RUNTIME_CONTRACT_VERSION } from "../../types/backendRuntime"
 import type { BackendRuntimePlan } from "../../types/backendRuntime"
+import { PREVIEW_GENERATED_SECRET_NAMES } from "../../types/backendRuntimeSecrets"
+import { isEligiblePreviewGeneratedSecretName } from "../backendSecrets/generatedSecretPolicy"
 import { validateRepositoryRef } from "./buildPlan"
 import { isSafePreviewSourceRoot } from "./sourceRoot"
 
@@ -107,8 +109,42 @@ export function validateBackendRuntimePlan(
   }
 
   validatePlatformEnvironment(value.platformEnvironment, value.internalPort)
+  validateGeneratedSecretNames(value.generatedSecretNames)
 
   return value
+}
+
+function validateGeneratedSecretNames(
+  value: BackendRuntimePlan["generatedSecretNames"],
+): void {
+  if (!Array.isArray(value)) {
+    throw new InvalidBackendRuntimePlanError(
+      "Backend runtime generated secret names must be an array.",
+    )
+  }
+  if (value.length > PREVIEW_GENERATED_SECRET_NAMES.length) {
+    throw new InvalidBackendRuntimePlanError(
+      "Backend runtime generated secret names exceed the fixed allowlist size.",
+    )
+  }
+
+  const seen = new Set<string>()
+  for (const name of value) {
+    if (
+      typeof name !== "string" ||
+      !isEligiblePreviewGeneratedSecretName(name)
+    ) {
+      throw new InvalidBackendRuntimePlanError(
+        "Backend runtime generated secret name is not allowlisted.",
+      )
+    }
+    if (seen.has(name)) {
+      throw new InvalidBackendRuntimePlanError(
+        "Backend runtime generated secret names must not contain duplicates.",
+      )
+    }
+    seen.add(name)
+  }
 }
 
 function isSafeExecutableEntrypoint(entrypoint: unknown): entrypoint is string {

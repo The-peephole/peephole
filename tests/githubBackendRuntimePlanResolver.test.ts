@@ -61,6 +61,7 @@ describe("GitHubBackendRuntimePlanResolver", () => {
     await expect(resolver.resolve(repository, ".")).resolves.toMatchObject({
       packageManager: "npm",
       start: { command: "node", args: ["src/server.js"] },
+      generatedSecretNames: [],
     })
   })
 

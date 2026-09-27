@@ -62,6 +62,7 @@ describe("resolveBackendRuntimePlan", () => {
       install: { command: "npm", args: ["ci", "--no-audit", "--no-fund"] },
       start: { command: "node", args: ["src/server.js"] },
       platformEnvironment: { HOST: "0.0.0.0", NODE_ENV: "production" },
+      generatedSecretNames: [],
     })
   })
 
@@ -204,6 +205,12 @@ describe("resolveBackendRuntimePlan", () => {
       "NODE_ENV",
       "PORT",
     ])
+  })
+
+  it("keeps generated-secret names empty on the currently reachable admission path", () => {
+    const plan = resolveBackendRuntimePlan(repository, candidate())
+
+    expect(plan?.generatedSecretNames).toEqual([])
   })
 
   it("requires an exact 40-character commit SHA in the repository ref", () => {

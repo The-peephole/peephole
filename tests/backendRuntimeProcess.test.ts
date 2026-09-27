@@ -40,6 +40,7 @@ const plan: BackendRuntimePlan = {
     HOST: "0.0.0.0",
     NODE_ENV: "production",
   },
+  generatedSecretNames: [],
 }
 
 class FakeProcessRunner implements ProcessRunner {

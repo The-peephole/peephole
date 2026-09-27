@@ -1,4 +1,5 @@
 import type { PreviewRepositoryRef } from "./preview"
+import type { PreviewGeneratedSecretName } from "./backendRuntimeSecrets"
 
 /**
  * `backend-v1` is a fully separate execution contract from
@@ -38,6 +39,13 @@ export interface BackendRuntimePlan {
     HOST: string
     NODE_ENV: string
   }
+  /**
+   * Server-derived names only, never secret values. This may safely travel
+   * with the process-local plan/queue so later orchestration can determine
+   * which generated material is required. Values must never be added to this
+   * type. An empty array means no generated secrets are required.
+   */
+  generatedSecretNames: readonly PreviewGeneratedSecretName[]
 }
 
 export type BackendRuntimeStatus =

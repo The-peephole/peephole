@@ -33,6 +33,7 @@ const plan: BackendRuntimePlan = {
     HOST: "0.0.0.0",
     NODE_ENV: "production",
   },
+  generatedSecretNames: [],
 }
 
 function compose(
@@ -76,6 +77,7 @@ describe("createBackendRuntimeHttpHandler", () => {
 
     expect(response.status).toBe(202)
     expect(JSON.stringify(response.body).toLowerCase()).not.toContain("url")
+    expect(JSON.stringify(response.body)).not.toContain("generatedSecretNames")
   })
 
   it("gets and cancels a runtime by id", async () => {

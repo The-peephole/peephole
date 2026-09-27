@@ -1,10 +1,12 @@
 # Ephemeral Environment / Secrets (M10) — Design
 
-**Status: Partially implemented -- M10-A and M10-B foundations only.** The
-generated-material policy/broker and the secret-free OCI injection primitives
+**Status: Partially implemented -- M10-A, M10-B, and the M10-C1 names-only
+plan-contract foundation only.** Generated-material policy/broker,
+secret-free OCI injection primitives, and strict names-only plan validation
 now exist, but orchestration wiring, generated-secret eligibility relaxation,
-and real-gVisor production verification remain pending. The production
-supervisor explicitly passes no secret material, D-032 remains Proposed, and
+production activation, and real-gVisor verification remain pending. Reachable
+plans still contain `generatedSecretNames: []`; the production supervisor
+explicitly passes no secret material, D-032 remains Proposed, and
 `docs/MVP_ROADMAP.md` stage 10 remains unchecked.
 
 This never relaxes `SECRET_ENV_REQUIRED`/`BACKEND_REQUIRED` for the static
@@ -568,6 +570,13 @@ bounded array (≤ 4, matching the fixed allowlist size), every element in the
 fixed set, no duplicates — the same "narrowest possible allowlist" style
 already used there.
 
+**M10-C1 implementation status:** this names-only field and validation now
+exist. The currently reachable adapter always emits `generatedSecretNames: []`
+and still rejects every non-`auto-configurable` environment requirement, so a
+repository declaring `preview-generated-candidate` remains ineligible. Broker
+orchestration, production activation, and real-gVisor verification remain
+pending.
+
 ### Bounds (env-name and value safety)
 
 A name is only ever accepted when it simultaneously:
@@ -599,7 +608,7 @@ user-supplied phase):
 
 | Bound | Value |
 |---|---|
-| Max secret count per runtime | 8 (headroom over today's 4-name allowlist) |
+| Max secret count per runtime | 4 (current fixed allowlist size) |
 | Max variable name length | 64 bytes |
 | Max individual value size | 4096 bytes |
 | Max total secret bytes per runtime | 16 KiB |

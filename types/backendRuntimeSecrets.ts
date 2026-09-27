@@ -18,7 +18,7 @@
  */
 
 /** Deliberately a literal list, never derived from a regex -- the only
- * names a *future* (not yet implemented) generation step may ever produce.
+ * names any generated-secret step may ever produce.
  * See docs/EPHEMERAL_SECRETS.md section 5 for why this stays fixed. */
 export const PREVIEW_GENERATED_SECRET_NAMES = [
   "JWT_SECRET",
@@ -52,12 +52,13 @@ export interface OpaqueSecretValue {
 }
 
 /**
- * Server-only, process-memory-only. Never added to
+ * Server-only, process-memory-only. The material itself is never added to
  * `CreateBackendRuntimeRequest`, `BackendRuntimePlan`, `QueuedBackendRuntime`,
  * `BackendRuntime`'s public shape, or any type that crosses an HTTP response
- * or a durable (PostgreSQL / in-memory *store*) record. It is held by the
- * process-local broker and, once consumed in a later phase, may cross only
- * the internal process-starter/tmpfs injection boundary.
+ * or a durable (PostgreSQL / in-memory *store*) record. A plan may contain
+ * only validated generated-secret *names*, never this value-bearing object.
+ * Material is held by the process-local broker and, once consumed in a later
+ * phase, may cross only the internal process-starter/tmpfs injection boundary.
  */
 export interface GeneratedSecretMaterial {
   readonly runtimeId: string
