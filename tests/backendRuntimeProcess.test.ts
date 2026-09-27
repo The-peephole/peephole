@@ -65,12 +65,22 @@ class FakeProcessRunner implements ProcessRunner {
     stderr: "",
   }
   killThrows = false
+  /** Models whether the sandboxed process actually reacts to the delivered
+   * signal. Real SIGKILL always does; a test proving SIGTERM's bounded grace
+   * period sets this to false to model a process that never exits on its
+   * own, so `stop()` must still reach `delete --force` within the configured
+   * grace bound rather than hanging. */
+  killResolvesRun = true
 
   async run(command: string, args: string[]): Promise<ProcessRunResult> {
     this.calls.push({ command, args })
     if (args.includes("kill")) {
       if (this.killThrows) throw new Error("kill failed")
-      if (this.killResult.exitCode === 0 && !this.killResult.timedOut) {
+      if (
+        this.killResolvesRun &&
+        this.killResult.exitCode === 0 &&
+        !this.killResult.timedOut
+      ) {
         this.runResolve?.({
           exitCode: 137,
           timedOut: false,
@@ -283,6 +293,61 @@ describe("GVisorBackendRuntimeProcess", () => {
     expect(
       processRunner.calls.filter((call) => call.args.includes("delete")),
     ).toHaveLength(1)
+  })
+
+  it("stop() sends SIGTERM, not SIGKILL, so the trusted secret bootstrap can forward it", async () => {
+    const processRunner = new FakeProcessRunner()
+    const runtime = new GVisorBackendRuntimeProcess({ processRunner })
+    const handle = await runtime.start(fakeWorkspace(bundleDir, "127.0.0.1"), {
+      ...plan,
+      internalPort: port,
+    })
+
+    await handle.stop()
+
+    const killCall = processRunner.calls.find((call) =>
+      call.args.includes("kill"),
+    )
+    expect(killCall?.args).toContain("SIGTERM")
+    expect(killCall?.args).not.toContain("SIGKILL")
+  })
+
+  it("does not wait the full grace period once the process exits promptly", async () => {
+    const processRunner = new FakeProcessRunner()
+    const runtime = new GVisorBackendRuntimeProcess({
+      processRunner,
+      stopGraceMs: 5_000,
+    })
+    const handle = await runtime.start(fakeWorkspace(bundleDir, "127.0.0.1"), {
+      ...plan,
+      internalPort: port,
+    })
+
+    const startedAt = Date.now()
+    await handle.stop()
+
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+  })
+
+  it("still force-deletes after a bounded grace period when the process never exits", async () => {
+    const processRunner = new FakeProcessRunner()
+    processRunner.killResolvesRun = false
+    const runtime = new GVisorBackendRuntimeProcess({
+      processRunner,
+      stopGraceMs: 20,
+    })
+    const handle = await runtime.start(fakeWorkspace(bundleDir, "127.0.0.1"), {
+      ...plan,
+      internalPort: port,
+    })
+
+    const startedAt = Date.now()
+    await handle.stop()
+
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(20)
+    expect(
+      processRunner.calls.some((call) => call.args.includes("delete")),
+    ).toBe(true)
   })
 
   it.each([

@@ -1,4 +1,13 @@
-import { lstat, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import {
+  lstat,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises"
 import { createServer, get as httpGet } from "node:http"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
@@ -7,8 +16,13 @@ import {
   DEFAULT_ARCHIVE_LIMITS,
   validateFetchedArchive,
 } from "../core/runner/archivePolicy"
+import { generatePreviewSecretValue } from "../core/backendSecrets/generatedSecretValue"
 import type { RuntimeProcessHandle } from "../services/backend-runtime-worker/ports"
+import { InMemoryBackendRuntimeSecretBroker } from "../services/backend-runtime-worker/secretBroker"
 import { GVisorBackendRuntimeProcess } from "../services/preview-worker/gvisor/backendRuntimeProcess"
+import type { GeneratedSecretFilesystem } from "../services/preview-worker/gvisor/generatedSecretFilesystem"
+import { TmpfsGeneratedSecretFilesystem } from "../services/preview-worker/gvisor/generatedSecretFilesystem"
+import { GeneratedSecretOrphanReaper } from "../services/preview-worker/gvisor/generatedSecretOrphanReaper"
 import { GVisorOrphanReaper } from "../services/preview-worker/gvisor/gvisorOrphanReaper"
 import { GVisorSandboxProvisioner } from "../services/preview-worker/gvisor/gvisorSandboxProvisioner"
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
@@ -19,6 +33,8 @@ import { RunscCommandRunner } from "../services/preview-worker/gvisor/runscComma
 import { LoopbackSandboxDiskManager } from "../services/preview-worker/gvisor/sandboxDisk"
 import {
   SANDBOX_GID,
+  SANDBOX_NODE_BINARY,
+  SANDBOX_SECRET_BOOTSTRAP,
   SANDBOX_UID,
 } from "../services/preview-worker/gvisor/sandboxIdentity"
 import {
@@ -30,6 +46,8 @@ import { ExtractionState } from "../services/preview-worker/local/extractionStat
 import { GitHubCommitArchiveFetcher } from "../services/preview-worker/local/githubCommitArchiveFetcher"
 import { minimalNpmEnv } from "../services/preview-worker/local/npmDependencyInstaller"
 import type { BackendRuntimePlan } from "../types/backendRuntime"
+import { scanRegularFilesForRawValue } from "./support/boundedRawValueScanner"
+import { createRealGeneratedSecretTestRoot } from "./support/realGeneratedSecretTestRoot"
 import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 
 const FIXTURE_COMMIT = "eae411a288b212201933cebb206126dd5bb0d93e"
@@ -112,15 +130,30 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
 
     async function createEnvironment(
       prefix: string,
-      options: { staleNetworkOwner?: boolean } = {},
+      options: {
+        staleNetworkOwner?: boolean
+        /** Dedicated per-test runsc state root instead of the shared
+         * production-default `RUNSC_ROOT_DIR`. Generated-secret persistence
+         * inspection reads this directory's contents directly, so it must
+         * contain only state this one test created -- never production's or
+         * another test's containers. */
+        dedicatedRunscRoot?: boolean
+        generatedSecretFilesystem?: GeneratedSecretFilesystem
+      } = {},
     ): Promise<RealBackendEnvironment> {
       const rootDir = await createRealGvisorTestDirectory(prefix)
       ownedRoots.add(rootDir)
       const bundlesRootDir = path.join(rootDir, "bundles")
       const leaseDir = path.join(rootDir, "network-leases")
+      const runscRootDir = options.dedicatedRunscRoot
+        ? path.join(rootDir, "runsc")
+        : RUNSC_ROOT_DIR
       await Promise.all([
         mkdir(bundlesRootDir, { recursive: true }),
         mkdir(leaseDir, { recursive: true }),
+        ...(options.dedicatedRunscRoot
+          ? [mkdir(runscRootDir, { recursive: true })]
+          : []),
       ])
 
       const processRunner = new NodeProcessRunner()
@@ -140,21 +173,22 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
       })
       const sandboxProvisioner = new GVisorSandboxProvisioner({
         baseRootfsImage,
-        runscRootDir: RUNSC_ROOT_DIR,
+        runscRootDir,
         processRunner,
         networkProvisioner,
         diskManager,
       })
       const runtimeStarter = new GVisorBackendRuntimeProcess({
-        runscRootDir: RUNSC_ROOT_DIR,
+        runscRootDir,
         processRunner,
         maxRuntimeMs: 120_000,
+        generatedSecretFilesystem: options.generatedSecretFilesystem,
       })
 
       const environment = {
         rootDir,
         bundlesRootDir,
-        runscRootDir: RUNSC_ROOT_DIR,
+        runscRootDir,
         processRunner,
         leaseManager,
         networkProvisioner,
@@ -164,6 +198,25 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
       }
       environments.set(rootDir, environment)
       return environment
+    }
+
+    async function createEnvironmentWithSecrets(prefix: string): Promise<
+      RealBackendEnvironment & {
+        secretTestRoot: string
+      }
+    > {
+      const secretTestRoot = await createRealGeneratedSecretTestRoot()
+      // No verifyMemoryBackedRoot/setOwnership/setMode overrides: this must
+      // exercise the real `findmnt`-backed tmpfs check and real chown/chmod,
+      // the same as production, not the portable-test fakes.
+      const secretFilesystem = new TmpfsGeneratedSecretFilesystem({
+        rootDir: secretTestRoot,
+      })
+      const environment = await createEnvironment(prefix, {
+        dedicatedRunscRoot: true,
+        generatedSecretFilesystem: secretFilesystem,
+      })
+      return { ...environment, secretTestRoot }
     }
 
     it("runs the pinned Express fixture with host ingress, denied egress, and complete idempotent cleanup", async () => {
@@ -509,6 +562,245 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
       // fresh reapers above are the only owners that performed cleanup.
       void handle
     }, 90_000)
+
+    it("injects real generated secret material through the trusted bootstrap, keeps it out of persisted OCI/argv/runsc state, forwards SIGTERM through PID 1, and cleans tmpfs after stop", async () => {
+      const runtimeId = "real-backend-secret"
+      const environment = await createEnvironmentWithSecrets(
+        "peephole-real-backend-secret-",
+      )
+      const { secretTestRoot } = environment
+      const workspaces: GVisorPreviewWorkspace[] = []
+      const handles: RuntimeProcessHandle[] = []
+
+      try {
+        const workspace =
+          await environment.sandboxProvisioner.allocate(runtimeId)
+        workspaces.push(workspace)
+        await writeFile(
+          path.join(workspace.rootDir, "secret-check-server.js"),
+          secretCheckServerScript,
+        )
+        const network = await workspace.ensureIngressOnlyNetworkNamespace()
+
+        const broker = new InMemoryBackendRuntimeSecretBroker()
+        broker.issue(runtimeId, ["SESSION_SECRET"])
+        const material = broker.take(runtimeId)
+        if (!material) {
+          throw new Error("Expected freshly issued generated secret material.")
+        }
+        const opaqueValue = material.values.get("SESSION_SECRET")
+        if (!opaqueValue) {
+          throw new Error("Expected a generated SESSION_SECRET value.")
+        }
+        const rawValue = opaqueValue.reveal()
+        if (rawValue.length === 0) {
+          throw new Error("Generated SESSION_SECRET value was empty.")
+        }
+        const expectedSha256 = createHash("sha256")
+          .update(rawValue, "utf8")
+          .digest("hex")
+
+        const handle = await environment.runtimeStarter.start(
+          workspace,
+          secretPlanFor("secret-check-server.js"),
+          material,
+        )
+        handles.push(handle)
+        await handle.waitUntilReady(30_000)
+
+        // --- 5. Prove the child received the value, only as a digest. ---
+        const check = await getJson(
+          network.peerIp,
+          fixturePlan.internalPort,
+          "/secret-check",
+        )
+        const body = check.body as { configured?: boolean; sha256?: unknown }
+        expect(check.statusCode).toBe(200)
+        expect(body.configured).toBe(true)
+        expect(body.sha256).toBe(expectedSha256)
+
+        // --- 6. Inspect OCI config.json structurally. ---
+        const bundleDir = workspace.bundleDir
+        const serialized = await readFile(
+          path.join(bundleDir, "config.json"),
+          "utf8",
+        )
+        const config = JSON.parse(serialized) as {
+          process: { env: string[]; args: string[] }
+          mounts: Array<{
+            destination: string
+            type: string
+            source: string
+            options: string[]
+          }>
+        }
+        expect(serialized.includes(rawValue)).toBe(false)
+        expect(config.process.env).toEqual([
+          "PORT=3000",
+          "HOST=0.0.0.0",
+          "NODE_ENV=production",
+        ])
+        expect(config.process.args).toEqual([
+          SANDBOX_NODE_BINARY,
+          SANDBOX_SECRET_BOOTSTRAP,
+          "secret-check-server.js",
+        ])
+        expect(config.process.args.includes(rawValue)).toBe(false)
+        const secretMounts = config.mounts.filter(
+          (mount) => mount.destination === "/run/secrets",
+        )
+        expect(secretMounts).toEqual([
+          {
+            destination: "/run/secrets",
+            type: "bind",
+            source: path.join(secretTestRoot, runtimeId),
+            options: ["bind", "ro", "nosuid", "nodev", "noexec"],
+          },
+        ])
+
+        // --- 7. tmpfs material lifetime, while running. ---
+        const runtimeSecretDir = path.join(secretTestRoot, runtimeId)
+        const secretDirStats = await lstat(runtimeSecretDir)
+        expect(secretDirStats.isDirectory()).toBe(true)
+        expect(secretDirStats.mode & 0o777).toBe(0o700)
+        expect(secretDirStats.uid).toBe(SANDBOX_UID)
+        expect(secretDirStats.gid).toBe(SANDBOX_GID)
+        const secretFileStats = await lstat(path.join(runtimeSecretDir, "env"))
+        expect(secretFileStats.isFile()).toBe(true)
+        expect(secretFileStats.mode & 0o777).toBe(0o600)
+        expect(secretFileStats.uid).toBe(SANDBOX_UID)
+        expect(secretFileStats.gid).toBe(SANDBOX_GID)
+
+        // --- 9. runsc state raw-value non-persistence, while active. ---
+        // A thrown BoundedRawValueScanError (unreadable file/directory, or a
+        // bound that would be exceeded) fails this test outright rather than
+        // being swallowed into a false "clean" result -- `complete` is only
+        // ever `true` on a normal return, so this pair of assertions is the
+        // full proof the entire dedicated runsc root was inspected.
+        const activeScan = await scanRegularFilesForRawValue(
+          environment.runscRootDir,
+          rawValue,
+        )
+        expect(activeScan.complete).toBe(true)
+        expect(activeScan.found).toBe(false)
+
+        // --- 10. Narrow egress regression check for this variant. ---
+        const leases = await environment.leaseManager.listOwnedLeases()
+        const lease = requireIngressLease(leases, network.peerIp)
+        const defaultRoute = await runChecked(environment.processRunner, "ip", [
+          "-n",
+          lease.namespace,
+          "route",
+          "show",
+          "default",
+        ])
+        expect(defaultRoute.stdout.trim()).toBe("")
+
+        // --- 8. Real bootstrap PID-1 SIGTERM forwarding, via the real stop(). ---
+        await handle.stop()
+        await handle.stop()
+        await handle.waitForExit()
+        handles.splice(handles.indexOf(handle), 1)
+
+        const sentinelRaw = await readFile(
+          path.join(workspace.rootDir, "signal-forwarded.json"),
+          "utf8",
+        )
+        const sentinel = JSON.parse(sentinelRaw) as {
+          signal?: string
+          received?: boolean
+        }
+        expect(sentinel).toEqual({ signal: "SIGTERM", received: true })
+        expect(sentinelRaw.includes(rawValue)).toBe(false)
+
+        // --- 7 (continued). tmpfs material removed after stop. ---
+        await expect(lstat(runtimeSecretDir)).rejects.toThrow()
+
+        // --- 9 (continued). runsc state raw-value non-persistence, post-stop. ---
+        const postStopScan = await scanRegularFilesForRawValue(
+          environment.runscRootDir,
+          rawValue,
+        )
+        expect(postStopScan.complete).toBe(true)
+        expect(postStopScan.found).toBe(false)
+
+        await workspace.destroy()
+        workspaces.splice(workspaces.indexOf(workspace), 1)
+
+        process.stdout.write(
+          `[real-backend-v1-secret] ${JSON.stringify({
+            secretInjected: true,
+            configLeak: serialized.includes(rawValue),
+            argvLeak: config.process.args.includes(rawValue),
+            tmpfsCleanup: "passed",
+            signalForwarding: "passed",
+            runscValueLeak: activeScan.found || postStopScan.found,
+            egressRegression: "passed",
+          })}\n`,
+        )
+      } finally {
+        for (const handle of handles.reverse()) {
+          await handle.stop().catch(() => undefined)
+        }
+        for (const workspace of workspaces.reverse()) {
+          await workspace.destroy().catch(() => undefined)
+        }
+        await rm(secretTestRoot, { recursive: true, force: true })
+      }
+    }, 120_000)
+
+    it("boundedly reaps only a stale test-owned generated-secret directory from the real tmpfs root", async () => {
+      const secretTestRoot = await createRealGeneratedSecretTestRoot()
+      try {
+        const filesystem = new TmpfsGeneratedSecretFilesystem({
+          rootDir: secretTestRoot,
+        })
+        const staleRuntimeId = "real-secret-stale-aaaa"
+        const freshRuntimeId = "real-secret-fresh-bbbb"
+        await filesystem.create({
+          runtimeId: staleRuntimeId,
+          values: new Map([["SESSION_SECRET", generatePreviewSecretValue()]]),
+        })
+        await filesystem.create({
+          runtimeId: freshRuntimeId,
+          values: new Map([["SESSION_SECRET", generatePreviewSecretValue()]]),
+        })
+        const staleDir = path.join(secretTestRoot, staleRuntimeId)
+        const past = new Date(Date.now() - 60 * 60_000)
+        await utimes(staleDir, past, past)
+        // Name deliberately fails the runtime-id shape (contains "_"), so a
+        // bounded reap must never touch it even though it sits directly
+        // under the same root.
+        const unrelatedDir = path.join(secretTestRoot, "not_a_runtime_id")
+        await mkdir(unrelatedDir, { recursive: true })
+
+        const reaper = new GeneratedSecretOrphanReaper({
+          rootDir: secretTestRoot,
+          filesystem,
+          maxAgeMs: 30 * 60_000,
+        })
+        const removed = await reaper.reap()
+
+        expect(removed).toEqual([staleRuntimeId])
+        await expect(lstat(staleDir)).rejects.toThrow()
+        await expect(
+          lstat(path.join(secretTestRoot, freshRuntimeId)),
+        ).resolves.toBeTruthy()
+        await expect(lstat(unrelatedDir)).resolves.toBeTruthy()
+        await expect(lstat(secretTestRoot)).resolves.toBeTruthy()
+
+        process.stdout.write(
+          `[real-backend-v1-secret-reaper] ${JSON.stringify({
+            staleReaped: true,
+            freshPreserved: true,
+            unrelatedPreserved: true,
+            rootIntact: true,
+          })}\n`,
+        )
+      } finally {
+        await rm(secretTestRoot, { recursive: true, force: true })
+      }
+    }, 30_000)
   },
 )
 
@@ -556,6 +848,56 @@ fs.writeFileSync(
 )
 `
 }
+
+function secretPlanFor(entrypoint: string): BackendRuntimePlan {
+  return {
+    ...fixturePlan,
+    sourceRoot: ".",
+    start: { command: "node", args: [entrypoint] },
+    generatedSecretNames: ["SESSION_SECRET"],
+  }
+}
+
+/** CommonJS, matching minimalServerScript: this runs with sourceRoot "."
+ * (no package.json), which Node treats as CommonJS by default. Exposes only
+ * a non-reversible digest of the injected secret -- never the raw value --
+ * and writes a fixed, non-secret sentinel when it observes SIGTERM, proving
+ * the trusted bootstrap (`scripts/gvisor/secret-bootstrap.mjs`) actually
+ * forwarded a real signal from real runsc's PID 1. */
+const secretCheckServerScript = `
+const http = require("http")
+const crypto = require("crypto")
+const fs = require("fs")
+const port = Number(process.env.PORT)
+
+process.on("SIGTERM", () => {
+  try {
+    fs.writeFileSync(
+      "/workspace/signal-forwarded.json",
+      JSON.stringify({ signal: "SIGTERM", received: true }),
+    )
+  } finally {
+    process.exit(0)
+  }
+})
+
+const server = http.createServer((request, response) => {
+  if (request.url === "/secret-check") {
+    const value = process.env.SESSION_SECRET
+    response.writeHead(200, { "content-type": "application/json" })
+    if (typeof value !== "string" || value.length === 0) {
+      response.end(JSON.stringify({ configured: false }))
+      return
+    }
+    const sha256 = crypto.createHash("sha256").update(value, "utf8").digest("hex")
+    response.end(JSON.stringify({ configured: true, sha256 }))
+    return
+  }
+  response.writeHead(404)
+  response.end()
+})
+server.listen(port, "0.0.0.0")
+`
 
 function requireIngressLease(
   leases: readonly NetworkLease[],

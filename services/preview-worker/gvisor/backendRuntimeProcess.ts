@@ -66,6 +66,13 @@ export interface GVisorBackendRuntimeProcessOptions {
   /** Required only when `start()` receives generated material. Production
    * M10-B callers pass null and do not activate this path yet. */
   generatedSecretFilesystem?: GeneratedSecretFilesystem
+  /** Bounded window `stop()` gives the sandboxed process to exit on its own
+   * after a polite `SIGTERM` before the unconditional `runsc delete --force`
+   * backstop below proceeds regardless. Only a well-behaved process (or the
+   * trusted secret bootstrap forwarding the signal to one) benefits; a
+   * process that ignores or outlives it is still force-terminated by that
+   * backstop, so this can never turn into an unbounded hang. */
+  stopGraceMs?: number
 }
 
 /**
@@ -101,6 +108,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
   private readonly maxRuntimeMs: number
   private readonly maxProbeIntervalMs: number
   private readonly generatedSecretFilesystem?: GeneratedSecretFilesystem
+  private readonly stopGraceMs: number
 
   constructor(options: GVisorBackendRuntimeProcessOptions = {}) {
     this.runscBinaryPath = options.runscBinaryPath ?? "runsc"
@@ -112,6 +120,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     this.maxRuntimeMs = options.maxRuntimeMs ?? 15 * 60_000
     this.maxProbeIntervalMs = options.maxProbeIntervalMs ?? 1_000
     this.generatedSecretFilesystem = options.generatedSecretFilesystem
+    this.stopGraceMs = options.stopGraceMs ?? 5_000
   }
 
   async start(
@@ -280,11 +289,22 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         try {
           const killed = await this.processRunner.run(
             this.runscBinaryPath,
-            runscKillArgs({ runscRootDir: this.runscRootDir }, containerId),
+            runscKillArgs(
+              { runscRootDir: this.runscRootDir },
+              containerId,
+              "SIGTERM",
+            ),
             { timeoutMs: 10_000 },
           )
           if (killed.exitCode !== 0 || killed.timedOut) {
             killError = new Error("Backend runtime stop command failed.")
+          } else {
+            // A bounded chance for the trusted secret bootstrap (or a plain
+            // Node process) to catch SIGTERM and exit on its own. Racing
+            // against runPromise means a process that exits sooner does not
+            // pay the full grace window; one that never exits still hits the
+            // unconditional `delete --force` backstop below.
+            await Promise.race([runPromise, sleep(this.stopGraceMs)])
           }
         } catch {
           killError = new Error("Backend runtime stop command failed.")

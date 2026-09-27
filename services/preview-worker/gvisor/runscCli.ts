@@ -40,11 +40,23 @@ export function runscRunArgs(
   ]
 }
 
+/**
+ * Defaults to `SIGKILL` -- the right choice for every existing caller here
+ * (RunscCommandRunner's own timeout cancellation, GVisorSandboxProvisioner's
+ * workspace teardown, GVisorOrphanReaper's abandoned-container reclaim): none
+ * of them run a persistent server whose graceful shutdown matters, and an
+ * uncatchable signal guarantees the container dies before the caller moves
+ * on. `GVisorBackendRuntimeProcess.stop()` is the one caller that passes
+ * `SIGTERM` explicitly, since the trusted secret-bootstrap PID 1
+ * (`scripts/gvisor/secret-bootstrap.mjs`) can only forward a signal it is
+ * actually able to catch.
+ */
 export function runscKillArgs(
   global: RunscGlobalOptions,
   containerId: string,
+  signal: "SIGKILL" | "SIGTERM" = "SIGKILL",
 ): string[] {
-  return ["--root", global.runscRootDir, "kill", containerId, "SIGKILL"]
+  return ["--root", global.runscRootDir, "kill", containerId, signal]
 }
 
 export function runscDeleteArgs(
