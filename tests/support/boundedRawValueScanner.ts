@@ -53,6 +53,16 @@ export interface BoundedRawValueScanOptions {
   opendir?: (targetPath: string) => Promise<ScannedDirectory>
   lstat?: (targetPath: string) => Promise<{ size: number }>
   readFile?: (targetPath: string) => Promise<Buffer>
+  /** Exact, absolute, already-canonicalized paths this scan may skip
+   * without opening or reading -- never a predicate, never a name pattern.
+   * This scanner performs no classification of its own: a caller (such as
+   * realRunscStateInspection.ts) must have already proven, out of band,
+   * that each path here is not a data-bearing regular file (e.g. a genuine
+   * kernel namespace mount confirmed against `/proc/self/mountinfo`) before
+   * adding it. An excluded entry still counts toward the entry bound and
+   * toward `skippedStructuralExclusions`; nothing here weakens fail-closed
+   * behavior for any path not in this exact set. */
+  structuralExclusions?: ReadonlySet<string>
 }
 
 export interface BoundedRawValueScanResult {
@@ -60,6 +70,10 @@ export interface BoundedRawValueScanResult {
   scannedEntries: number
   scannedFiles: number
   scannedBytes: number
+  /** Entries matched against `structuralExclusions` and skipped without
+   * being opened or read. Distinct from `scannedFiles` -- an excluded entry
+   * is never counted as scanned, since its contents were never inspected. */
+  skippedStructuralExclusions: number
   /** Always `true` when this function returns normally -- a scan that
    * cannot be completed within its bounds throws instead of returning
    * `complete: false`, so there is no partial-result shape a caller could
@@ -90,11 +104,13 @@ export async function scanRegularFilesForRawValue(
   const doOpendir = options.opendir ?? ((p: string) => fsOpendir(p))
   const doLstat = options.lstat ?? ((p: string) => fsLstat(p))
   const doReadFile = options.readFile ?? ((p: string) => fsReadFile(p))
+  const structuralExclusions = options.structuralExclusions ?? new Set<string>()
 
   const needle = Buffer.from(rawValue, "utf8")
   let scannedEntries = 0
   let scannedFiles = 0
   let scannedBytes = 0
+  let skippedStructuralExclusions = 0
   let found = false
   const pending: string[] = [rootDir]
 
@@ -126,6 +142,15 @@ export async function scanRegularFilesForRawValue(
           continue
         }
         if (!entry.isFile()) continue
+
+        // Only ever an exact-path match against a set the caller populated
+        // out of band with already-proven, non-data-bearing paths (e.g. a
+        // confirmed kernel namespace mount) -- never a name or pattern
+        // check, and never a reason to skip anything else under this root.
+        if (structuralExclusions.has(path.resolve(full))) {
+          skippedStructuralExclusions += 1
+          continue
+        }
 
         let size: number
         try {
@@ -166,5 +191,12 @@ export async function scanRegularFilesForRawValue(
     }
   }
 
-  return { found, scannedEntries, scannedFiles, scannedBytes, complete: true }
+  return {
+    found,
+    scannedEntries,
+    scannedFiles,
+    scannedBytes,
+    skippedStructuralExclusions,
+    complete: true,
+  }
 }
