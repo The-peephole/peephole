@@ -121,6 +121,7 @@ describe("scanRegularFilesForRawValue", () => {
           scannedEntries: 1,
           scannedFiles: 0,
           scannedBytes: 0,
+          skippedStructuralExclusions: 0,
           complete: true,
         })
       })
@@ -140,6 +141,7 @@ describe("scanRegularFilesForRawValue", () => {
           scannedEntries: 1,
           scannedFiles: 0,
           scannedBytes: 0,
+          skippedStructuralExclusions: 0,
           complete: true,
         })
       })
@@ -162,6 +164,7 @@ describe("scanRegularFilesForRawValue", () => {
       scannedEntries: 1,
       scannedFiles: 0,
       scannedBytes: 0,
+      skippedStructuralExclusions: 0,
       complete: true,
     })
     expect(readFile).not.toHaveBeenCalled()
@@ -252,6 +255,92 @@ describe("scanRegularFilesForRawValue", () => {
 
       expect(thrown).toBeInstanceOf(BoundedRawValueScanError)
       expect(String(thrown)).not.toContain(MARKER)
+    })
+  })
+
+  describe("structuralExclusions", () => {
+    it("skips an exact excluded path without opening or reading it", async () => {
+      await withTempDir(async (root) => {
+        const excludedPath = path.join(root, "null-netns")
+        await writeFile(excludedPath, MARKER)
+        await writeFile(path.join(root, "other.txt"), "clean")
+
+        const result = await scanRegularFilesForRawValue(root, MARKER, {
+          structuralExclusions: new Set([path.resolve(excludedPath)]),
+        })
+
+        expect(result).toEqual({
+          found: false,
+          scannedEntries: 2,
+          scannedFiles: 1,
+          scannedBytes: 5,
+          skippedStructuralExclusions: 1,
+          complete: true,
+        })
+      })
+    })
+
+    it("never skips a same-named entry that is not in the exact exclusion set", async () => {
+      await withTempDir(async (root) => {
+        await writeFile(path.join(root, "null-netns"), MARKER)
+
+        const result = await scanRegularFilesForRawValue(root, MARKER, {
+          structuralExclusions: new Set([
+            path.resolve(root, "not-the-same-file"),
+          ]),
+        })
+
+        expect(result).toEqual({
+          found: true,
+          scannedEntries: 1,
+          scannedFiles: 1,
+          scannedBytes: MARKER.length,
+          skippedStructuralExclusions: 0,
+          complete: true,
+        })
+      })
+    })
+
+    it("never skips an unrelated file merely because some other exclusion is configured", async () => {
+      await withTempDir(async (root) => {
+        const excludedPath = path.join(root, "null-netns")
+        await writeFile(excludedPath, "clean")
+        await writeFile(path.join(root, "unrelated.txt"), MARKER)
+
+        const result = await scanRegularFilesForRawValue(root, MARKER, {
+          structuralExclusions: new Set([path.resolve(excludedPath)]),
+        })
+
+        expect(result.found).toBe(true)
+        expect(result.skippedStructuralExclusions).toBe(1)
+        expect(result.scannedFiles).toBe(1)
+      })
+    })
+
+    it("still fails closed on an unreadable file that is not in the exclusion set", async () => {
+      const opendir = vi.fn(() =>
+        Promise.resolve(
+          fakeDirectory([
+            fakeEntry("null-netns", "file"),
+            fakeEntry("other-unreadable", "file"),
+          ]),
+        ),
+      )
+      const lstat = vi.fn((targetPath: string) =>
+        targetPath.endsWith("other-unreadable")
+          ? Promise.reject(new Error("EACCES"))
+          : Promise.resolve({ size: 0 }),
+      )
+      const readFile = vi.fn(() => Promise.resolve(Buffer.alloc(0)))
+
+      await expect(
+        scanRegularFilesForRawValue("/root", MARKER, {
+          opendir,
+          lstat,
+          readFile,
+          structuralExclusions: new Set([path.resolve("/root/null-netns")]),
+        }),
+      ).rejects.toThrow(BoundedRawValueScanError)
     })
   })
 })

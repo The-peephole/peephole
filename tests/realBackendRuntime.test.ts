@@ -46,9 +46,12 @@ import { ExtractionState } from "../services/preview-worker/local/extractionStat
 import { GitHubCommitArchiveFetcher } from "../services/preview-worker/local/githubCommitArchiveFetcher"
 import { minimalNpmEnv } from "../services/preview-worker/local/npmDependencyInstaller"
 import type { BackendRuntimePlan } from "../types/backendRuntime"
-import { scanRegularFilesForRawValue } from "./support/boundedRawValueScanner"
 import { createRealGeneratedSecretTestRoot } from "./support/realGeneratedSecretTestRoot"
 import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
+import {
+  removeDedicatedTestRootIfReconciled,
+  scanRunscStateForRawValue,
+} from "./support/realRunscStateInspection"
 
 const FIXTURE_COMMIT = "eae411a288b212201933cebb206126dd5bb0d93e"
 const RUNSC_ROOT_DIR = "/var/run/peephole/runsc"
@@ -83,6 +86,12 @@ interface RealBackendEnvironment {
   rootDir: string
   bundlesRootDir: string
   runscRootDir: string
+  /** True when `runscRootDir` is a per-test directory this environment
+   * exclusively owns (see `createEnvironment`'s `dedicatedRunscRoot`
+   * option), rather than the shared production-default root. Cleanup must
+   * reconcile real runsc-created kernel namespace mounts under a dedicated
+   * root before removing it -- the shared root is never removed at all. */
+  dedicatedRunscRoot: boolean
   processRunner: NodeProcessRunner
   leaseManager: NetworkLeaseManager
   networkProvisioner: VethNatNetworkProvisioner
@@ -116,13 +125,37 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
         const clean = environment
           ? await environmentIsClean(environment).catch(() => false)
           : true
-        if (clean) {
-          await rm(root, { recursive: true, force: true })
-        } else {
+        if (!clean) {
           process.stderr.write(
             `Real backend fixture cleanup is incomplete; preserving test-owned root for marker-driven reconciliation: ${root}\n`,
           )
+          continue
         }
+        if (environment?.dedicatedRunscRoot) {
+          // A plain recursive rm can hit EBUSY on a genuine runsc-created
+          // kernel namespace mount (e.g. null-netns) still living under
+          // this dedicated, test-owned runsc root. Reconcile it first --
+          // and never force-remove the root if that reconciliation cannot
+          // prove the mount is gone (see
+          // tests/support/realRunscStateInspection.ts's
+          // `removeDedicatedTestRootIfReconciled`, unit-tested there in
+          // isolation since this describe block itself only runs on a real
+          // gVisor host).
+          const outcome = await removeDedicatedTestRootIfReconciled(
+            root,
+            environment.runscRootDir,
+          ).catch((): { removed: false; reason: string } => ({
+            removed: false,
+            reason: "Reconciliation threw unexpectedly.",
+          }))
+          if (!outcome.removed) {
+            process.stderr.write(
+              `Real backend fixture cleanup is incomplete; preserving test-owned root because its dedicated runsc state could not be reconciled (${outcome.reason}): ${root}\n`,
+            )
+          }
+          continue
+        }
+        await rm(root, { recursive: true, force: true })
       }
       ownedRoots.clear()
       environments.clear()
@@ -189,6 +222,7 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
         rootDir,
         bundlesRootDir,
         runscRootDir,
+        dedicatedRunscRoot: options.dedicatedRunscRoot ?? false,
         processRunner,
         leaseManager,
         networkProvisioner,
@@ -676,8 +710,12 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
         // bound that would be exceeded) fails this test outright rather than
         // being swallowed into a false "clean" result -- `complete` is only
         // ever `true` on a normal return, so this pair of assertions is the
-        // full proof the entire dedicated runsc root was inspected.
-        const activeScan = await scanRegularFilesForRawValue(
+        // full proof the entire dedicated runsc root was inspected. The only
+        // structural exclusion this may apply is a real runsc-created
+        // `null-netns` kernel namespace mount, proven against
+        // `/proc/self/mountinfo` -- never inferred from its name alone (see
+        // tests/support/realRunscStateInspection.ts).
+        const activeScan = await scanRunscStateForRawValue(
           environment.runscRootDir,
           rawValue,
         )
@@ -717,7 +755,7 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
         await expect(lstat(runtimeSecretDir)).rejects.toThrow()
 
         // --- 9 (continued). runsc state raw-value non-persistence, post-stop. ---
-        const postStopScan = await scanRegularFilesForRawValue(
+        const postStopScan = await scanRunscStateForRawValue(
           environment.runscRootDir,
           rawValue,
         )
@@ -735,6 +773,10 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
             tmpfsCleanup: "passed",
             signalForwarding: "passed",
             runscValueLeak: activeScan.found || postStopScan.found,
+            runscSkippedKernelNamespaceMounts: {
+              active: activeScan.skippedKernelNamespaceMounts,
+              postStop: postStopScan.skippedKernelNamespaceMounts,
+            },
             egressRegression: "passed",
           })}\n`,
         )
