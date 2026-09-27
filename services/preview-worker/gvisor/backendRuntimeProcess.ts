@@ -130,6 +130,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     if (plan.start.command !== "node") {
       throw new Error('Backend runtime plan start command must be "node".')
     }
+    assertSecretMaterialMatchesPlan(workspace.id, plan, secrets)
     const sandbox = asGVisorWorkspace(workspace)
     const { path: namespacePath, peerIp } =
       await sandbox.ensureIngressOnlyNetworkNamespace()
@@ -160,11 +161,6 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         if (!this.generatedSecretFilesystem) {
           throw new Error(
             "Generated-secret filesystem is unavailable for this runtime.",
-          )
-        }
-        if (secrets.runtimeId !== workspace.id) {
-          throw new Error(
-            "Generated-secret material does not match the backend runtime.",
           )
         }
         if (
@@ -391,6 +387,32 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function assertSecretMaterialMatchesPlan(
+  runtimeId: string,
+  plan: BackendRuntimePlan,
+  secrets: GeneratedSecretMaterial | null,
+): void {
+  if (plan.generatedSecretNames.length === 0) {
+    if (secrets) {
+      throw new Error(
+        "Generated-secret material does not match the backend runtime plan.",
+      )
+    }
+    return
+  }
+
+  if (
+    !secrets ||
+    secrets.runtimeId !== runtimeId ||
+    secrets.values.size !== plan.generatedSecretNames.length ||
+    plan.generatedSecretNames.some((name) => !secrets.values.has(name))
+  ) {
+    throw new Error(
+      "Generated-secret material does not match the backend runtime plan.",
+    )
+  }
 }
 
 function pathsOverlap(left: string, right: string): boolean {

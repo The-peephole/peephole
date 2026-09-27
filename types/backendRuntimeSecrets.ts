@@ -7,9 +7,10 @@
  * `CreateBackendRuntimeRequest`, `BackendRuntime`'s public HTTP shape,
  * `FullStackPreview`'s public HTTP shape, or any PostgreSQL-backed type.
  *
- * M10-B's internal process starter may receive `GeneratedSecretMaterial`
- * directly for injection tests, but the production supervisor always passes
- * `null`; no broker/admission/HTTP/durable-store wiring exists.
+ * M10-C2's supervisor may pass destructively-consumed
+ * `GeneratedSecretMaterial` to the internal process starter for a synthetic
+ * non-empty plan. Production admission still emits empty names and production
+ * composition injects no broker, so no HTTP/durable-store activation exists.
  *
  * This is the single canonical source for the fixed preview-generated
  * secret name allowlist -- `core/analyzer/environmentRequirements.ts`

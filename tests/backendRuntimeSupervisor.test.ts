@@ -10,6 +10,10 @@ import type {
   RuntimeProcessHandle,
 } from "../services/backend-runtime-worker/ports"
 import { LiveBackendRuntimeRegistry } from "../services/backend-runtime-worker/liveRuntimeRegistry"
+import {
+  InMemoryBackendRuntimeSecretBroker,
+  type BackendRuntimeSecretBroker,
+} from "../services/backend-runtime-worker/secretBroker"
 import { BackendRuntimeControlPlane } from "../services/backend-runtime-api/controlPlane"
 import {
   InMemoryBackendRuntimeQueue,
@@ -48,6 +52,11 @@ const plan: BackendRuntimePlan = {
     NODE_ENV: "production",
   },
   generatedSecretNames: [],
+}
+
+const secretPlan: BackendRuntimePlan = {
+  ...plan,
+  generatedSecretNames: ["SESSION_SECRET"],
 }
 
 const requester = { subject: "user-1", ip: "203.0.113.10" }
@@ -178,10 +187,12 @@ class FakeRuntimeProcessStarter implements BackendRuntimeProcessStarter {
 function compose(
   runtimeTtlMs = 10 * 60_000,
   entrypoint: "file" | "missing" | "symlink" | "directory" = "file",
+  secretBroker?: BackendRuntimeSecretBroker,
+  resolvedPlan: BackendRuntimePlan = plan,
 ) {
   const store = new InMemoryBackendRuntimeStore()
   const queue = new InMemoryBackendRuntimeQueue()
-  const resolver = { resolve: vi.fn().mockResolvedValue(plan) }
+  const resolver = { resolve: vi.fn().mockResolvedValue(resolvedPlan) }
   let now = new Date("2026-01-01T00:00:00.000Z")
   const controlPlane = new BackendRuntimeControlPlane(resolver, store, queue, {
     now: () => now,
@@ -228,7 +239,12 @@ function compose(
     installRunner,
     starter,
     liveRuntimeRegistry,
-    { cancellationPollMs: 20, monitorPollMs: 20, readinessTimeoutMs: 200 },
+    {
+      cancellationPollMs: 20,
+      monitorPollMs: 20,
+      readinessTimeoutMs: 200,
+      secretBroker,
+    },
   )
   return {
     controlPlane,
@@ -269,6 +285,10 @@ describe("BackendRuntimeSupervisor", () => {
   })
 
   it("runs fetch -> install -> start -> running, then stays running until told to stop", async () => {
+    const broker = new InMemoryBackendRuntimeSecretBroker()
+    const issue = vi.spyOn(broker, "issue")
+    const take = vi.spyOn(broker, "take")
+    const discard = vi.spyOn(broker, "discard")
     const {
       controlPlane,
       queue,
@@ -277,7 +297,7 @@ describe("BackendRuntimeSupervisor", () => {
       starter,
       liveRuntimeRegistry,
       supervisor,
-    } = compose()
+    } = compose(10 * 60_000, "file", broker)
     const { runtimeId, job } = await createAndLease(controlPlane, queue)
     createdRoots.push(...sandbox.roots)
 
@@ -296,6 +316,8 @@ describe("BackendRuntimeSupervisor", () => {
     })
     expect(starter.lastHandle).not.toBeNull()
     expect(starter.lastSecrets).toBeNull()
+    expect(issue).not.toHaveBeenCalled()
+    expect(take).not.toHaveBeenCalled()
     // Registered by the time the control plane reports "running".
     expect(liveRuntimeRegistry.resolve(runtimeId)).toEqual(FAKE_DIAL_TARGET)
 
@@ -306,8 +328,126 @@ describe("BackendRuntimeSupervisor", () => {
     expect(final.status).toBe("stopped")
     expect(starter.lastHandle?.stopCalls).toBe(1)
     expect(sandbox.destroyed).toEqual([runtimeId])
+    expect(discard).toHaveBeenCalledExactlyOnceWith(runtimeId)
     // Cancel unregisters: no live route survives a normal stop.
     expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+  })
+
+  it("issues and destructively takes generated material exactly once before start", async () => {
+    const broker = new InMemoryBackendRuntimeSecretBroker()
+    const issue = vi.spyOn(broker, "issue")
+    const take = vi.spyOn(broker, "take")
+    const discard = vi.spyOn(broker, "discard")
+    const { controlPlane, queue, sandbox, starter, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      broker,
+      secretPlan,
+    )
+    const { runtimeId, job } = await createAndLease(controlPlane, queue)
+
+    const runPromise = supervisor.run(job)
+    await vi.waitFor(async () => {
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "running",
+      )
+    })
+    createdRoots.push(...sandbox.roots)
+
+    expect(issue).toHaveBeenCalledExactlyOnceWith(runtimeId, ["SESSION_SECRET"])
+    expect(take).toHaveBeenCalledExactlyOnceWith(runtimeId)
+    expect(starter.lastSecrets).toBe(take.mock.results[0]?.value)
+    expect(starter.lastSecrets?.runtimeId).toBe(runtimeId)
+    expect([...(starter.lastSecrets?.values.keys() ?? [])]).toEqual([
+      "SESSION_SECRET",
+    ])
+    expect(broker.take(runtimeId)).toBeNull()
+
+    const publicRuntime = await controlPlane.get(runtimeId, requester)
+    expect(JSON.stringify(publicRuntime)).not.toContain("generatedSecretNames")
+    expect(JSON.stringify(publicRuntime)).not.toContain("values")
+
+    await controlPlane.cancel(runtimeId, requester)
+    await runPromise
+
+    expect(discard).toHaveBeenCalledExactlyOnceWith(runtimeId)
+  })
+
+  it("fails with SECRET_UNAVAILABLE without starting when a non-empty plan has no broker", async () => {
+    const { controlPlane, queue, sandbox, starter, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      undefined,
+      secretPlan,
+    )
+    const { runtimeId, job } = await createAndLease(controlPlane, queue)
+
+    await supervisor.run(job)
+    createdRoots.push(...sandbox.roots)
+
+    const final = await controlPlane.get(runtimeId, requester)
+    expect(final).toMatchObject({
+      status: "failed",
+      errorCode: "SECRET_UNAVAILABLE",
+      errorMessage:
+        "The backend runtime's secret material is no longer available. Start a new preview.",
+    })
+    expect(starter.lastHandle).toBeNull()
+    expect(starter.lastSecrets).toBeUndefined()
+  })
+
+  it("fails with SECRET_UNAVAILABLE without fallback or retry when take returns null", async () => {
+    const broker = new InMemoryBackendRuntimeSecretBroker()
+    const issue = vi.spyOn(broker, "issue")
+    const take = vi.spyOn(broker, "take").mockReturnValue(null)
+    const discard = vi.spyOn(broker, "discard")
+    const { controlPlane, queue, sandbox, starter, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      broker,
+      secretPlan,
+    )
+    const { runtimeId, job } = await createAndLease(controlPlane, queue)
+
+    await supervisor.run(job)
+    createdRoots.push(...sandbox.roots)
+
+    const final = await controlPlane.get(runtimeId, requester)
+    expect(final.errorCode).toBe("SECRET_UNAVAILABLE")
+    expect(issue).toHaveBeenCalledTimes(1)
+    expect(take).toHaveBeenCalledTimes(1)
+    expect(starter.lastHandle).toBeNull()
+    expect(starter.lastSecrets).toBeUndefined()
+    expect(discard).toHaveBeenCalledExactlyOnceWith(runtimeId)
+  })
+
+  it("fails closed on duplicate broker issuance and discards the stale entry", async () => {
+    const broker = new InMemoryBackendRuntimeSecretBroker()
+    const { controlPlane, queue, sandbox, starter, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      broker,
+      secretPlan,
+    )
+    const { runtimeId, job } = await createAndLease(controlPlane, queue)
+    broker.issue(runtimeId, ["SESSION_SECRET"])
+    const issue = vi.spyOn(broker, "issue")
+    const take = vi.spyOn(broker, "take")
+    const discard = vi.spyOn(broker, "discard")
+
+    await supervisor.run(job)
+    createdRoots.push(...sandbox.roots)
+
+    const final = await controlPlane.get(runtimeId, requester)
+    expect(final.errorCode).toBe("SECRET_UNAVAILABLE")
+    expect(final.errorMessage).toBe(
+      "The backend runtime's secret material is no longer available. Start a new preview.",
+    )
+    expect(issue).toHaveBeenCalledTimes(1)
+    expect(take).not.toHaveBeenCalled()
+    expect(starter.lastHandle).toBeNull()
+    expect(discard).toHaveBeenCalledExactlyOnceWith(runtimeId)
+    expect(broker.take(runtimeId)).toBeNull()
   })
 
   it("fails with FETCH_FAILED and still destroys the workspace", async () => {
@@ -367,6 +507,8 @@ describe("BackendRuntimeSupervisor", () => {
   )
 
   it("fails with RUNTIME_START_FAILED when the runtime process cannot start", async () => {
+    const broker = new InMemoryBackendRuntimeSecretBroker()
+    const discard = vi.spyOn(broker, "discard")
     const {
       controlPlane,
       queue,
@@ -374,7 +516,7 @@ describe("BackendRuntimeSupervisor", () => {
       starter,
       liveRuntimeRegistry,
       supervisor,
-    } = compose()
+    } = compose(10 * 60_000, "file", broker, secretPlan)
     const { runtimeId, job } = await createAndLease(controlPlane, queue)
     createdRoots.push(...sandbox.roots)
     starter.startError = new Error("runsc run failed")
@@ -384,10 +526,36 @@ describe("BackendRuntimeSupervisor", () => {
     const final = await controlPlane.get(runtimeId, requester)
     expect(final.status).toBe("failed")
     expect(final.errorCode).toBe("RUNTIME_START_FAILED")
+    expect(discard).toHaveBeenCalledExactlyOnceWith(runtimeId)
     expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
   })
 
+  it("continues process and workspace teardown when broker discard fails", async () => {
+    const broker = new InMemoryBackendRuntimeSecretBroker()
+    vi.spyOn(broker, "discard").mockImplementation(() => {
+      throw new Error("broker cleanup failed")
+    })
+    const { controlPlane, queue, sandbox, starter, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      broker,
+      secretPlan,
+    )
+    const { runtimeId, job } = await createAndLease(controlPlane, queue)
+    starter.startError = new Error("runsc run failed")
+
+    await supervisor.run(job)
+    createdRoots.push(...sandbox.roots)
+
+    expect((await controlPlane.get(runtimeId, requester)).errorCode).toBe(
+      "RUNTIME_START_FAILED",
+    )
+    expect(sandbox.destroyed).toEqual([runtimeId])
+  })
+
   it("fails with RUNTIME_READINESS_TIMEOUT and stops the half-started process", async () => {
+    const broker = new InMemoryBackendRuntimeSecretBroker()
+    const discard = vi.spyOn(broker, "discard")
     const {
       controlPlane,
       queue,
@@ -395,7 +563,7 @@ describe("BackendRuntimeSupervisor", () => {
       starter,
       liveRuntimeRegistry,
       supervisor,
-    } = compose()
+    } = compose(10 * 60_000, "file", broker, secretPlan)
     const { runtimeId, job } = await createAndLease(controlPlane, queue)
     createdRoots.push(...sandbox.roots)
     starter.nextReadyError = new BackendRuntimeReadinessTimeoutError()
@@ -408,6 +576,7 @@ describe("BackendRuntimeSupervisor", () => {
     expect(final.status).toBe("failed")
     expect(final.errorCode).toBe("RUNTIME_READINESS_TIMEOUT")
     expect(starter.lastHandle?.stopCalls).toBeGreaterThanOrEqual(1)
+    expect(discard).toHaveBeenCalledExactlyOnceWith(runtimeId)
     // A readiness failure never resolves before register() would run, so
     // no route was ever registered to begin with.
     expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
@@ -483,7 +652,16 @@ describe("BackendRuntimeSupervisor", () => {
   })
 
   it("cancelling before the process ever starts goes straight to cancelled, never stopped", async () => {
-    const { controlPlane, queue, sandbox, fetcher, supervisor } = compose()
+    const broker = new InMemoryBackendRuntimeSecretBroker()
+    const issue = vi.spyOn(broker, "issue")
+    const take = vi.spyOn(broker, "take")
+    const discard = vi.spyOn(broker, "discard")
+    const { controlPlane, queue, sandbox, fetcher, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      broker,
+      secretPlan,
+    )
     const { runtimeId, job } = await createAndLease(controlPlane, queue)
     createdRoots.push(...sandbox.roots)
     // Never resolves on its own -- only rejects once cancelled aborts the
@@ -501,6 +679,9 @@ describe("BackendRuntimeSupervisor", () => {
 
     const final = await controlPlane.get(runtimeId, requester)
     expect(final.status).toBe("cancelled")
+    expect(issue).not.toHaveBeenCalled()
+    expect(take).not.toHaveBeenCalled()
+    expect(discard).toHaveBeenCalledExactlyOnceWith(runtimeId)
   })
 
   it("never starts the runtime process twice for a recovered, already-started runtime", async () => {

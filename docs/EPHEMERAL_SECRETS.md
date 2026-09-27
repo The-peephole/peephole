@@ -1,12 +1,12 @@
 # Ephemeral Environment / Secrets (M10) — Design
 
-**Status: Partially implemented -- M10-A, M10-B, and the M10-C1 names-only
-plan-contract foundation only.** Generated-material policy/broker,
-secret-free OCI injection primitives, and strict names-only plan validation
-now exist, but orchestration wiring, generated-secret eligibility relaxation,
+**Status: Partially implemented -- M10-A, M10-B, M10-C1, and internal
+M10-C2 orchestration only.** Generated-material policy/broker, secret-free OCI
+injection primitives, strict names-only plan validation, and fail-closed
+supervisor issue/take orchestration now exist. Generated-secret eligibility,
 production activation, and real-gVisor verification remain pending. Reachable
 plans still contain `generatedSecretNames: []`; the production supervisor
-explicitly passes no secret material, D-032 remains Proposed, and
+passes no secret material, D-032 remains Proposed, and
 `docs/MVP_ROADMAP.md` stage 10 remains unchecked.
 
 This never relaxes `SECRET_ENV_REQUIRED`/`BACKEND_REQUIRED` for the static
@@ -253,7 +253,7 @@ different piece of runtime-only state (the live dial target). The secret
 broker reuses that exact pattern rather than inventing a new one.
 
 ```ts
-// services/backend-runtime-worker/secretBroker.ts (M10-A implemented; not wired)
+// services/backend-runtime-worker/secretBroker.ts (M10-A; internally wired by M10-C2)
 
 export interface GeneratedSecretMaterial {
   readonly runtimeId: string
@@ -287,8 +287,9 @@ export interface BackendRuntimeSecretBroker {
   is consulted only by the one supervisor codepath that already owns it.
 - **Identifiers persisted?** No. The broker itself is never written to
   Postgres or to `InMemoryBackendRuntimeStore`; it exists only as a private
-  `Map` inside the composition root that also owns `LiveBackendRuntimeRouteRegistry`
-  today (wired in `composeProductionBackendRuntime`/`server.ts`).
+  process-local `Map`. M10-C2 allows a broker to be injected into the
+  supervisor for synthetic plans, but production composition does not yet
+  construct or inject one.
 - **Ownership binding:** implicit, via `runtimeId` — no separate
   repository/commit/sourceRoot/orchestration-key check is needed because the
   control plane has already bound `runtimeId` to exactly one
@@ -296,24 +297,26 @@ export interface BackendRuntimeSecretBroker {
   supervisor ever sees it.
 - **Expiry:** no independent TTL. `issue()` happens once, at the START phase
   (`BackendRuntimeSupervisor.fetchInstallStart`, immediately before
-  `runtimeProcessStarter.start()`); `take()` happens exactly once, inside
-  `GVisorBackendRuntimeProcess.start()`, before it returns. The window
-  between issue and take is one in-process function call, not a network
-  round trip.
+  `runtimeProcessStarter.start()`); the supervisor then calls `take()` exactly
+  once and passes only that destructively consumed material to the process
+  starter. The window between issue and take is one in-process function call,
+  not a network round trip.
 - **Single-consumer vs. reusable:** strictly single-consumer (`take`, not
   `get`). A retried/duplicated start attempt can never re-read material
   already handed to a previous attempt.
 - **Cancellation cleanup:** `BackendRuntimeSupervisor.run()`'s existing
   `finally` block already does
   `this.liveRuntimeRegistry.unregister(queued.runtimeId)` unconditionally,
-  first, before any other teardown. Add `secretBroker.discard(queued.runtimeId)`
-  immediately beside it — same placement, same idempotency guarantee, same
+  first, before any other teardown. M10-C2 calls
+  `secretBroker.discard(queued.runtimeId)` immediately beside it — same
+  placement, same idempotency guarantee, same
   "runs on every exit path" property (normal stop, cancel, expiry,
   control-plane-unreachable abort, a start/readiness failure that never
-  issued anything, or an unexpected process exit).
+  issued anything, or an unexpected process exit). A discard failure is
+  swallowed so process/container/workspace teardown always continues.
 - **Successful-start cleanup:** `take()` itself deletes the entry, so by the
-  time `GVisorBackendRuntimeProcess.start()` returns, nothing remains in the
-  broker for that `runtimeId` regardless of what happens afterward.
+  time `BackendRuntimeProcessStarter.start()` is called, nothing remains in
+  the broker for that `runtimeId` regardless of what happens afterward.
 - **Startup/restart behavior:** the broker is a plain `Map` recreated empty
   on every process start. It cannot contain stale material from a previous
   process by construction. This is consistent with the *already-existing*
@@ -504,7 +507,7 @@ treated as the existing `CONFLICT`/409 case. Do not hash low-entropy
 user-supplied values, even salted — that is an offline-guessable oracle for
 low-entropy secrets. This is explicitly deferred, not part of this slice.
 
-## 12. API / type design (partially implemented; orchestration pending)
+## 12. API / type design (internal orchestration implemented; activation pending)
 
 Design goal: secrets and public config are distinct types; nothing
 secret-shaped is reachable through a type that is also serialized to
@@ -573,9 +576,21 @@ already used there.
 **M10-C1 implementation status:** this names-only field and validation now
 exist. The currently reachable adapter always emits `generatedSecretNames: []`
 and still rejects every non-`auto-configurable` environment requirement, so a
-repository declaring `preview-generated-candidate` remains ineligible. Broker
-orchestration, production activation, and real-gVisor verification remain
-pending.
+repository declaring `preview-generated-candidate` remains ineligible.
+
+**M10-C2 implementation status:** the supervisor now provides a fail-closed
+internal path for synthetic, already-validated non-empty plans: it issues once,
+destructively takes once, validates the material/runtime/name correspondence,
+and passes only the taken material to the process starter. Missing broker,
+missing material, duplicate/stale issuance, or an equivalent lifecycle failure
+produces `SECRET_UNAVAILABLE`; unconditional best-effort discard remains beside
+route revocation. The ownership boundary is explicit: the supervisor owns
+`issue -> take -> pass material`, while the process starter owns
+`material -> tmpfs/OCI/bootstrap delivery`. Real admission still emits empty
+names only, and production `server.ts` constructs neither broker nor
+generated-secret filesystem/reaper/preflight activation. Eligibility,
+real-gVisor verification, and production deployment remain pending. D-032
+remains Proposed and M10 remains incomplete.
 
 ### Bounds (env-name and value safety)
 
@@ -629,8 +644,9 @@ user-supplied phase):
   never stored alongside the plan.
 - **Ownership/lifetime:** owned entirely by the broker (§8), generated fresh
   per runtime, never reused across runtimes or across a restart.
-- **Cleanup timing:** consumed (single read+delete) by `start()`; discarded
-  unconditionally in the supervisor's existing `finally` block otherwise.
+- **Cleanup timing:** consumed (single read+delete) by the supervisor before
+  `start()`; discarded unconditionally in the supervisor's `finally` block
+  otherwise.
 - **Restart behavior:** wiped with the rest of the in-memory backend-runtime
   state; a recovered run regenerates fresh material (§8).
 - **Browser exposure:** never. `toPublicRuntime()` (`controlPlane.ts`)
