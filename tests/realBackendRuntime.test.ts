@@ -2,7 +2,6 @@ import { createHash } from "node:crypto"
 import {
   lstat,
   mkdir,
-  opendir,
   readFile,
   rm,
   stat,
@@ -47,6 +46,7 @@ import { ExtractionState } from "../services/preview-worker/local/extractionStat
 import { GitHubCommitArchiveFetcher } from "../services/preview-worker/local/githubCommitArchiveFetcher"
 import { minimalNpmEnv } from "../services/preview-worker/local/npmDependencyInstaller"
 import type { BackendRuntimePlan } from "../types/backendRuntime"
+import { scanRegularFilesForRawValue } from "./support/boundedRawValueScanner"
 import { createRealGeneratedSecretTestRoot } from "./support/realGeneratedSecretTestRoot"
 import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 
@@ -672,10 +672,16 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
         expect(secretFileStats.gid).toBe(SANDBOX_GID)
 
         // --- 9. runsc state raw-value non-persistence, while active. ---
+        // A thrown BoundedRawValueScanError (unreadable file/directory, or a
+        // bound that would be exceeded) fails this test outright rather than
+        // being swallowed into a false "clean" result -- `complete` is only
+        // ever `true` on a normal return, so this pair of assertions is the
+        // full proof the entire dedicated runsc root was inspected.
         const activeScan = await scanRegularFilesForRawValue(
           environment.runscRootDir,
           rawValue,
         )
+        expect(activeScan.complete).toBe(true)
         expect(activeScan.found).toBe(false)
 
         // --- 10. Narrow egress regression check for this variant. ---
@@ -715,6 +721,7 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
           environment.runscRootDir,
           rawValue,
         )
+        expect(postStopScan.complete).toBe(true)
         expect(postStopScan.found).toBe(false)
 
         await workspace.destroy()
@@ -891,74 +898,6 @@ const server = http.createServer((request, response) => {
 })
 server.listen(port, "0.0.0.0")
 `
-
-const MAX_RAW_VALUE_SCAN_FILES = 2_000
-const MAX_RAW_VALUE_SCAN_BYTES = 8 * 1024 * 1024
-
-/**
- * Bounded, non-recursive-into-symlinks scan of only regular files under
- * `rootDir` for one exact raw secret value. Never returns or logs the value
- * itself -- only a boolean and bounded counters -- so a caller can safely
- * assert on `.found` even in a failure message. Devices, sockets, FIFOs, and
- * symlinks are skipped outright; the scan stops once either bound is hit
- * rather than scanning an unbounded amount of host state.
- */
-async function scanRegularFilesForRawValue(
-  rootDir: string,
-  rawValue: string,
-): Promise<{ scannedFiles: number; scannedBytes: number; found: boolean }> {
-  let scannedFiles = 0
-  let scannedBytes = 0
-  let found = false
-  const needle = Buffer.from(rawValue, "utf8")
-  const pending = [rootDir]
-
-  while (pending.length > 0) {
-    if (
-      scannedFiles >= MAX_RAW_VALUE_SCAN_FILES ||
-      scannedBytes >= MAX_RAW_VALUE_SCAN_BYTES
-    ) {
-      break
-    }
-    const current = pending.pop()
-    if (!current) continue
-    let directory
-    try {
-      directory = await opendir(current)
-    } catch {
-      continue
-    }
-    try {
-      for await (const entry of directory) {
-        if (
-          scannedFiles >= MAX_RAW_VALUE_SCAN_FILES ||
-          scannedBytes >= MAX_RAW_VALUE_SCAN_BYTES
-        ) {
-          break
-        }
-        if (entry.isSymbolicLink()) continue
-        const full = path.join(current, entry.name)
-        if (entry.isDirectory()) {
-          pending.push(full)
-          continue
-        }
-        if (!entry.isFile()) continue
-        scannedFiles += 1
-        let contents: Buffer
-        try {
-          contents = await readFile(full)
-        } catch {
-          continue
-        }
-        scannedBytes += contents.byteLength
-        if (contents.includes(needle)) found = true
-      }
-    } finally {
-      await directory.close().catch(() => undefined)
-    }
-  }
-  return { scannedFiles, scannedBytes, found }
-}
 
 function requireIngressLease(
   leases: readonly NetworkLease[],
