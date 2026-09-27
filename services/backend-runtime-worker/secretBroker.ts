@@ -52,11 +52,11 @@ export interface BackendRuntimeSecretBroker {
  * architectural precedent docs/EPHEMERAL_SECRETS.md section 8 names.
  *
  * NOT WIRED to any production path in this PR -- see docs/DECISIONS.md's
- * D-032 and this repository's M10-A PR description. `services/production/server.ts`
- * does not construct or reference this class; `BackendRuntimeSupervisor`,
- * `BackendRuntimeProcessStarter`, and `GVisorBackendRuntimeProcess` do not
- * call `issue()`/`take()`/`discard()`. That wiring, plus the tmpfs/bootstrap
- * delivery mechanism this broker's material would feed, is M10-B/M10-C.
+ * D-032 and this repository's M10-A/M10-B status. `services/production/server.ts`
+ * does not construct or reference this class; `BackendRuntimeSupervisor` and
+ * `GVisorBackendRuntimeProcess` do not call `issue()`/`take()`/`discard()`.
+ * M10-B provides the separate tmpfs/bootstrap delivery capability, while
+ * broker/orchestration wiring and real-host verification remain pending.
  *
  * Starts empty every process start, and stays that way by design: a
  * restart must never let previously issued-but-unconsumed material survive

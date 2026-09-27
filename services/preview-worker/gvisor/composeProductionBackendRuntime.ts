@@ -6,6 +6,7 @@ import { ExtractionState } from "../local/extractionState"
 import { GitHubCommitArchiveFetcher } from "../local/githubCommitArchiveFetcher"
 import type { resolveDnsConfig } from "./dnsConfig"
 import { GVisorBackendRuntimeProcess } from "./backendRuntimeProcess"
+import type { GeneratedSecretFilesystem } from "./generatedSecretFilesystem"
 import { GVisorSandboxProvisioner } from "./gvisorSandboxProvisioner"
 import type { VethNatNetworkProvisioner } from "./networkNamespace"
 import type { ProcessRunner } from "./processRunner"
@@ -30,6 +31,9 @@ export interface ComposeProductionBackendRuntimeOptions {
    * plane's own runtime TTL -- see GVisorBackendRuntimeProcess's doc
    * comment. */
   maxRuntimeMs?: number
+  /** M10-B injection primitive. Supplying it alone does not enable secrets;
+   * the production supervisor still passes null until later orchestration. */
+  generatedSecretFilesystem?: GeneratedSecretFilesystem
   /** Process-local live-route registry the same-process full-stack proxy
    * resolver also reads from -- REQUIRED, not defaulted, and
    * deliberately never constructed by this function. The one process
@@ -84,6 +88,7 @@ export function composeProductionBackendRuntime(
     processRunner: options.processRunner,
     resolveDnsConfig: options.resolveDnsConfig,
     maxRuntimeMs: options.maxRuntimeMs,
+    generatedSecretFilesystem: options.generatedSecretFilesystem,
   })
 
   return new BackendRuntimeSupervisor(

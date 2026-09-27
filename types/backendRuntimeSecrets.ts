@@ -1,11 +1,15 @@
 /**
- * M10-A foundation types only -- see docs/EPHEMERAL_SECRETS.md and
+ * M10 foundation types -- see docs/EPHEMERAL_SECRETS.md and
  * docs/DECISIONS.md's D-032 for the full design. NOT wired into any
  * production path: `BackendRuntimePlan.platformEnvironment`
  * (`types/backendRuntime.ts`) is unchanged and still contains only `PORT`,
  * `HOST`, `NODE_ENV`; nothing here is reachable from
  * `CreateBackendRuntimeRequest`, `BackendRuntime`'s public HTTP shape,
  * `FullStackPreview`'s public HTTP shape, or any PostgreSQL-backed type.
+ *
+ * M10-B's internal process starter may receive `GeneratedSecretMaterial`
+ * directly for injection tests, but the production supervisor always passes
+ * `null`; no broker/admission/HTTP/durable-store wiring exists.
  *
  * This is the single canonical source for the fixed preview-generated
  * secret name allowlist -- `core/analyzer/environmentRequirements.ts`
@@ -51,8 +55,9 @@ export interface OpaqueSecretValue {
  * Server-only, process-memory-only. Never added to
  * `CreateBackendRuntimeRequest`, `BackendRuntimePlan`, `QueuedBackendRuntime`,
  * `BackendRuntime`'s public shape, or any type that crosses an HTTP response
- * or a durable (PostgreSQL / in-memory *store*) record. Only ever held by
- * `services/backend-runtime-worker/secretBroker.ts`'s process-local broker.
+ * or a durable (PostgreSQL / in-memory *store*) record. It is held by the
+ * process-local broker and, once consumed in a later phase, may cross only
+ * the internal process-starter/tmpfs injection boundary.
  */
 export interface GeneratedSecretMaterial {
   readonly runtimeId: string

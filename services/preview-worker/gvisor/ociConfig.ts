@@ -27,6 +27,9 @@ export interface OciConfigOptions {
   dnsConfigSource: string
   /** Exact host mountpoint of the allocation's loop-backed ext4 image. */
   workspaceSource: string
+  /** Exact host tmpfs directory for one runtime's generated material. The
+   * path may contain runtime identity only; values never enter this spec. */
+  generatedSecretsSource?: string
 }
 
 export interface OciRuntimeSpec {
@@ -161,6 +164,16 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
         source: options.dnsConfigSource,
         options: ["bind", "ro"],
       },
+      ...(options.generatedSecretsSource
+        ? [
+            {
+              destination: "/run/secrets",
+              type: "bind",
+              source: options.generatedSecretsSource,
+              options: ["bind", "ro", "nosuid", "nodev", "noexec"],
+            },
+          ]
+        : []),
     ],
     linux: {
       namespaces: [

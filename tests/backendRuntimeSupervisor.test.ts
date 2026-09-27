@@ -160,8 +160,12 @@ class FakeRuntimeProcessStarter implements BackendRuntimeProcessStarter {
   nextReadyError: Error | null = null
   nextReadyGate: Promise<void> | null = null
   lastHandle: FakeRuntimeProcessHandle | null = null
+  lastSecrets: Parameters<BackendRuntimeProcessStarter["start"]>[2] | undefined
 
-  async start(): Promise<RuntimeProcessHandle> {
+  async start(
+    ...args: Parameters<BackendRuntimeProcessStarter["start"]>
+  ): Promise<RuntimeProcessHandle> {
+    this.lastSecrets = args[2]
     if (this.startError) throw this.startError
     this.lastHandle = new FakeRuntimeProcessHandle()
     this.lastHandle.readyError = this.nextReadyError
@@ -290,6 +294,7 @@ describe("BackendRuntimeSupervisor", () => {
       args: ["ci", "--no-audit", "--no-fund"],
     })
     expect(starter.lastHandle).not.toBeNull()
+    expect(starter.lastSecrets).toBeNull()
     // Registered by the time the control plane reports "running".
     expect(liveRuntimeRegistry.resolve(runtimeId)).toEqual(FAKE_DIAL_TARGET)
 

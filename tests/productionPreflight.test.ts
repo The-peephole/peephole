@@ -1,8 +1,12 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { describe, expect, it } from "vitest"
 
 import {
   ensureProductionPreflight,
   ensureProductionDiskLayout,
+  ensureGeneratedSecretInjectionCapability,
   ensureSandboxDiskCapability,
   runProductionPreflightChecks,
 } from "../services/production/preflight"
@@ -250,5 +254,64 @@ describe("ensureProductionDiskLayout", () => {
         deviceFor: async () => 7,
       }),
     ).resolves.toBeUndefined()
+  })
+})
+
+describe("ensureGeneratedSecretInjectionCapability", () => {
+  it("accepts only a tmpfs-backed root with the trusted bootstrap in the base image", async () => {
+    const temporaryDir = await mkdtemp(
+      path.join(os.tmpdir(), "peephole-secret-preflight-"),
+    )
+    try {
+      const root = path.join(temporaryDir, "secrets")
+      const baseRootfsImage = path.join(temporaryDir, "rootfs")
+      await mkdir(path.join(baseRootfsImage, "opt", "peephole"), {
+        recursive: true,
+      })
+      await writeFile(
+        path.join(baseRootfsImage, "opt", "peephole", "secret-bootstrap.mjs"),
+        "trusted",
+      )
+      const processRunner = new FakeProcessRunner({
+        findmnt: ok("tmpfs\n"),
+      })
+
+      await expect(
+        ensureGeneratedSecretInjectionCapability({
+          secretRootDir: root,
+          baseRootfsImage,
+          processRunner,
+        }),
+      ).resolves.toBeUndefined()
+    } finally {
+      await rm(temporaryDir, { recursive: true, force: true })
+    }
+  })
+
+  it("fails closed when findmnt reports persistent storage", async () => {
+    const temporaryDir = await mkdtemp(
+      path.join(os.tmpdir(), "peephole-secret-preflight-"),
+    )
+    try {
+      const root = path.join(temporaryDir, "secrets")
+      const baseRootfsImage = path.join(temporaryDir, "rootfs")
+      await mkdir(path.join(baseRootfsImage, "opt", "peephole"), {
+        recursive: true,
+      })
+      await writeFile(
+        path.join(baseRootfsImage, "opt", "peephole", "secret-bootstrap.mjs"),
+        "trusted",
+      )
+
+      await expect(
+        ensureGeneratedSecretInjectionCapability({
+          secretRootDir: root,
+          baseRootfsImage,
+          processRunner: new FakeProcessRunner({ findmnt: ok("ext4\n") }),
+        }),
+      ).rejects.toThrow(/not backed by tmpfs/)
+    } finally {
+      await rm(temporaryDir, { recursive: true, force: true })
+    }
   })
 })

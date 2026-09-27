@@ -1,20 +1,25 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises"
 import { createServer, type Server } from "node:net"
 import os from "node:os"
 import path from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   BackendRuntimeExitedBeforeReadyError,
   BackendRuntimeReadinessTimeoutError,
   GVisorBackendRuntimeProcess,
 } from "../services/preview-worker/gvisor/backendRuntimeProcess"
+import { TmpfsGeneratedSecretFilesystem } from "../services/preview-worker/gvisor/generatedSecretFilesystem"
+import { createOpaqueSecretValue } from "../core/backendSecrets/generatedSecretValue"
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
 import type {
   ProcessRunner,
   ProcessRunResult,
 } from "../services/preview-worker/gvisor/processRunner"
 import type { BackendRuntimePlan } from "../types/backendRuntime"
+import type { GeneratedSecretMaterial } from "../types/backendRuntimeSecrets"
+
+const SECRET_MARKER = "M10BMarker_7Hn9-Q"
 
 const plan: BackendRuntimePlan = {
   contractVersion: "backend-v1",
@@ -110,6 +115,7 @@ describe("GVisorBackendRuntimeProcess", () => {
   let server: Server
   let port: number
   let bundleDir: string
+  let secretRoot: string
 
   beforeEach(async () => {
     server = createServer((socket) => socket.end())
@@ -124,11 +130,15 @@ describe("GVisorBackendRuntimeProcess", () => {
     bundleDir = await mkdtemp(
       path.join(os.tmpdir(), "peephole-backend-runtime-"),
     )
+    secretRoot = await mkdtemp(
+      path.join(os.tmpdir(), "peephole-runtime-secrets-"),
+    )
   })
 
   afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await rm(bundleDir, { recursive: true, force: true })
+    await rm(secretRoot, { recursive: true, force: true })
   })
 
   it("becomes ready once the internal port accepts a connection", async () => {
@@ -363,11 +373,168 @@ describe("GVisorBackendRuntimeProcess", () => {
       ),
     ).toBe(false)
     expect(config.process.cwd).toBe("/workspace/backend")
+    expect(
+      config.mounts.filter(
+        (mount: { destination: string }) =>
+          mount.destination === "/run/secrets",
+      ),
+    ).toEqual([])
     expect(config.process.user).toEqual({ uid: 65534, gid: 65534 })
     expect(config.linux.namespaces).toContainEqual({
       type: "network",
       path: "/var/run/netns/fake-ingress",
     })
+  })
+
+  it("injects through one read-only mount and trusted bootstrap without serializing the secret", async () => {
+    const processRunner = new FakeProcessRunner()
+    const generatedSecretFilesystem = new TmpfsGeneratedSecretFilesystem({
+      rootDir: secretRoot,
+      verifyMemoryBackedRoot: async () => undefined,
+      setOwnership: async () => undefined,
+    })
+    const runtime = new GVisorBackendRuntimeProcess({
+      processRunner,
+      generatedSecretFilesystem,
+    })
+    const secrets: GeneratedSecretMaterial = {
+      runtimeId: "job-backend",
+      values: new Map([
+        ["SESSION_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+      ]),
+    }
+    const handle = await runtime.start(
+      fakeWorkspace(bundleDir, "127.0.0.1"),
+      { ...plan, internalPort: port },
+      secrets,
+    )
+    const serialized = await readFile(
+      path.join(bundleDir, "config.json"),
+      "utf8",
+    )
+    const config = JSON.parse(serialized)
+
+    expect(serialized).not.toContain(SECRET_MARKER)
+    expect(config.process.env).toEqual([
+      "PORT=3000",
+      "HOST=0.0.0.0",
+      "NODE_ENV=production",
+    ])
+    expect(config.process.args).toEqual([
+      "/usr/local/bin/node",
+      "/opt/peephole/secret-bootstrap.mjs",
+      "src/server.js",
+    ])
+    expect(config.process.args).not.toContain(SECRET_MARKER)
+    const secretMounts = config.mounts.filter(
+      (mount: { destination: string }) => mount.destination === "/run/secrets",
+    )
+    expect(secretMounts).toEqual([
+      {
+        destination: "/run/secrets",
+        type: "bind",
+        source: path.join(secretRoot, "job-backend"),
+        options: ["bind", "ro", "nosuid", "nodev", "noexec"],
+      },
+    ])
+
+    await handle.stop()
+    await expect(readdir(secretRoot)).resolves.toEqual([])
+  })
+
+  it("cleans secret material when OCI bundle creation fails", async () => {
+    const processRunner = new FakeProcessRunner()
+    const generatedSecretFilesystem = new TmpfsGeneratedSecretFilesystem({
+      rootDir: secretRoot,
+      verifyMemoryBackedRoot: async () => undefined,
+      setOwnership: async () => undefined,
+    })
+    const runtime = new GVisorBackendRuntimeProcess({
+      processRunner,
+      generatedSecretFilesystem,
+    })
+    const secrets: GeneratedSecretMaterial = {
+      runtimeId: "job-backend",
+      values: new Map([
+        ["SESSION_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+      ]),
+    }
+
+    await expect(
+      runtime.start(
+        fakeWorkspace(path.join(bundleDir, "missing"), "127.0.0.1"),
+        { ...plan, internalPort: port },
+        secrets,
+      ),
+    ).rejects.toThrow()
+    await expect(readdir(secretRoot)).resolves.toEqual([])
+  })
+
+  it("rejects mismatched runtime material without deleting another runtime's directory", async () => {
+    const processRunner = new FakeProcessRunner()
+    const generatedSecretFilesystem = new TmpfsGeneratedSecretFilesystem({
+      rootDir: secretRoot,
+      verifyMemoryBackedRoot: async () => undefined,
+      setOwnership: async () => undefined,
+    })
+    const otherMaterial: GeneratedSecretMaterial = {
+      runtimeId: "other-runtime",
+      values: new Map([
+        ["SESSION_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+      ]),
+    }
+    await generatedSecretFilesystem.create(otherMaterial)
+    const runtime = new GVisorBackendRuntimeProcess({
+      processRunner,
+      generatedSecretFilesystem,
+    })
+
+    await expect(
+      runtime.start(
+        fakeWorkspace(bundleDir, "127.0.0.1"),
+        { ...plan, internalPort: port },
+        otherMaterial,
+      ),
+    ).rejects.toThrow(/does not match/)
+    await expect(readdir(secretRoot)).resolves.toEqual(["other-runtime"])
+  })
+
+  it("does not log captured backend output containing a planted marker", async () => {
+    const processRunner = new FakeProcessRunner()
+    processRunner.crashResult = {
+      exitCode: 1,
+      timedOut: false,
+      stdout: SECRET_MARKER,
+      stderr: SECRET_MARKER,
+    }
+    const generatedSecretFilesystem = new TmpfsGeneratedSecretFilesystem({
+      rootDir: secretRoot,
+      verifyMemoryBackedRoot: async () => undefined,
+      setOwnership: async () => undefined,
+    })
+    const runtime = new GVisorBackendRuntimeProcess({
+      processRunner,
+      generatedSecretFilesystem,
+    })
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined)
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const handle = await runtime.start(
+      fakeWorkspace(bundleDir, "127.0.0.1"),
+      { ...plan, internalPort: port },
+      {
+        runtimeId: "job-backend",
+        values: new Map([
+          ["SESSION_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+        ]),
+      },
+    )
+
+    await expect(handle.waitForExit()).resolves.toEqual({ exitCode: 1 })
+    await expect(readdir(secretRoot)).resolves.toEqual([])
+    expect(log).not.toHaveBeenCalled()
+    expect(error).not.toHaveBeenCalled()
+    log.mockRestore()
+    error.mockRestore()
   })
 
   it('rejects a plan whose start command is not the logical "node" command', async () => {

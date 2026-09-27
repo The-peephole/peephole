@@ -7,6 +7,7 @@ import type { SandboxResourceLimits } from "../../../core/runner/runnerLimits"
 import { DEFAULT_SANDBOX_RESOURCE_LIMITS } from "../../../core/runner/runnerLimits"
 import { isSafePreviewSourceRoot } from "../../../core/preview/sourceRoot"
 import type { BackendRuntimePlan } from "../../../types/backendRuntime"
+import type { GeneratedSecretMaterial } from "../../../types/backendRuntimeSecrets"
 import type {
   BackendRuntimeProcessStarter,
   RuntimeProcessHandle,
@@ -14,6 +15,7 @@ import type {
 import type { LocalPreviewWorkspace } from "../local/localWorkspace"
 import { resolveDnsConfig } from "./dnsConfig"
 import { asGVisorWorkspace } from "./gvisorWorkspace"
+import type { GeneratedSecretFilesystem } from "./generatedSecretFilesystem"
 import { buildOciRuntimeSpec } from "./ociConfig"
 import { NodeProcessRunner } from "./nodeProcessRunner"
 import type { ProcessRunner, ProcessRunResult } from "./processRunner"
@@ -21,6 +23,7 @@ import { runscDeleteArgs, runscKillArgs, runscRunArgs } from "./runscCli"
 import {
   SANDBOX_GID,
   SANDBOX_NODE_BINARY,
+  SANDBOX_SECRET_BOOTSTRAP,
   SANDBOX_UID,
 } from "./sandboxIdentity"
 
@@ -60,6 +63,9 @@ export interface GVisorBackendRuntimeProcessOptions {
   /** Fixed polling interval used once the exponential backoff below has
    * grown past it. */
   maxProbeIntervalMs?: number
+  /** Required only when `start()` receives generated material. Production
+   * M10-B callers pass null and do not activate this path yet. */
+  generatedSecretFilesystem?: GeneratedSecretFilesystem
 }
 
 /**
@@ -94,6 +100,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
   private readonly resolveDnsConfig: typeof resolveDnsConfig
   private readonly maxRuntimeMs: number
   private readonly maxProbeIntervalMs: number
+  private readonly generatedSecretFilesystem?: GeneratedSecretFilesystem
 
   constructor(options: GVisorBackendRuntimeProcessOptions = {}) {
     this.runscBinaryPath = options.runscBinaryPath ?? "runsc"
@@ -104,11 +111,13 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     this.resolveDnsConfig = options.resolveDnsConfig ?? resolveDnsConfig
     this.maxRuntimeMs = options.maxRuntimeMs ?? 15 * 60_000
     this.maxProbeIntervalMs = options.maxProbeIntervalMs ?? 1_000
+    this.generatedSecretFilesystem = options.generatedSecretFilesystem
   }
 
   async start(
     workspace: LocalPreviewWorkspace,
     plan: BackendRuntimePlan,
+    secrets: GeneratedSecretMaterial | null = null,
   ): Promise<RuntimeProcessHandle> {
     if (!isSafePreviewSourceRoot(plan.sourceRoot)) {
       throw new Error("Backend runtime plan sourceRoot is unsafe.")
@@ -126,35 +135,102 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       await sandbox.ensureIngressOnlyNetworkNamespace()
 
     const dnsConfig = this.resolveDnsConfig()
-    const spec = buildOciRuntimeSpec({
-      command: [SANDBOX_NODE_BINARY, ...plan.start.args],
-      cwd:
-        plan.sourceRoot === "."
-          ? "/workspace"
-          : `/workspace/${plan.sourceRoot}`,
-      env: Object.entries(plan.platformEnvironment).map(
-        ([key, value]) => `${key}=${value}`,
-      ),
-      uid: SANDBOX_UID,
-      gid: SANDBOX_GID,
-      hostname: "peephole-backend",
-      resourceLimits: this.resourceLimits,
-      networkNamespacePath: namespacePath,
-      dnsConfigSource: dnsConfig.source,
-      workspaceSource: sandbox.rootDir,
-    })
-
     const containerId = `${sandbox.id}-backend-${randomBytes(4).toString("hex")}`
-    // `runsc run --bundle <dir>` always reads `<dir>/config.json` specifically
-    // (the OCI bundle format, same as RunscCommandRunner's install/build
-    // containers) -- safe to overwrite here because the supervisor never
-    // runs the install step and the backend process concurrently in the
-    // same workspace.
-    await writeFile(
-      path.join(sandbox.bundleDir, "config.json"),
-      JSON.stringify(spec, null, 2),
-    )
-    sandbox.registerContainer(containerId)
+    let secretMountSource: string | undefined
+    let secretCreated = false
+    let secretCleanupPromise: Promise<void> | null = null
+    const cleanupSecrets = (): Promise<void> => {
+      if (!secretCreated || !secrets || !this.generatedSecretFilesystem) {
+        return Promise.resolve()
+      }
+      secretCleanupPromise ??= this.generatedSecretFilesystem
+        .remove(secrets.runtimeId)
+        .then(() => {
+          secretCreated = false
+        })
+        .catch((error: unknown) => {
+          secretCleanupPromise = null
+          throw error
+        })
+      return secretCleanupPromise
+    }
+
+    try {
+      if (secrets) {
+        if (!this.generatedSecretFilesystem) {
+          throw new Error(
+            "Generated-secret filesystem is unavailable for this runtime.",
+          )
+        }
+        if (secrets.runtimeId !== workspace.id) {
+          throw new Error(
+            "Generated-secret material does not match the backend runtime.",
+          )
+        }
+        if (
+          pathsOverlap(
+            path.resolve(this.generatedSecretFilesystem.rootDir),
+            path.resolve(sandbox.bundleDir),
+          )
+        ) {
+          throw new Error(
+            "Generated-secret root overlaps persistent runtime storage.",
+          )
+        }
+        secretMountSource = await this.generatedSecretFilesystem.create(secrets)
+        secretCreated = true
+        const expectedMountSource = path.join(
+          path.resolve(this.generatedSecretFilesystem.rootDir),
+          secrets.runtimeId,
+        )
+        if (path.resolve(secretMountSource) !== expectedMountSource) {
+          throw new Error("Generated-secret mount source is invalid.")
+        }
+      }
+
+      const spec = buildOciRuntimeSpec({
+        command: secrets
+          ? [SANDBOX_NODE_BINARY, SANDBOX_SECRET_BOOTSTRAP, ...plan.start.args]
+          : [SANDBOX_NODE_BINARY, ...plan.start.args],
+        cwd:
+          plan.sourceRoot === "."
+            ? "/workspace"
+            : `/workspace/${plan.sourceRoot}`,
+        env: Object.entries(plan.platformEnvironment).map(
+          ([key, value]) => `${key}=${value}`,
+        ),
+        uid: SANDBOX_UID,
+        gid: SANDBOX_GID,
+        hostname: "peephole-backend",
+        resourceLimits: this.resourceLimits,
+        networkNamespacePath: namespacePath,
+        dnsConfigSource: dnsConfig.source,
+        workspaceSource: sandbox.rootDir,
+        generatedSecretsSource: secretMountSource,
+      })
+
+      // `runsc run --bundle <dir>` always reads `<dir>/config.json` specifically
+      // (the OCI bundle format, same as RunscCommandRunner's install/build
+      // containers) -- safe to overwrite here because the supervisor never
+      // runs the install step and the backend process concurrently in the
+      // same workspace.
+      await writeFile(
+        path.join(sandbox.bundleDir, "config.json"),
+        JSON.stringify(spec, null, 2),
+      )
+      sandbox.registerContainer(containerId)
+    } catch (error) {
+      try {
+        await cleanupSecrets()
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "Backend runtime start failed and secret cleanup was incomplete.",
+          { cause: cleanupError },
+        )
+      }
+      throw error
+    }
 
     // Deliberately not awaited: `runsc run` blocks until the sandboxed
     // process exits, which for a backend server is "until stopped."
@@ -190,9 +266,17 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       })()
       return deletePromise
     }
-    const cleanupAfterExit = async (): Promise<void> => {
-      await runPromise
-      await deleteContainer()
+    let cleanupAfterExitPromise: Promise<void> | null = null
+    const cleanupAfterExit = (): Promise<void> => {
+      cleanupAfterExitPromise ??= (async () => {
+        await runPromise
+        try {
+          await deleteContainer()
+        } finally {
+          await cleanupSecrets()
+        }
+      })()
+      return cleanupAfterExitPromise
     }
     const stop = (): Promise<void> => {
       stopPromise ??= (async () => {
@@ -219,6 +303,12 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
           await deleteContainer()
         } catch {
           deleteError = new Error("Backend runtime container cleanup failed.")
+        } finally {
+          try {
+            await cleanupSecrets()
+          } catch {
+            deleteError = new Error("Backend runtime secret cleanup failed.")
+          }
         }
         if (killError && deleteError) {
           throw new AggregateError(
@@ -231,6 +321,11 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       })()
       return stopPromise
     }
+
+    // Natural/bootstrap/runsc failure cleanup must not depend on a caller
+    // reaching the happy-path monitor. Keep the rejection available through
+    // waitForExit(), while preventing an unhandled background rejection.
+    void cleanupAfterExit().catch(() => undefined)
 
     return {
       // Internal-only: `peerIp` comes from the actual provisioned
@@ -296,4 +391,16 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  return isWithin(left, right) || isWithin(right, left)
+}
+
+function isWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate)
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  )
 }

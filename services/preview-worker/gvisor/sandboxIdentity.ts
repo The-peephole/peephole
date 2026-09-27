@@ -13,3 +13,7 @@ export const SANDBOX_NPM_CACHE = "/workspace/.home/.npm"
 // callers that only ever launch the base image's own Node must use this
 // fixed absolute path instead of relying on PATH.
 export const SANDBOX_NODE_BINARY = "/usr/local/bin/node"
+// Peephole-owned, immutable bootstrap baked into the trusted base rootfs.
+// It is never loaded from /workspace and never accepts a secret-file path
+// from repository code or OCI argv.
+export const SANDBOX_SECRET_BOOTSTRAP = "/opt/peephole/secret-bootstrap.mjs"

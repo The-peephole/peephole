@@ -753,8 +753,9 @@ database support) remain out of scope and have not started.
 
 ## D-032 - Ephemeral secrets (M10): generated-only first slice, delivered outside the OCI `process.env`/`config.json` path
 
-**Status:** Proposed -- design only, not implemented. M10 remains unchecked
-in docs/MVP_ROADMAP.md.
+**Status:** Proposed -- M10-A/M10-B foundations are implemented, but the
+feature is not wired, enabled, accepted, or real-host verified. M10 remains
+unchecked in docs/MVP_ROADMAP.md.
 
 An audit of the actual M9 data flow found that `BackendRuntimePlan.platformEnvironment`
 (`types/backendRuntime.ts`) is serialized verbatim into the OCI spec's
@@ -809,4 +810,16 @@ type; `core/analyzer/backendRuntimeAdapter.ts`'s eligibility gate and
 `core/preview/backendRuntimePlanValidator.ts` are unchanged, so a repository
 declaring a generated-secret requirement still cannot start successfully.
 The tmpfs/bootstrap OCI delivery mechanism (§9 of docs/EPHEMERAL_SECRETS.md)
-and all orchestration/admission wiring remain unbuilt -- M10-B/M10-C.
+and all orchestration/admission wiring were left for M10-B/M10-C.
+
+**M10-B foundation status (still not Accepted):** secret-free OCI injection
+primitives are now implemented: a dedicated, tmpfs-verified host secret root;
+restrictive per-runtime directories and deterministic material files; one
+read-only `/run/secrets` bind mount; a fixed Peephole-owned, shell-free Node
+bootstrap baked into the trusted base rootfs; lifecycle cleanup; and a bounded
+secret-root orphan reaper. Node has no supported exec-replacement API here, so
+the bootstrap remains the trusted PID 1 parent, forwards termination signals to
+its one direct backend child, and mirrors the child's exit status/signal. This
+capability is not enabled: `BackendRuntimeSupervisor` passes `null`, no broker
+is wired, backend eligibility is unchanged, and real-host/gVisor verification
+is deferred to M10-C. M10 remains incomplete.
