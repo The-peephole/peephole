@@ -1,9 +1,11 @@
 # Ephemeral Environment / Secrets (M10) — Design
 
-**Status: Planned / NOT IMPLEMENTED.** This document is an architecture and
-threat-model design produced against the actual M9 codebase. No runtime
-behavior described here exists yet. See D-032 (`docs/DECISIONS.md`) for the
-decision record and `docs/MVP_ROADMAP.md` stage 10, which remains unchecked.
+**Status: Partially implemented -- M10-A and M10-B foundations only.** The
+generated-material policy/broker and the secret-free OCI injection primitives
+now exist, but orchestration wiring, generated-secret eligibility relaxation,
+and real-gVisor production verification remain pending. The production
+supervisor explicitly passes no secret material, D-032 remains Proposed, and
+`docs/MVP_ROADMAP.md` stage 10 remains unchecked.
 
 This never relaxes `SECRET_ENV_REQUIRED`/`BACKEND_REQUIRED` for the static
 `static-v1`/`static-v2` contract, never starts M11 (temporary database
@@ -249,7 +251,7 @@ different piece of runtime-only state (the live dial target). The secret
 broker reuses that exact pattern rather than inventing a new one.
 
 ```ts
-// services/backend-runtime-worker/secretBroker.ts (NEW — not implemented)
+// services/backend-runtime-worker/secretBroker.ts (M10-A implemented; not wired)
 
 export interface GeneratedSecretMaterial {
   readonly runtimeId: string
@@ -500,7 +502,7 @@ treated as the existing `CONFLICT`/409 case. Do not hash low-entropy
 user-supplied values, even salted — that is an offline-guessable oracle for
 low-entropy secrets. This is explicitly deferred, not part of this slice.
 
-## 12. API / type proposal (not implemented)
+## 12. API / type design (partially implemented; orchestration pending)
 
 Design goal: secrets and public config are distinct types; nothing
 secret-shaped is reachable through a type that is also serialized to

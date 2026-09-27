@@ -12,6 +12,7 @@ describe("readProductionConfig", () => {
     expect(config.baseRootfsImage).toBe("/var/lib/peephole/base-rootfs")
     expect(config.bundlesRootDir).toBe("/var/lib/peephole/jobs")
     expect(config.runscRootDir).toBe("/var/run/peephole/runsc")
+    expect(config.generatedSecretRootDir).toBe("/run/peephole/secrets")
     expect(config.artifactStorageDir).toBe("/var/lib/peephole/artifacts")
     expect(config.artifactPort).toBe(8_788)
     expect(config.artifactTlsAskPort).toBe(8_790)
@@ -51,12 +52,14 @@ describe("readProductionConfig", () => {
       PEEPHOLE_GVISOR_BASE_ROOTFS: "/custom/rootfs",
       PEEPHOLE_GVISOR_BUNDLES_DIR: "/custom/jobs",
       PEEPHOLE_GVISOR_RUNSC_ROOT: "/custom/runsc",
+      PEEPHOLE_GENERATED_SECRET_ROOT: "/custom/secrets",
       PEEPHOLE_ARTIFACT_STORAGE_DIR: "/custom/artifacts",
     })
 
     expect(config.baseRootfsImage).toBe("/custom/rootfs")
     expect(config.bundlesRootDir).toBe("/custom/jobs")
     expect(config.runscRootDir).toBe("/custom/runsc")
+    expect(config.generatedSecretRootDir).toBe("/custom/secrets")
     expect(config.artifactStorageDir).toBe("/custom/artifacts")
   })
 
@@ -64,6 +67,12 @@ describe("readProductionConfig", () => {
     expect(() =>
       readProductionConfig({ PEEPHOLE_GVISOR_ORPHAN_MAX_AGE_MS: "1" }),
     ).toThrow(/PEEPHOLE_GVISOR_ORPHAN_MAX_AGE_MS/)
+  })
+
+  it("rejects a relative generated-secret root", () => {
+    expect(() =>
+      readProductionConfig({ PEEPHOLE_GENERATED_SECRET_ROOT: "secrets" }),
+    ).toThrow(/PEEPHOLE_GENERATED_SECRET_ROOT/)
   })
 
   it("rejects an out-of-range maintenance interval", () => {

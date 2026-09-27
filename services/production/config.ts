@@ -17,6 +17,9 @@ export interface ProductionConfig {
   baseRootfsImage: string
   bundlesRootDir: string
   runscRootDir: string
+  /** Dedicated memory-backed host root reserved for generated-secret
+   * material. M10-B defines it but does not enable broker/supervisor wiring. */
+  generatedSecretRootDir: string
   artifactStorageDir: string
   orphanReaperMaxAgeMs: number
   maintenanceIntervalMs: number
@@ -47,6 +50,7 @@ const DEFAULTS = {
   baseRootfsImage: "/var/lib/peephole/base-rootfs",
   bundlesRootDir: "/var/lib/peephole/jobs",
   runscRootDir: "/var/run/peephole/runsc",
+  generatedSecretRootDir: "/run/peephole/secrets",
   artifactStorageDir: "/var/lib/peephole/artifacts",
   orphanReaperMaxAgeMs: 30 * 60_000,
   maintenanceIntervalMs: 60_000,
@@ -91,6 +95,11 @@ export function readProductionConfig(
     runscRootDir: readPath(
       environment.PEEPHOLE_GVISOR_RUNSC_ROOT,
       DEFAULTS.runscRootDir,
+    ),
+    generatedSecretRootDir: readAbsolutePath(
+      "PEEPHOLE_GENERATED_SECRET_ROOT",
+      environment.PEEPHOLE_GENERATED_SECRET_ROOT,
+      DEFAULTS.generatedSecretRootDir,
     ),
     artifactStorageDir: readPath(
       environment.PEEPHOLE_ARTIFACT_STORAGE_DIR,
@@ -165,6 +174,18 @@ export function readProductionConfig(
 function readPath(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim()
   return trimmed || fallback
+}
+
+function readAbsolutePath(
+  name: string,
+  value: string | undefined,
+  fallback: string,
+): string {
+  const candidate = readPath(value, fallback)
+  if (!candidate.startsWith("/")) {
+    throw new Error(`${name} must be an absolute path.`)
+  }
+  return candidate
 }
 
 function readDomain(

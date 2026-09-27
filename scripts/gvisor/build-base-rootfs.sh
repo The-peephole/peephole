@@ -17,6 +17,7 @@ fi
 OUT_DIR="${1:-/var/lib/peephole/base-rootfs}"
 NODE_VERSION="24.20.0"
 UBUNTU_RELEASE="noble"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # Debian/Ubuntu's "primary" archive (archive.ubuntu.com) only carries
 # amd64/i386 packages; every other architecture (arm64, armhf, ppc64el,
@@ -60,6 +61,16 @@ rm -f "/tmp/${NODE_TARBALL}"
 echo "Verifying node/npm inside the rootfs"
 chroot "$OUT_DIR" /usr/local/bin/node --version
 chroot "$OUT_DIR" /usr/local/bin/npm --version
+
+# This fixed, Peephole-owned parent is the only process allowed to parse the
+# generated-secret mount. It lives in the immutable rootfs, never /workspace,
+# and launches the real Node entrypoint without a shell. Node cannot replace
+# itself with execve, so it remains PID 1 and mirrors signals/exit status to
+# and from its one direct child.
+install -D -m 0555 \
+  "$SCRIPT_DIR/secret-bootstrap.mjs" \
+  "$OUT_DIR/opt/peephole/secret-bootstrap.mjs"
+install -d -m 0755 "$OUT_DIR/run/secrets"
 
 # The sandbox process runs as uid/gid 65534 (nobody/nogroup), never root.
 # Its HOME and npm cache are created on the quota-backed /workspace mount;

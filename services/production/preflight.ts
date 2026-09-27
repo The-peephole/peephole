@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs"
-import { mkdir, stat } from "node:fs/promises"
+import { lstat, mkdir, realpath, stat } from "node:fs/promises"
+import nativePath from "node:path"
 import path from "node:path/posix"
 
 import {
@@ -9,6 +10,7 @@ import {
 import { NodeProcessRunner } from "../preview-worker/gvisor/nodeProcessRunner"
 import type { ProcessRunner } from "../preview-worker/gvisor/processRunner"
 import { type SandboxDiskManager } from "../preview-worker/gvisor/sandboxDisk"
+import { assertTmpfsFilesystem } from "../preview-worker/gvisor/generatedSecretFilesystem"
 
 const CGROUP_V2_MARKER = "/sys/fs/cgroup/cgroup.controllers"
 const IP_FORWARD_FILE = "/proc/sys/net/ipv4/ip_forward"
@@ -47,6 +49,14 @@ export interface ProductionPreflightOptions {
   pathExists?: (candidate: string) => Promise<boolean>
   /** Overridable for tests; defaults to the real resolveDnsConfigSource(). */
   resolveDnsConfigSource?: typeof resolveDnsConfigSource
+}
+
+export interface GeneratedSecretRootPreflightOptions {
+  secretRootDir: string
+  baseRootfsImage: string
+  processRunner?: ProcessRunner
+  findmntBinaryPath?: string
+  prepareDirectory?: (candidate: string) => Promise<void>
 }
 
 /**
@@ -257,6 +267,53 @@ export async function ensureProductionDiskLayout(
   if (bundlesDevice !== artifactsDevice) {
     throw new Error(
       "PEEPHOLE_GVISOR_BUNDLES_DIR and PEEPHOLE_ARTIFACT_STORAGE_DIR must share a filesystem so artifact publication is covered by sandbox disk admission.",
+    )
+  }
+}
+
+/** M10-B capability gate, deliberately separate from the currently active
+ * production preflight until orchestration is enabled. It proves both the
+ * host root's tmpfs backing and the trusted bootstrap's presence. */
+export async function ensureGeneratedSecretInjectionCapability(
+  options: GeneratedSecretRootPreflightOptions,
+): Promise<void> {
+  if (!nativePath.isAbsolute(options.secretRootDir)) {
+    throw new Error("Generated-secret root must be absolute.")
+  }
+  const root = nativePath.resolve(options.secretRootDir)
+  const prepare =
+    options.prepareDirectory ??
+    (async (candidate: string) => {
+      await mkdir(candidate, { recursive: true, mode: 0o700 })
+    })
+  await prepare(root)
+  const rootStats = await lstat(root)
+  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+    throw new Error("Generated-secret root must be a regular directory.")
+  }
+  if ((await realpath(root)) !== root) {
+    throw new Error("Generated-secret root must not traverse symlinks.")
+  }
+  await assertTmpfsFilesystem(
+    root,
+    options.processRunner,
+    options.findmntBinaryPath,
+  )
+
+  const bootstrap = nativePath.join(
+    options.baseRootfsImage,
+    "opt",
+    "peephole",
+    "secret-bootstrap.mjs",
+  )
+  const bootstrapStats = await lstat(bootstrap).catch(() => null)
+  if (
+    !bootstrapStats ||
+    !bootstrapStats.isFile() ||
+    bootstrapStats.isSymbolicLink()
+  ) {
+    throw new Error(
+      "Trusted generated-secret bootstrap is missing from the base rootfs.",
     )
   }
 }

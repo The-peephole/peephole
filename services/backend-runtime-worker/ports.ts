@@ -1,4 +1,5 @@
 import type { BackendRuntimePlan } from "../../types/backendRuntime"
+import type { GeneratedSecretMaterial } from "../../types/backendRuntimeSecrets"
 import type { LocalPreviewWorkspace } from "../preview-worker/local/localWorkspace"
 
 /**
@@ -61,5 +62,8 @@ export interface BackendRuntimeProcessStarter {
   start(
     workspace: LocalPreviewWorkspace,
     plan: BackendRuntimePlan,
+    /** Server-only material, already issued elsewhere. `null` preserves the
+     * current production behavior; M10-B does not connect a broker here. */
+    secrets: GeneratedSecretMaterial | null,
   ): Promise<RuntimeProcessHandle>
 }

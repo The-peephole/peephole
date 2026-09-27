@@ -222,7 +222,10 @@ export class BackendRuntimeSupervisor {
     )
     await this.controlPlane.markPhase(runtimeId, "starting")
     const handle = await runPhase("RUNTIME_START_FAILED", () =>
-      this.runtimeProcessStarter.start(workspace, plan),
+      // M10-B adds the delivery capability only. Broker issuance/take and
+      // eligibility wiring remain later work, so production is explicitly
+      // secret-free here.
+      this.runtimeProcessStarter.start(workspace, plan, null),
     )
 
     try {
