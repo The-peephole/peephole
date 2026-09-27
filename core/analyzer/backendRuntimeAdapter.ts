@@ -80,6 +80,9 @@ export function resolveBackendRuntimePlan(
       HOST: "0.0.0.0",
       NODE_ENV: "production",
     },
+    // M10-C1 is contract foundation only. Eligibility below still rejects
+    // every preview-generated candidate, so reachable plans remain empty.
+    generatedSecretNames: [],
   }
 }
 

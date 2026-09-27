@@ -802,13 +802,14 @@ CSPRNG generation and opaque-value wrapper
 (`core/backendSecrets/generatedSecretValue.ts`), the eligibility policy
 (`core/backendSecrets/generatedSecretPolicy.ts`), and the process-local
 broker (`services/backend-runtime-worker/secretBroker.ts`) now exist in the
-codebase. **This is foundation only -- not production-enabled.** None of it
-is referenced by `services/production/server.ts`, `BackendRuntimeSupervisor`,
-`BackendRuntimeProcessStarter`, `GVisorBackendRuntimeProcess`,
-`FullStackPreviewSupervisor`, any HTTP handler, or any PostgreSQL-backed
-type; `core/analyzer/backendRuntimeAdapter.ts`'s eligibility gate and
-`core/preview/backendRuntimePlanValidator.ts` are unchanged, so a repository
-declaring a generated-secret requirement still cannot start successfully.
+codebase. **This was foundation only -- not production-enabled.** At the
+M10-A stage, none of it was referenced by `services/production/server.ts`,
+`BackendRuntimeSupervisor`, `BackendRuntimeProcessStarter`,
+`GVisorBackendRuntimeProcess`, `FullStackPreviewSupervisor`, any HTTP handler,
+or any PostgreSQL-backed type. `core/analyzer/backendRuntimeAdapter.ts`'s
+eligibility gate and `core/preview/backendRuntimePlanValidator.ts` were
+unchanged, so a repository declaring a generated-secret requirement still
+could not start successfully.
 The tmpfs/bootstrap OCI delivery mechanism (§9 of docs/EPHEMERAL_SECRETS.md)
 and all orchestration/admission wiring were left for M10-B/M10-C.
 
@@ -823,3 +824,12 @@ its one direct backend child, and mirrors the child's exit status/signal. This
 capability is not enabled: `BackendRuntimeSupervisor` passes `null`, no broker
 is wired, backend eligibility is unchanged, and real-host/gVisor verification
 is deferred to M10-C. M10 remains incomplete.
+
+**M10-C1 names-only contract status (still not Accepted):**
+`BackendRuntimePlan` now carries only a strictly validated array of canonical
+generated-secret names; values remain excluded. The currently reachable
+adapter always emits an empty array, and its unchanged eligibility gate still
+rejects every `preview-generated-candidate` requirement. No broker orchestration,
+secret-filesystem activation, public HTTP field, PostgreSQL/FullStack durable
+field, or production activation was added. Real-gVisor verification remains
+pending and M10 remains incomplete.

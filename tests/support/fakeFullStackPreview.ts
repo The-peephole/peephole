@@ -41,6 +41,7 @@ export const validBackendPlan: BackendRuntimePlan = {
     HOST: "0.0.0.0",
     NODE_ENV: "production",
   },
+  generatedSecretNames: [],
 }
 
 const ACTIVE = new Set([

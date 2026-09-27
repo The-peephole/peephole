@@ -47,6 +47,7 @@ const plan: BackendRuntimePlan = {
     HOST: "0.0.0.0",
     NODE_ENV: "production",
   },
+  generatedSecretNames: [],
 }
 
 const requester = { subject: "user-1", ip: "203.0.113.10" }
