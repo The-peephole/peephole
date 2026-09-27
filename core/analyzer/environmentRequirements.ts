@@ -4,6 +4,7 @@ import type {
   EnvironmentRequirementKind,
   EnvironmentSensitivity,
 } from "../../types/environment"
+import { PREVIEW_GENERATED_SECRET_NAME_SET } from "../../types/backendRuntimeSecrets"
 import { ENV_TEMPLATE_FILENAMES } from "./envTemplateFiles"
 
 const PUBLIC_CLIENT_NAME_PATTERN = /^(?:VITE_|NEXT_PUBLIC_)/
@@ -16,17 +17,16 @@ const PUBLIC_CLIENT_NAME_PATTERN = /^(?:VITE_|NEXT_PUBLIC_)/
 const AUTO_CONFIGURABLE_NAMES = new Set(["PORT", "HOST", "NODE_ENV"])
 
 /**
- * A narrow allowlist of names a *future* ephemeral-secret stage could
- * plausibly generate itself (a random session/signing value with no
- * external dependency). This stage never generates, stores, or transmits
- * any value for these -- see the module doc on `types/environment.ts`.
+ * The canonical preview-generated-secret allowlist now lives in
+ * `types/backendRuntimeSecrets.ts` (`PREVIEW_GENERATED_SECRET_NAME_SET`) so
+ * this classification and the M10-A generation/policy/broker primitives
+ * (`core/backendSecrets/`, `services/backend-runtime-worker/secretBroker.ts`)
+ * can never silently diverge on what "the four names" means. This module
+ * still never generates, stores, or transmits any value for these -- it
+ * only reasons about declared *names* -- see the module doc on
+ * `types/environment.ts`.
  */
-const PREVIEW_GENERATED_SECRET_NAMES = new Set([
-  "JWT_SECRET",
-  "SESSION_SECRET",
-  "COOKIE_SECRET",
-  "CSRF_SECRET",
-])
+const PREVIEW_GENERATED_SECRET_NAMES = PREVIEW_GENERATED_SECRET_NAME_SET
 
 /**
  * Broad secret-like name signal, mirroring `environmentDetector.ts`'s

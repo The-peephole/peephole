@@ -794,3 +794,19 @@ no env, no secret ever joins that schema.
 Full design, threat model, architecture comparison, broker/OCI/idempotency/
 failure-semantics detail, and test plan: docs/EPHEMERAL_SECRETS.md. M11
 (temporary database support) is unaffected and has not started.
+
+**M10-A foundation status (added after this decision was proposed, still not
+Accepted):** the canonical name/policy types (`types/backendRuntimeSecrets.ts`),
+CSPRNG generation and opaque-value wrapper
+(`core/backendSecrets/generatedSecretValue.ts`), the eligibility policy
+(`core/backendSecrets/generatedSecretPolicy.ts`), and the process-local
+broker (`services/backend-runtime-worker/secretBroker.ts`) now exist in the
+codebase. **This is foundation only -- not production-enabled.** None of it
+is referenced by `services/production/server.ts`, `BackendRuntimeSupervisor`,
+`BackendRuntimeProcessStarter`, `GVisorBackendRuntimeProcess`,
+`FullStackPreviewSupervisor`, any HTTP handler, or any PostgreSQL-backed
+type; `core/analyzer/backendRuntimeAdapter.ts`'s eligibility gate and
+`core/preview/backendRuntimePlanValidator.ts` are unchanged, so a repository
+declaring a generated-secret requirement still cannot start successfully.
+The tmpfs/bootstrap OCI delivery mechanism (§9 of docs/EPHEMERAL_SECRETS.md)
+and all orchestration/admission wiring remain unbuilt -- M10-B/M10-C.
