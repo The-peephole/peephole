@@ -5,10 +5,12 @@ import {
   InMemoryBackendRuntimeQueue,
   InMemoryBackendRuntimeStore,
 } from "../services/backend-runtime-api/inMemoryAdapters"
+import { InMemoryBackendRuntimeSecretBroker } from "../services/backend-runtime-worker/secretBroker"
 import type { FullStackPreviewControlPlane } from "../services/fullstack-preview-api/controlPlane"
 import { createProductionFullStackRoutingInfrastructure } from "../services/production/fullStackRoutingInfrastructure"
 import type { ProductionArtifactStore } from "../services/preview-api/postgres/productionArtifactStore"
 import { composeProductionBackendRuntime } from "../services/preview-worker/gvisor/composeProductionBackendRuntime"
+import type { GeneratedSecretFilesystem } from "../services/preview-worker/gvisor/generatedSecretFilesystem"
 
 describe("production full-stack composition", () => {
   it("shares exactly one registry and one routing store across every routing participant", () => {
@@ -37,6 +39,12 @@ describe("production full-stack composition", () => {
       {
         baseRootfsImage: "/portable-test-rootfs",
         liveRuntimeRegistry: infrastructure.liveRuntimeRegistry,
+        secretBroker: new InMemoryBackendRuntimeSecretBroker(),
+        generatedSecretFilesystem: {
+          rootDir: "/run/peephole/test-secrets",
+          create: vi.fn(),
+          remove: vi.fn(),
+        } satisfies GeneratedSecretFilesystem,
       },
     )
     const activator = infrastructure.createActivator(

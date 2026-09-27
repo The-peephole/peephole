@@ -35,6 +35,7 @@ import { FullStackPreviewWorkerLoop } from "../fullstack-preview-worker/fullStac
 import { FullStackPreviewStartupReconciler } from "../fullstack-preview-worker/startupReconciler"
 import { readProductionConfig } from "./config"
 import { createProductionFullStackRoutingInfrastructure } from "./fullStackRoutingInfrastructure"
+import { initializeProductionGeneratedSecretRuntime } from "./generatedSecretRuntime"
 import {
   ensureProductionDiskLayout,
   ensureProductionPreflight,
@@ -106,6 +107,13 @@ async function main(): Promise<void> {
     bundlesRootDir: productionConfig.bundlesRootDir,
     artifactStorageDir: productionConfig.artifactStorageDir,
   })
+  const generatedSecrets = await initializeProductionGeneratedSecretRuntime({
+    secretRootDir: productionConfig.generatedSecretRootDir,
+    baseRootfsImage: productionConfig.baseRootfsImage,
+    bundlesRootDir: productionConfig.bundlesRootDir,
+    artifactStorageDir: productionConfig.artifactStorageDir,
+    orphanReaperMaxAgeMs: productionConfig.orphanReaperMaxAgeMs,
+  })
 
   const artifactStore = new PostgresProductionArtifactStore(database)
   const routing = createProductionFullStackRoutingInfrastructure({
@@ -175,6 +183,8 @@ async function main(): Promise<void> {
       diskManager,
       networkProvisioner,
       liveRuntimeRegistry: routing.liveRuntimeRegistry,
+      secretBroker: generatedSecrets.secretBroker,
+      generatedSecretFilesystem: generatedSecrets.filesystem,
     },
   )
   const fullStackSupervisor = new FullStackPreviewSupervisor(
@@ -274,6 +284,7 @@ async function main(): Promise<void> {
     maintenanceRunning = Promise.all([
       orphanReaper.reap(),
       networkOrphanReaper.reap(),
+      generatedSecrets.orphanReaper.reap(),
       routing.artifactHost.reap(),
     ])
       .then(() => undefined)

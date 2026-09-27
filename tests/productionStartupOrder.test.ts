@@ -15,6 +15,8 @@ describe("production startup safety gates", () => {
       "await networkOrphanReaper.reapAll()",
       "await ensureSandboxDiskCapability",
       "await ensureProductionDiskLayout",
+      "const generatedSecrets = await initializeProductionGeneratedSecretRuntime",
+      "const worker = composeProductionWorker",
       "await new FullStackPreviewStartupReconciler",
       "await routing.artifactHost.listen()",
       "await routing.tlsAskServer.listen()",
@@ -29,6 +31,21 @@ describe("production startup safety gates", () => {
     })
 
     expect(order).toEqual([...order].sort((left, right) => left - right))
+  })
+
+  it("includes bounded generated-secret reconciliation in maintenance", async () => {
+    const source = await readFile(
+      path.resolve("services/production/server.ts"),
+      "utf8",
+    )
+    const maintenanceStart = source.indexOf("const maintain = () =>")
+    const maintenance = source.slice(
+      maintenanceStart,
+      source.indexOf("maintain()", maintenanceStart),
+    )
+
+    expect(maintenance).toContain("generatedSecrets.orphanReaper.reap()")
+    expect(maintenance).toContain("cleanup failed; will retry")
   })
 
   it("shuts down lifecycle ownership before backend and static workers", async () => {

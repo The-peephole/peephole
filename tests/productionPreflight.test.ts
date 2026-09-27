@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { describe, expect, it } from "vitest"
@@ -258,6 +258,15 @@ describe("ensureProductionDiskLayout", () => {
 })
 
 describe("ensureGeneratedSecretInjectionCapability", () => {
+  it("rejects a non-absolute secret root", async () => {
+    await expect(
+      ensureGeneratedSecretInjectionCapability({
+        secretRootDir: "relative/secrets",
+        baseRootfsImage: path.resolve("rootfs"),
+      }),
+    ).rejects.toThrow(/must be absolute/)
+  })
+
   it("accepts only a tmpfs-backed root with the trusted bootstrap in the base image", async () => {
     const temporaryDir = await mkdtemp(
       path.join(os.tmpdir(), "peephole-secret-preflight-"),
@@ -310,6 +319,87 @@ describe("ensureGeneratedSecretInjectionCapability", () => {
           processRunner: new FakeProcessRunner({ findmnt: ok("ext4\n") }),
         }),
       ).rejects.toThrow(/not backed by tmpfs/)
+    } finally {
+      await rm(temporaryDir, { recursive: true, force: true })
+    }
+  })
+
+  it("fails closed when the configured root is not a directory", async () => {
+    const temporaryDir = await mkdtemp(
+      path.join(os.tmpdir(), "peephole-secret-preflight-"),
+    )
+    try {
+      const root = path.join(temporaryDir, "secrets")
+      await writeFile(root, "not a directory")
+
+      await expect(
+        ensureGeneratedSecretInjectionCapability({
+          secretRootDir: root,
+          baseRootfsImage: path.join(temporaryDir, "rootfs"),
+          prepareDirectory: async () => undefined,
+        }),
+      ).rejects.toThrow(/regular directory/)
+    } finally {
+      await rm(temporaryDir, { recursive: true, force: true })
+    }
+  })
+
+  it("fails closed when the configured root is a symlink", async () => {
+    const temporaryDir = await mkdtemp(
+      path.join(os.tmpdir(), "peephole-secret-preflight-"),
+    )
+    try {
+      const target = path.join(temporaryDir, "target")
+      const root = path.join(temporaryDir, "secrets")
+      await mkdir(target)
+      await symlink(target, root, "junction")
+
+      await expect(
+        ensureGeneratedSecretInjectionCapability({
+          secretRootDir: root,
+          baseRootfsImage: path.join(temporaryDir, "rootfs"),
+          prepareDirectory: async () => undefined,
+        }),
+      ).rejects.toThrow(/regular directory/)
+    } finally {
+      await rm(temporaryDir, { recursive: true, force: true })
+    }
+  })
+
+  it("fails closed when the configured root traverses a symlink", async () => {
+    const temporaryDir = await mkdtemp(
+      path.join(os.tmpdir(), "peephole-secret-preflight-"),
+    )
+    try {
+      const targetParent = path.join(temporaryDir, "target")
+      const linkedParent = path.join(temporaryDir, "linked")
+      await mkdir(path.join(targetParent, "secrets"), { recursive: true })
+      await symlink(targetParent, linkedParent, "junction")
+
+      await expect(
+        ensureGeneratedSecretInjectionCapability({
+          secretRootDir: path.join(linkedParent, "secrets"),
+          baseRootfsImage: path.join(temporaryDir, "rootfs"),
+          prepareDirectory: async () => undefined,
+        }),
+      ).rejects.toThrow(/must not traverse symlinks/)
+    } finally {
+      await rm(temporaryDir, { recursive: true, force: true })
+    }
+  })
+
+  it("fails closed when the trusted bootstrap is missing", async () => {
+    const temporaryDir = await mkdtemp(
+      path.join(os.tmpdir(), "peephole-secret-preflight-"),
+    )
+    try {
+      await expect(
+        ensureGeneratedSecretInjectionCapability({
+          secretRootDir: path.join(temporaryDir, "secrets"),
+          baseRootfsImage: path.join(temporaryDir, "rootfs"),
+          processRunner: new FakeProcessRunner({ findmnt: ok("tmpfs\n") }),
+        }),
+      ).rejects.toThrow(/bootstrap is missing/)
     } finally {
       await rm(temporaryDir, { recursive: true, force: true })
     }

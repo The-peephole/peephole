@@ -152,29 +152,99 @@ describe("resolveBackendRuntimePlan", () => {
   it.each([
     "JWT_SECRET",
     "SESSION_SECRET",
-    "API_KEY",
-    "PAT",
-    "DATABASE_URL",
-    "VITE_API_URL",
-    "SOME_UNUSUAL_NAME",
-  ])("fails closed when environment requirement %s is present", (name) => {
+    "COOKIE_SECRET",
+    "CSRF_SECRET",
+  ] as const)("allows canonical generated requirement %s", (name) => {
+    const plan = resolveBackendRuntimePlan(
+      repository,
+      candidate({
+        environmentRequirements: [
+          requirement({
+            name,
+            requirementKind: "preview-generated-candidate",
+            exposure: "server",
+            sensitivity: "secret-like",
+          }),
+        ],
+      }),
+    )
+
+    expect(plan?.generatedSecretNames).toEqual([name])
+  })
+
+  it("derives multiple generated names deterministically and ignores auto-configurable names", () => {
+    const plan = resolveBackendRuntimePlan(
+      repository,
+      candidate({
+        environmentRequirements: [
+          requirement({
+            name: "SESSION_SECRET",
+            requirementKind: "preview-generated-candidate",
+            sensitivity: "secret-like",
+          }),
+          requirement({ name: "PORT" }),
+          requirement({
+            name: "CSRF_SECRET",
+            requirementKind: "preview-generated-candidate",
+            sensitivity: "secret-like",
+          }),
+          requirement({ name: "HOST" }),
+          requirement({ name: "NODE_ENV" }),
+        ],
+      }),
+    )
+
+    expect(plan?.generatedSecretNames).toEqual([
+      "CSRF_SECRET",
+      "SESSION_SECRET",
+    ])
+  })
+
+  it.each([
+    ["API_KEY", "user-required", "server"],
+    ["OPENAI_API_KEY", "user-required", "server"],
+    ["TOKEN", "user-required", "server"],
+    ["PASSWORD", "user-required", "server"],
+    ["DATABASE_URL", "database-requirement", "server"],
+    ["REDIS_URL", "database-requirement", "server"],
+    ["SOME_UNUSUAL_NAME", "unknown", "server"],
+    ["VITE_SECRET", "user-required", "client-public"],
+    ["NEXT_PUBLIC_TOKEN", "user-required", "client-public"],
+    ["API_URL", "external-routing-candidate", "server"],
+    ["APP_SECRET", "preview-generated-candidate", "server"],
+    ["SESSION_SECRET", "preview-generated-candidate", "client-public"],
+    ["SESSION_SECRET", "user-required", "server"],
+  ] as const)(
+    "rejects unsupported environment requirement %s",
+    (name, requirementKind, exposure) => {
+      expect(
+        resolveBackendRuntimePlan(
+          repository,
+          candidate({
+            environmentRequirements: [
+              requirement({ name, requirementKind, exposure }),
+            ],
+          }),
+        ),
+      ).toBeNull()
+    },
+  )
+
+  it("does not let a valid generated requirement mask an unsupported requirement", () => {
     expect(
       resolveBackendRuntimePlan(
         repository,
         candidate({
           environmentRequirements: [
             requirement({
-              name,
-              requirementKind:
-                name === "JWT_SECRET" || name === "SESSION_SECRET"
-                  ? "preview-generated-candidate"
-                  : name === "DATABASE_URL"
-                    ? "database-requirement"
-                    : name === "VITE_API_URL"
-                      ? "external-routing-candidate"
-                      : name === "SOME_UNUSUAL_NAME"
-                        ? "unknown"
-                        : "user-required",
+              name: "SESSION_SECRET",
+              requirementKind: "preview-generated-candidate",
+              sensitivity: "secret-like",
+            }),
+            requirement({
+              name: "OPENAI_API_KEY",
+              requirementKind: "user-required",
+              sensitivity: "secret-like",
             }),
           ],
         }),
@@ -207,7 +277,7 @@ describe("resolveBackendRuntimePlan", () => {
     ])
   })
 
-  it("keeps generated-secret names empty on the currently reachable admission path", () => {
+  it("keeps generated-secret names empty when none are declared", () => {
     const plan = resolveBackendRuntimePlan(repository, candidate())
 
     expect(plan?.generatedSecretNames).toEqual([])

@@ -1,6 +1,7 @@
 import type { BackendRuntimeControlPlane } from "../../backend-runtime-api/controlPlane"
 import { BackendRuntimeSupervisor } from "../../backend-runtime-worker/backendRuntimeSupervisor"
 import type { LiveBackendRuntimeRouteRegistry } from "../../backend-runtime-worker/liveRuntimeRegistry"
+import type { BackendRuntimeSecretBroker } from "../../backend-runtime-worker/secretBroker"
 import { ArchiveByteStore } from "../local/archiveByteStore"
 import { ExtractionState } from "../local/extractionState"
 import { GitHubCommitArchiveFetcher } from "../local/githubCommitArchiveFetcher"
@@ -31,9 +32,10 @@ export interface ComposeProductionBackendRuntimeOptions {
    * plane's own runtime TTL -- see GVisorBackendRuntimeProcess's doc
    * comment. */
   maxRuntimeMs?: number
-  /** M10-B injection primitive. Supplying it alone does not enable secrets;
-   * the production supervisor still passes null until later orchestration. */
-  generatedSecretFilesystem?: GeneratedSecretFilesystem
+  /** Explicit process-local ownership dependencies. This composition never
+   * constructs hidden broker/filesystem fallbacks. */
+  secretBroker: BackendRuntimeSecretBroker
+  generatedSecretFilesystem: GeneratedSecretFilesystem
   /** Process-local live-route registry the same-process full-stack proxy
    * resolver also reads from -- REQUIRED, not defaulted, and
    * deliberately never constructed by this function. The one process
@@ -105,6 +107,7 @@ export function composeProductionBackendRuntime(
     {
       installTimeoutMs: options.installTimeoutMs,
       readinessTimeoutMs: options.readinessTimeoutMs,
+      secretBroker: options.secretBroker,
       cleanup: (runtimeId) => {
         extraction.delete(runtimeId)
       },

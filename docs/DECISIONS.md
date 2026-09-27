@@ -753,10 +753,10 @@ database support) remain out of scope and have not started.
 
 ## D-032 - Ephemeral secrets (M10): generated-only first slice, delivered outside the OCI `process.env`/`config.json` path
 
-**Status:** Proposed -- M10-A/M10-B foundations and M10-C1/M10-C2 internal
-contracts are implemented, but the feature is not eligible, production
-activated, accepted, or real-host verified. M10 remains unchecked in
-docs/MVP_ROADMAP.md.
+**Status:** Proposed -- M10-A/M10-B foundations, M10-C1/M10-C2 internal
+contracts, and M10-C3 production-code activation are implemented, but the
+feature is not real-host verified, deployed, or accepted. M10 remains unchecked
+in docs/MVP_ROADMAP.md.
 
 An audit of the actual M9 data flow found that `BackendRuntimePlan.platformEnvironment`
 (`types/backendRuntime.ts`) is serialized verbatim into the OCI spec's
@@ -828,12 +828,12 @@ is deferred to M10-C. M10 remains incomplete.
 
 **M10-C1 names-only contract status (still not Accepted):**
 `BackendRuntimePlan` now carries only a strictly validated array of canonical
-generated-secret names; values remain excluded. The currently reachable
-adapter always emits an empty array, and its unchanged eligibility gate still
-rejects every `preview-generated-candidate` requirement. No broker orchestration,
-secret-filesystem activation, public HTTP field, PostgreSQL/FullStack durable
-field, or production activation was added. Real-gVisor verification remains
-pending and M10 remains incomplete.
+generated-secret names; values remain excluded. At the C1 stage the adapter
+still emitted an empty array and rejected every `preview-generated-candidate`
+requirement. No broker orchestration, secret-filesystem activation, public HTTP
+field, PostgreSQL/FullStack durable field, or production activation was added
+by C1 itself. Real-gVisor verification remains pending and M10 remains
+incomplete.
 
 **M10-C2 internal orchestration status (still not Accepted):** an optionally
 injected broker now lets `BackendRuntimeSupervisor` fail closed for synthetic,
@@ -846,10 +846,20 @@ stale material, a missing broker, and equivalent broker lifecycle failures map
 to the public-safe `SECRET_UNAVAILABLE` category. Broker discard is attempted
 on every supervisor exit and cannot block runtime/workspace teardown.
 
-This remains an internal, unreachable production path: real GitHub admission
-still emits only `generatedSecretNames: []`, `preview-generated-candidate`
-eligibility remains blocked, and `services/production/server.ts` constructs no
-broker or generated-secret filesystem/reaper/preflight activation. FullStack
-durable/public schemas and backend egress are unchanged. Real-gVisor
-verification and production deployment remain pending; D-032 remains Proposed
-and M10 remains incomplete.
+**M10-C3 production-code activation status (still not Accepted):** real GitHub
+exact-commit admission now accepts only server-exposed
+`preview-generated-candidate` requirements whose names pass the canonical
+four-name policy and derives deterministic names-only plans. The production
+composition root explicitly owns one process-local broker and one tmpfs-only
+generated-secret filesystem, passes those exact instances to the supervisor
+and process starter, performs capability preflight plus fail-closed startup
+`reapAll()` before workers/listeners, and includes bounded age-gated `reap()` in
+maintenance. No secret value is created during startup; generation remains at
+the non-empty runtime START boundary.
+
+FullStack durable/public schemas, HTTP request/response contracts, PostgreSQL,
+fingerprints, `platformEnvironment`, and backend egress are unchanged. Real
+gVisor/production-host verification has not run, production deployment has not
+occurred, and real-host tmpfs/bootstrap/runsc behavior, bootstrap PID 1 signal
+semantics, and `runsc --root` persistence inspection remain pending for M10-C4.
+D-032 remains Proposed, M10 remains incomplete, and M11 has not started.

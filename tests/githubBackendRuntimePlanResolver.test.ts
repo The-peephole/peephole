@@ -65,9 +65,91 @@ describe("GitHubBackendRuntimePlanResolver", () => {
     })
   })
 
+  it("derives generated-secret names only from exact-commit env-template analysis", async () => {
+    const marker = "must-not-enter-the-plan"
+    const resolver = new GitHubBackendRuntimePlanResolver(
+      github(
+        qualifyingFiles({
+          ".env.example": `SESSION_SECRET=${marker}\nCSRF_SECRET=${marker}`,
+        }),
+      ),
+    )
+
+    const resolved = await resolver.resolve(repository, ".")
+
+    expect(resolved?.generatedSecretNames).toEqual([
+      "CSRF_SECRET",
+      "SESSION_SECRET",
+    ])
+    expect(JSON.stringify(resolved)).not.toContain(marker)
+    expect(JSON.stringify(resolved)).not.toContain("values")
+  })
+
+  it("treats sourceRoot as a hint and re-authorizes the hinted path at the pinned commit", async () => {
+    const client = github({
+      "backend/package.json": packageJson,
+      "backend/package-lock.json": "{}",
+      "backend/.env.example": "SESSION_SECRET=",
+    })
+    const resolver = new GitHubBackendRuntimePlanResolver(client)
+
+    const resolved = await resolver.resolve(repository, "backend")
+
+    expect(resolved).toMatchObject({
+      repository,
+      sourceRoot: "backend",
+      generatedSecretNames: ["SESSION_SECRET"],
+    })
+    expect(client.getRepositoryMetadataAtCommit).toHaveBeenCalledWith(
+      repository,
+    )
+    expect(client.getRepositoryTextFile).toHaveBeenCalledWith(
+      metadata,
+      "backend/package.json",
+      expect.any(Number),
+    )
+  })
+
   it("rejects an env template containing an unsupported API key", async () => {
     const resolver = new GitHubBackendRuntimePlanResolver(
       github(qualifyingFiles({ ".env.example": "API_KEY=example" })),
+    )
+
+    await expect(resolver.resolve(repository, ".")).resolves.toBeNull()
+  })
+
+  it("rejects database requirements even when no database dependency is declared", async () => {
+    const resolver = new GitHubBackendRuntimePlanResolver(
+      github(qualifyingFiles({ ".env.example": "DATABASE_URL=" })),
+    )
+
+    await expect(resolver.resolve(repository, ".")).resolves.toBeNull()
+  })
+
+  it("keeps database dependency rejection independent of generated-secret eligibility", async () => {
+    const resolver = new GitHubBackendRuntimePlanResolver(
+      github(
+        qualifyingFiles({
+          "package.json": JSON.stringify({
+            name: "web",
+            dependencies: { express: "1.0.0", pg: "1.0.0" },
+            scripts: { start: "node src/server.js" },
+          }),
+          ".env.example": "SESSION_SECRET=",
+        }),
+      ),
+    )
+
+    await expect(resolver.resolve(repository, ".")).resolves.toBeNull()
+  })
+
+  it("does not let a canonical generated name mask a user-required name", async () => {
+    const resolver = new GitHubBackendRuntimePlanResolver(
+      github(
+        qualifyingFiles({
+          ".env.example": "SESSION_SECRET=\nOPENAI_API_KEY=",
+        }),
+      ),
     )
 
     await expect(resolver.resolve(repository, ".")).resolves.toBeNull()
