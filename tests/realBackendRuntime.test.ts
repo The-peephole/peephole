@@ -49,7 +49,7 @@ import type { BackendRuntimePlan } from "../types/backendRuntime"
 import { createRealGeneratedSecretTestRoot } from "./support/realGeneratedSecretTestRoot"
 import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 import {
-  reconcileDedicatedRunscStateForCleanup,
+  removeDedicatedTestRootIfReconciled,
   scanRunscStateForRawValue,
 } from "./support/realRunscStateInspection"
 
@@ -136,19 +136,24 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
           // kernel namespace mount (e.g. null-netns) still living under
           // this dedicated, test-owned runsc root. Reconcile it first --
           // and never force-remove the root if that reconciliation cannot
-          // prove the mount is gone.
-          const reconciled = await reconcileDedicatedRunscStateForCleanup(
+          // prove the mount is gone (see
+          // tests/support/realRunscStateInspection.ts's
+          // `removeDedicatedTestRootIfReconciled`, unit-tested there in
+          // isolation since this describe block itself only runs on a real
+          // gVisor host).
+          const outcome = await removeDedicatedTestRootIfReconciled(
+            root,
             environment.runscRootDir,
-          ).catch((error: unknown): { ok: false; reason: string } => ({
-            ok: false,
-            reason: `Reconciliation threw: ${error instanceof Error ? error.message : String(error)}`,
+          ).catch((): { removed: false; reason: string } => ({
+            removed: false,
+            reason: "Reconciliation threw unexpectedly.",
           }))
-          if (!reconciled.ok) {
+          if (!outcome.removed) {
             process.stderr.write(
-              `Real backend fixture cleanup is incomplete; preserving test-owned root because its dedicated runsc state could not be reconciled (${reconciled.reason}): ${root}\n`,
+              `Real backend fixture cleanup is incomplete; preserving test-owned root because its dedicated runsc state could not be reconciled (${outcome.reason}): ${root}\n`,
             )
-            continue
           }
+          continue
         }
         await rm(root, { recursive: true, force: true })
       }

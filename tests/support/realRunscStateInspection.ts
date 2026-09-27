@@ -1,8 +1,15 @@
-import { lstat as fsLstat, readFile as fsReadFile } from "node:fs/promises"
+import {
+  lstat as fsLstat,
+  readFile as fsReadFile,
+  rm as fsRm,
+} from "node:fs/promises"
 import path from "node:path"
 
 import { NodeProcessRunner } from "../../services/preview-worker/gvisor/nodeProcessRunner"
-import type { ProcessRunner } from "../../services/preview-worker/gvisor/processRunner"
+import type {
+  ProcessRunner,
+  ProcessRunResult,
+} from "../../services/preview-worker/gvisor/processRunner"
 import {
   scanRegularFilesForRawValue,
   type BoundedRawValueScanResult,
@@ -54,9 +61,34 @@ export interface RunscStateScanResult extends Omit<
 }
 
 /**
+ * The only four things the exact `<runscRootDir>/null-netns` path can ever
+ * be, from this module's point of view. `"unknown"` is deliberately distinct
+ * from `"absent"`/`"present-non-nsfs"` -- an inspection FAILURE (an lstat
+ * error other than "does not exist," an unreadable or unparseable
+ * `/proc/self/mountinfo`) must never be treated the same as a successful
+ * inspection that positively proves the path is safe to hand to a normal
+ * `rm`. Conflating those two states is exactly the defect this type exists
+ * to make structurally impossible.
+ */
+export type NullNetnsClassification =
+  | { kind: "absent" }
+  | { kind: "exact-nsfs-mount"; path: string }
+  | { kind: "present-non-nsfs" }
+  /** Successfully lstat'd and is not a symlink target we'd expect a normal
+   * file/mount to be, but IS itself a symlink -- refused rather than
+   * assumed safe, since a symlink sitting exactly where the trusted kernel
+   * mount should be is anomalous. */
+  | { kind: "symlink" }
+  | { kind: "unknown"; reason: string }
+
+/**
  * Parses `/proc/self/mountinfo` (see proc(5)) into `{mountPoint, fsType}`
- * pairs. Mirrors the decoding already used for the same file format in
+ * pairs, skipping any line that does not match the expected shape. Mirrors
+ * the decoding already used for the same file format in
  * scripts/production-smoke/host.ts's `parseMountInfo`/`decodeMountPath`.
+ * Deliberately lenient at this layer (a general-purpose parsing utility);
+ * `classifyNullNetns` below applies its own stricter completeness check
+ * before trusting the result.
  */
 export function parseMountInfo(contents: string): MountInfoEntry[] {
   const entries: MountInfoEntry[] = []
@@ -81,21 +113,25 @@ function decodeMountPath(value: string): string {
   )
 }
 
+function isEnoent(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT"
+}
+
 /**
- * Proves -- or refuses to assume -- that `<runscRootDir>/null-netns` is
- * genuinely a kernel namespace mount, never by name alone. Returns a set
- * containing exactly that one path only when ALL of the following hold:
- * the path exists, is not a symlink, and `/proc/self/mountinfo` shows it as
- * an exact mount point (not merely contained within one) whose filesystem
- * type is `nsfs`. Any failure to prove this -- missing path, symlink,
- * unreadable mountinfo, wrong fstype, or a mount point that only contains
- * (rather than exactly is) the candidate -- returns an empty set, which
- * leaves the candidate to the normal fail-closed scan path.
+ * Proves -- or explicitly refuses to assume -- exactly what
+ * `<runscRootDir>/null-netns` currently is. Every branch is a positive
+ * determination except `"unknown"`, which is returned whenever the
+ * classification cannot be trusted: an lstat failure that isn't "the path
+ * doesn't exist," a mount-information read failure, or mount information
+ * that doesn't fully parse (any non-blank line this module's own parser
+ * cannot interpret makes the whole read untrustworthy for this purpose,
+ * even if other lines look fine). Never returns or logs the raw contents of
+ * anything it reads.
  */
-export async function findExactNullNetnsMount(
+export async function classifyNullNetns(
   runscRootDir: string,
   options: RealRunscStateInspectionOptions = {},
-): Promise<ReadonlySet<string>> {
+): Promise<NullNetnsClassification> {
   const candidate = path.resolve(runscRootDir, NULL_NETNS_FILENAME)
   const doLstat = options.lstat ?? ((p: string) => fsLstat(p))
   const readMountInfo =
@@ -104,30 +140,55 @@ export async function findExactNullNetnsMount(
   let stats: { isSymbolicLink(): boolean }
   try {
     stats = await doLstat(candidate)
-  } catch {
-    return new Set()
+  } catch (error) {
+    if (isEnoent(error)) return { kind: "absent" }
+    return {
+      kind: "unknown",
+      reason: "Could not stat the candidate null-netns path.",
+    }
   }
-  if (stats.isSymbolicLink()) return new Set()
+  if (stats.isSymbolicLink()) return { kind: "symlink" }
 
   let contents: string
   try {
     contents = await readMountInfo()
   } catch {
-    return new Set()
+    return {
+      kind: "unknown",
+      reason:
+        "Could not read mount information to classify the candidate path.",
+    }
   }
 
-  const isExactNsfsMount = parseMountInfo(contents).some(
+  const nonBlankLines = contents
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+  const entries = parseMountInfo(contents)
+  if (nonBlankLines.length === 0 || entries.length !== nonBlankLines.length) {
+    // Either genuinely empty (never true of a real /proc/self/mountinfo) or
+    // at least one line this parser could not interpret -- either way, not
+    // a basis anything else here may treat as a proven negative.
+    return {
+      kind: "unknown",
+      reason: "Mount information could not be reliably parsed.",
+    }
+  }
+
+  const isExactNsfsMount = entries.some(
     (entry) => entry.mountPoint === candidate && entry.fsType === "nsfs",
   )
-  return isExactNsfsMount ? new Set([candidate]) : new Set()
+  return isExactNsfsMount
+    ? { kind: "exact-nsfs-mount", path: candidate }
+    : { kind: "present-non-nsfs" }
 }
 
 /**
  * The M10-C4B-safe replacement for calling `scanRegularFilesForRawValue`
- * directly against a runsc `--root` state directory. Computes the one
- * proven kernel-namespace-mount exclusion (if any) and forwards it to the
- * generic, still-fully-fail-closed scanner -- every other unreadable path,
- * bound overrun, or open/read failure still throws exactly as before.
+ * directly against a runsc `--root` state directory. Excludes exactly the
+ * one path `classifyNullNetns` proves is a kernel namespace mount; every
+ * other classification (including `"unknown"`) adds no exclusion, leaving
+ * the generic, still-fully-fail-closed scanner to open and read it -- and
+ * fail closed if it genuinely cannot.
  */
 export async function scanRunscStateForRawValue(
   runscRootDir: string,
@@ -137,10 +198,12 @@ export async function scanRunscStateForRawValue(
     maxBytes?: number
   } = {},
 ): Promise<RunscStateScanResult> {
-  const structuralExclusions = await findExactNullNetnsMount(
-    runscRootDir,
-    options,
-  )
+  const classification = await classifyNullNetns(runscRootDir, options)
+  const structuralExclusions =
+    classification.kind === "exact-nsfs-mount"
+      ? new Set([classification.path])
+      : new Set<string>()
+
   const result = await scanRegularFilesForRawValue(runscRootDir, rawValue, {
     maxEntries: options.maxEntries,
     maxBytes: options.maxBytes,
@@ -156,70 +219,107 @@ export async function scanRunscStateForRawValue(
 /**
  * Prepares a dedicated, test-owned runsc `--root` directory for removal.
  * Never touches a shared/production runsc root -- callers must only ever
- * pass a directory created exclusively for one test run. If a genuine
- * `null-netns` nsfs mount is found there, this unmounts exactly that one
- * path (never a wildcard, never a recursive unmount of any ancestor),
- * looping a bounded number of times since gVisor may stack more than one
- * bind mount at the same path. Returns `{ok: false}` -- never throws,
- * never deletes anything itself -- whenever it cannot prove the path is
- * safe to hand off to the caller's own directory removal: a symlink where
- * the mount should be, or a mount that would not clear within the bounded
- * retry budget. The caller must treat `{ok: false}` as "preserve this
- * directory," not as license to force-remove it anyway.
+ * pass a directory created exclusively for one test run.
+ *
+ * Repeatedly classifies the exact `null-netns` candidate (bounded): an
+ * `"absent"` or `"present-non-nsfs"` result means the caller's normal `rm`
+ * is safe; a `"symlink"` or `"unknown"` result means this function refuses
+ * to guess and returns `{ok: false}` so the caller preserves the directory
+ * instead of deleting it. Only `"exact-nsfs-mount"` triggers an unmount
+ * attempt (never a wildcard, never a recursive unmount of any ancestor) --
+ * and success is judged solely by re-classifying afterward, never by the
+ * unmount command's own reported exit status, since gVisor may stack more
+ * than one bind mount at the same path.
  */
 export async function reconcileDedicatedRunscStateForCleanup(
   dedicatedRunscRootDir: string,
   options: RealRunscStateInspectionOptions = {},
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const candidate = path.resolve(dedicatedRunscRootDir, NULL_NETNS_FILENAME)
-  const doLstat = options.lstat ?? ((p: string) => fsLstat(p))
   const processRunner = options.processRunner ?? new NodeProcessRunner()
   const umountBinaryPath = options.umountBinaryPath ?? "umount"
+  let lastAttemptReportedFailure = false
 
   for (let attempt = 0; attempt < MAX_UNMOUNT_ATTEMPTS; attempt += 1) {
-    let stats: { isSymbolicLink(): boolean }
-    try {
-      stats = await doLstat(candidate)
-    } catch {
+    const classification = await classifyNullNetns(
+      dedicatedRunscRootDir,
+      options,
+    )
+
+    if (
+      classification.kind === "absent" ||
+      classification.kind === "present-non-nsfs"
+    ) {
       return { ok: true }
     }
-    if (stats.isSymbolicLink()) {
+    if (classification.kind === "symlink") {
       return {
         ok: false,
         reason:
           "Refusing to reconcile: the dedicated runsc root's null-netns path is unexpectedly a symlink.",
       }
     }
-
-    const exclusions = await findExactNullNetnsMount(
-      dedicatedRunscRootDir,
-      options,
-    )
-    if (exclusions.size === 0) {
-      // Exists but is not a proven nsfs mount -- not this function's
-      // concern; leave it for the caller's normal directory removal.
-      return { ok: true }
+    if (classification.kind === "unknown") {
+      return {
+        ok: false,
+        reason: `Could not reliably classify the dedicated runsc root's null-netns path (${classification.reason}).`,
+      }
     }
 
+    // classification.kind === "exact-nsfs-mount": attempt exactly one
+    // unmount of exactly this proven path. Whether this reports success is
+    // never treated as proof by itself -- the next loop iteration's fresh
+    // classification is the only thing that actually decides whether the
+    // mount is gone. It is still inspected, so a command that fails
+    // structurally (nonzero exit, timeout, thrown error) is distinguishable
+    // in the final failure reason from one that reported success yet left
+    // the mount in place.
+    let result: ProcessRunResult | undefined
     try {
-      await processRunner.run(umountBinaryPath, [candidate], {
-        timeoutMs: 10_000,
-      })
+      result = await processRunner.run(
+        umountBinaryPath,
+        [classification.path],
+        { timeoutMs: 10_000 },
+      )
     } catch {
-      // Keep retrying within the bounded budget below.
+      result = undefined
     }
+    lastAttemptReportedFailure =
+      result === undefined || result.exitCode !== 0 || result.timedOut
   }
 
-  const stillMounted = await findExactNullNetnsMount(
-    dedicatedRunscRootDir,
+  return {
+    ok: false,
+    reason: lastAttemptReportedFailure
+      ? "The dedicated runsc root's null-netns mount did not clear: the umount command itself did not report success within the bounded retry budget."
+      : "The dedicated runsc root's null-netns mount did not clear even though the umount command reported success, within the bounded retry budget.",
+  }
+}
+
+/**
+ * The exact "reconcile, then remove only if reconciled" decision
+ * `tests/realBackendRuntime.test.ts`'s shared `afterEach` applies to a
+ * dedicated-runsc-root environment, extracted here so it is unit-testable
+ * without the real-gVisor-gated describe block. Never removes `root` when
+ * reconciliation could not prove the dedicated runsc state was safe to
+ * hand off -- the evidence directory is preserved instead.
+ */
+export async function removeDedicatedTestRootIfReconciled(
+  root: string,
+  runscRootDir: string,
+  options: RealRunscStateInspectionOptions & {
+    rm?: (targetPath: string) => Promise<void>
+  } = {},
+): Promise<{ removed: true } | { removed: false; reason: string }> {
+  const reconciled = await reconcileDedicatedRunscStateForCleanup(
+    runscRootDir,
     options,
   )
-  if (stillMounted.size > 0) {
-    return {
-      ok: false,
-      reason:
-        "The dedicated runsc root's null-netns mount did not clear within the bounded unmount retry budget.",
-    }
+  if (!reconciled.ok) {
+    return { removed: false, reason: reconciled.reason }
   }
-  return { ok: true }
+  const doRm =
+    options.rm ??
+    ((targetPath: string) => fsRm(targetPath, { recursive: true, force: true }))
+  await doRm(root)
+  return { removed: true }
 }
