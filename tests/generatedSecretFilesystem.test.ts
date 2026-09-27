@@ -226,6 +226,23 @@ describe("GeneratedSecretOrphanReaper", () => {
     await expect(reaper.reapAll()).resolves.toEqual([])
   })
 
+  it("rejects a reaper/filesystem root mismatch", () => {
+    const mismatchedFilesystem = new TmpfsGeneratedSecretFilesystem({
+      rootDir: path.join(parentDir, "other-secrets"),
+      verifyMemoryBackedRoot: async () => undefined,
+      setOwnership: async () => undefined,
+    })
+
+    expect(
+      () =>
+        new GeneratedSecretOrphanReaper({
+          rootDir: secretRoot,
+          filesystem: mismatchedFilesystem,
+          verifyMemoryBackedRoot: async () => undefined,
+        }),
+    ).toThrow(/roots must match/)
+  })
+
   it("deletes only valid owned directories and leaves unrelated entries", async () => {
     const filesystem = store()
     await filesystem.create(material("runtime-1111"))

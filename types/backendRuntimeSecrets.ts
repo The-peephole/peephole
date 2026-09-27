@@ -8,9 +8,10 @@
  * `FullStackPreview`'s public HTTP shape, or any PostgreSQL-backed type.
  *
  * M10-C2's supervisor may pass destructively-consumed
- * `GeneratedSecretMaterial` to the internal process starter for a synthetic
- * non-empty plan. Production admission still emits empty names and production
- * composition injects no broker, so no HTTP/durable-store activation exists.
+ * `GeneratedSecretMaterial` to the internal process starter for a non-empty
+ * plan. M10-C3 production admission may derive canonical names and production
+ * composition injects one process-local broker, while HTTP and durable-store
+ * contracts still contain no material or client-provided secret fields.
  *
  * This is the single canonical source for the fixed preview-generated
  * secret name allowlist -- `core/analyzer/environmentRequirements.ts`

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import { BackendRuntimeControlPlane } from "../services/backend-runtime-api/controlPlane"
 import {
@@ -7,7 +7,9 @@ import {
 } from "../services/backend-runtime-api/inMemoryAdapters"
 import { BackendRuntimeSupervisor } from "../services/backend-runtime-worker/backendRuntimeSupervisor"
 import { LiveBackendRuntimeRegistry } from "../services/backend-runtime-worker/liveRuntimeRegistry"
+import { InMemoryBackendRuntimeSecretBroker } from "../services/backend-runtime-worker/secretBroker"
 import { composeProductionBackendRuntime } from "../services/preview-worker/gvisor/composeProductionBackendRuntime"
+import type { GeneratedSecretFilesystem } from "../services/preview-worker/gvisor/generatedSecretFilesystem"
 
 function fakeControlPlane(): BackendRuntimeControlPlane {
   return new BackendRuntimeControlPlane(
@@ -17,11 +19,24 @@ function fakeControlPlane(): BackendRuntimeControlPlane {
   )
 }
 
+function generatedSecretDependencies() {
+  const generatedSecretFilesystem: GeneratedSecretFilesystem = {
+    rootDir: "/run/peephole/test-secrets",
+    create: async () => "/run/peephole/test-secrets/runtime-1234",
+    remove: async () => undefined,
+  }
+  return {
+    secretBroker: new InMemoryBackendRuntimeSecretBroker(),
+    generatedSecretFilesystem,
+  }
+}
+
 describe("composeProductionBackendRuntime", () => {
   it("returns a real BackendRuntimeSupervisor when given an explicit registry", () => {
     const supervisor = composeProductionBackendRuntime(fakeControlPlane(), {
       baseRootfsImage: "/tmp/fake-rootfs",
       liveRuntimeRegistry: new LiveBackendRuntimeRegistry(),
+      ...generatedSecretDependencies(),
     })
 
     expect(supervisor).toBeInstanceOf(BackendRuntimeSupervisor)
@@ -40,6 +55,7 @@ describe("composeProductionBackendRuntime", () => {
       // @ts-expect-error liveRuntimeRegistry is required, not optional.
       composeProductionBackendRuntime(fakeControlPlane(), {
         baseRootfsImage: "/tmp/fake-rootfs",
+        ...generatedSecretDependencies(),
       })
     }
     void callWithoutRegistry
@@ -51,6 +67,7 @@ describe("composeProductionBackendRuntime", () => {
     const supervisor = composeProductionBackendRuntime(fakeControlPlane(), {
       baseRootfsImage: "/tmp/fake-rootfs",
       liveRuntimeRegistry: injectedRegistry,
+      ...generatedSecretDependencies(),
     })
 
     // Pure composition-wiring proof, not a behavior test: exercising
@@ -69,10 +86,12 @@ describe("composeProductionBackendRuntime", () => {
     const supervisorA = composeProductionBackendRuntime(fakeControlPlane(), {
       baseRootfsImage: "/tmp/fake-rootfs",
       liveRuntimeRegistry: registryA,
+      ...generatedSecretDependencies(),
     })
     const supervisorB = composeProductionBackendRuntime(fakeControlPlane(), {
       baseRootfsImage: "/tmp/fake-rootfs",
       liveRuntimeRegistry: registryB,
+      ...generatedSecretDependencies(),
     })
 
     expect(privateLiveRuntimeRegistryOf(supervisorA)).toBe(registryA)
@@ -89,6 +108,46 @@ describe("composeProductionBackendRuntime", () => {
     registryA.register("runtime-aaaaaaaa", { host: "10.0.0.1", port: 3000 })
     expect(registryB.resolve("runtime-aaaaaaaa")).toBeUndefined()
   })
+
+  it("passes the exact broker and filesystem instances to the supervisor and process starter", () => {
+    const dependencies = generatedSecretDependencies()
+    const issue = vi.spyOn(dependencies.secretBroker, "issue")
+
+    const supervisor = composeProductionBackendRuntime(fakeControlPlane(), {
+      baseRootfsImage: "/tmp/fake-rootfs",
+      liveRuntimeRegistry: new LiveBackendRuntimeRegistry(),
+      ...dependencies,
+    })
+
+    expect(privateSecretBrokerOf(supervisor)).toBe(dependencies.secretBroker)
+    expect(privateGeneratedSecretFilesystemOf(supervisor)).toBe(
+      dependencies.generatedSecretFilesystem,
+    )
+    expect(issue).not.toHaveBeenCalled()
+  })
+
+  it("requires explicit generated-secret ownership dependencies at the type level", () => {
+    function callWithoutSecretBroker(): void {
+      const dependencies = generatedSecretDependencies()
+      // @ts-expect-error secretBroker is required, not defaulted.
+      composeProductionBackendRuntime(fakeControlPlane(), {
+        baseRootfsImage: "/tmp/fake-rootfs",
+        liveRuntimeRegistry: new LiveBackendRuntimeRegistry(),
+        generatedSecretFilesystem: dependencies.generatedSecretFilesystem,
+      })
+    }
+    function callWithoutSecretFilesystem(): void {
+      const dependencies = generatedSecretDependencies()
+      // @ts-expect-error generatedSecretFilesystem is required, not defaulted.
+      composeProductionBackendRuntime(fakeControlPlane(), {
+        baseRootfsImage: "/tmp/fake-rootfs",
+        liveRuntimeRegistry: new LiveBackendRuntimeRegistry(),
+        secretBroker: dependencies.secretBroker,
+      })
+    }
+    void callWithoutSecretBroker
+    void callWithoutSecretFilesystem
+  })
 })
 
 function privateLiveRuntimeRegistryOf(
@@ -96,4 +155,23 @@ function privateLiveRuntimeRegistryOf(
 ): unknown {
   return (supervisor as unknown as { liveRuntimeRegistry: unknown })
     .liveRuntimeRegistry
+}
+
+function privateSecretBrokerOf(supervisor: BackendRuntimeSupervisor): unknown {
+  return (
+    supervisor as unknown as {
+      options: { secretBroker: unknown }
+    }
+  ).options.secretBroker
+}
+
+function privateGeneratedSecretFilesystemOf(
+  supervisor: BackendRuntimeSupervisor,
+): unknown {
+  const starter = (
+    supervisor as unknown as {
+      runtimeProcessStarter: { generatedSecretFilesystem: unknown }
+    }
+  ).runtimeProcessStarter
+  return starter.generatedSecretFilesystem
 }

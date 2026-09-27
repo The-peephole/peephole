@@ -6,6 +6,9 @@ import type {
 } from "../../types/backendRuntime"
 import { BACKEND_RUNTIME_CONTRACT_VERSION } from "../../types/backendRuntime"
 import type { PreviewRepositoryRef } from "../../types/preview"
+import type { PreviewGeneratedSecretName } from "../../types/backendRuntimeSecrets"
+import type { EnvironmentRequirement } from "../../types/environment"
+import { isEligiblePreviewGeneratedSecretName } from "../backendSecrets/generatedSecretPolicy"
 import { isSafePreviewSourceRoot } from "../preview/sourceRoot"
 import { isNpmBackendPackageManagerDeclaration } from "./backendPackageManager"
 
@@ -15,8 +18,9 @@ import { isNpmBackendPackageManagerDeclaration } from "./backendPackageManager"
  * `docs/PREVIEW_RUNTIME.md`. A candidate detected by M7
  * (`core/analyzer/backendDetector.ts`) with a *different* framework, a
  * database dependency, a missing lockfile, an unresolved entrypoint, or any
- * environment requirement outside the fixed `PORT`/`HOST`/`NODE_ENV`
- * allowlist is never supported here -- "Backend detected" and "Execution
+ * environment requirement outside fixed `PORT`/`HOST`/`NODE_ENV` or the
+ * canonical server-only generated-secret policy is never supported here --
+ * "Backend detected" and "Execution
  * supported" are always evaluated separately, and this function is the
  * single place that draws that line for both client-side display and
  * server-side authorization. It never trusts anything client-provided:
@@ -44,7 +48,7 @@ export function resolveBackendExecutionSupport(
     supported: true,
     adapterId: "express-node-npm-v1",
     evidence: [
-      "express dependency, package-lock.json, a safe Node entrypoint, and only platform-owned environment requirements were found",
+      "express dependency, package-lock.json, a safe Node entrypoint, and only platform-owned or canonical generated-secret environment requirements were found",
     ],
   }
 }
@@ -65,6 +69,16 @@ export function resolveBackendRuntimePlan(
   const entrypoint = candidate.entrypoint!
 
   const adapterId: BackendRuntimeAdapterId = "express-node-npm-v1"
+  const generatedSecretNames = Array.from(
+    new Set(
+      candidate.environmentRequirements.flatMap(
+        (requirement): PreviewGeneratedSecretName[] =>
+          isSupportedGeneratedSecretRequirement(requirement)
+            ? [requirement.name]
+            : [],
+      ),
+    ),
+  ).sort()
 
   return {
     contractVersion: BACKEND_RUNTIME_CONTRACT_VERSION,
@@ -80,9 +94,7 @@ export function resolveBackendRuntimePlan(
       HOST: "0.0.0.0",
       NODE_ENV: "production",
     },
-    // M10-C1 is contract foundation only. Eligibility below still rejects
-    // every preview-generated candidate, so reachable plans remain empty.
-    generatedSecretNames: [],
+    generatedSecretNames,
   }
 }
 
@@ -112,13 +124,29 @@ function findUnsupportedReason(candidate: BackendCandidate): string | null {
   }
 
   const unsupportedRequirement = candidate.environmentRequirements.find(
-    (requirement) => requirement.requirementKind !== "auto-configurable",
+    (requirement) =>
+      requirement.requirementKind !== "auto-configurable" &&
+      !isSupportedGeneratedSecretRequirement(requirement),
   )
   if (unsupportedRequirement) {
     return `Environment requirement "${unsupportedRequirement.name}" is not supported until ephemeral env/secrets provisioning exists.`
   }
 
   return null
+}
+
+function isSupportedGeneratedSecretRequirement(
+  requirement: EnvironmentRequirement,
+): requirement is EnvironmentRequirement & {
+  name: PreviewGeneratedSecretName
+  requirementKind: "preview-generated-candidate"
+  exposure: "server"
+} {
+  return (
+    requirement.requirementKind === "preview-generated-candidate" &&
+    requirement.exposure === "server" &&
+    isEligiblePreviewGeneratedSecretName(requirement.name)
+  )
 }
 
 /**

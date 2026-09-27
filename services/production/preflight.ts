@@ -271,9 +271,10 @@ export async function ensureProductionDiskLayout(
   }
 }
 
-/** M10-B capability gate, deliberately separate from the currently active
- * production preflight until orchestration is enabled. It proves both the
- * host root's tmpfs backing and the trusted bootstrap's presence. */
+/** Generated-secret capability gate. Production startup invokes this before
+ * secret orphan reconciliation, worker construction, or any listener. It
+ * proves both the host root's tmpfs backing and the trusted bootstrap's
+ * presence. */
 export async function ensureGeneratedSecretInjectionCapability(
   options: GeneratedSecretRootPreflightOptions,
 ): Promise<void> {

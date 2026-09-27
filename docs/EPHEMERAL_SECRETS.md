@@ -1,12 +1,11 @@
 # Ephemeral Environment / Secrets (M10) — Design
 
-**Status: Partially implemented -- M10-A, M10-B, M10-C1, and internal
-M10-C2 orchestration only.** Generated-material policy/broker, secret-free OCI
-injection primitives, strict names-only plan validation, and fail-closed
-supervisor issue/take orchestration now exist. Generated-secret eligibility,
-production activation, and real-gVisor verification remain pending. Reachable
-plans still contain `generatedSecretNames: []`; the production supervisor
-passes no secret material, D-032 remains Proposed, and
+**Status: Partially implemented through M10-C3 production-code activation.**
+Generated-material policy/broker, tmpfs/OCI/bootstrap injection, strict
+names-only plan validation, fail-closed supervisor orchestration, exact-commit
+eligibility, and explicit production broker/filesystem/preflight/reaper wiring
+now exist for the four canonical names. Real-gVisor/production-host verification
+and deployment remain pending for M10-C4. D-032 remains Proposed and
 `docs/MVP_ROADMAP.md` stage 10 remains unchecked.
 
 This never relaxes `SECRET_ENV_REQUIRED`/`BACKEND_REQUIRED` for the static
@@ -287,9 +286,9 @@ export interface BackendRuntimeSecretBroker {
   is consulted only by the one supervisor codepath that already owns it.
 - **Identifiers persisted?** No. The broker itself is never written to
   Postgres or to `InMemoryBackendRuntimeStore`; it exists only as a private
-  process-local `Map`. M10-C2 allows a broker to be injected into the
-  supervisor for synthetic plans, but production composition does not yet
-  construct or inject one.
+  process-local `Map`. M10-C3 constructs exactly one broker in the production
+  composition root and passes that explicit instance to the backend runtime
+  supervisor; no module-level/global/durable fallback exists.
 - **Ownership binding:** implicit, via `runtimeId` — no separate
   repository/commit/sourceRoot/orchestration-key check is needed because the
   control plane has already bound `runtimeId` to exactly one
@@ -507,7 +506,7 @@ treated as the existing `CONFLICT`/409 case. Do not hash low-entropy
 user-supplied values, even salted — that is an offline-guessable oracle for
 low-entropy secrets. This is explicitly deferred, not part of this slice.
 
-## 12. API / type design (internal orchestration implemented; activation pending)
+## 12. API / type design (production-code path active; host verification pending)
 
 Design goal: secrets and public config are distinct types; nothing
 secret-shaped is reachable through a type that is also serialized to
@@ -573,12 +572,12 @@ bounded array (≤ 4, matching the fixed allowlist size), every element in the
 fixed set, no duplicates — the same "narrowest possible allowlist" style
 already used there.
 
-**M10-C1 implementation status:** this names-only field and validation now
-exist. The currently reachable adapter always emits `generatedSecretNames: []`
-and still rejects every non-`auto-configurable` environment requirement, so a
-repository declaring `preview-generated-candidate` remains ineligible.
+**M10-C1 implementation status:** this names-only field and validation were
+added. At that stage the reachable adapter still emitted
+`generatedSecretNames: []` and rejected every non-`auto-configurable`
+environment requirement; M10-C3 below is the later eligibility change.
 
-**M10-C2 implementation status:** the supervisor now provides a fail-closed
+**M10-C2 implementation status:** the supervisor provides a fail-closed
 internal path for synthetic, already-validated non-empty plans: it issues once,
 destructively takes once, validates the material/runtime/name correspondence,
 and passes only the taken material to the process starter. Missing broker,
@@ -586,11 +585,21 @@ missing material, duplicate/stale issuance, or an equivalent lifecycle failure
 produces `SECRET_UNAVAILABLE`; unconditional best-effort discard remains beside
 route revocation. The ownership boundary is explicit: the supervisor owns
 `issue -> take -> pass material`, while the process starter owns
-`material -> tmpfs/OCI/bootstrap delivery`. Real admission still emits empty
-names only, and production `server.ts` constructs neither broker nor
-generated-secret filesystem/reaper/preflight activation. Eligibility,
-real-gVisor verification, and production deployment remain pending. D-032
-remains Proposed and M10 remains incomplete.
+`material -> tmpfs/OCI/bootstrap delivery`.
+
+**M10-C3 implementation status:** exact-commit environment-template analysis
+now admits only server-exposed `preview-generated-candidate` requirements whose
+names pass the canonical generated-secret policy, and derives a deterministic
+names-only plan array. `services/production/server.ts` owns one process-local
+broker and one `TmpfsGeneratedSecretFilesystem`, with the configured bundles
+and artifact roots explicitly forbidden. Startup performs the generated-secret
+capability check and fail-closed `reapAll()` before worker construction or any
+listener; bounded maintenance calls `reap()` with the existing orphan age.
+FullStack gains no secret field and reuses its backend child's existing runtime
+path. Real-host tmpfs/bootstrap/runsc behavior, trusted-bootstrap PID 1 signal
+semantics, and `runsc --root` persistence inspection remain unverified;
+production deployment has not occurred. These are M10-C4 work. D-032 remains
+Proposed and M10 remains incomplete.
 
 ### Bounds (env-name and value safety)
 

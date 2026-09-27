@@ -51,11 +51,10 @@ export interface BackendRuntimeSecretBroker {
  * `LiveBackendRuntimeRegistry` (`liveRuntimeRegistry.ts`) exactly, the same
  * architectural precedent docs/EPHEMERAL_SECRETS.md section 8 names.
  *
- * M10-C2 wires this interface into `BackendRuntimeSupervisor` for injected,
- * synthetic non-empty plans. It remains absent from
- * `services/production/server.ts`, so real admission and production runtime
- * composition are still secret-free; activation and real-host verification
- * remain pending.
+ * M10-C2 wires this interface into `BackendRuntimeSupervisor`; M10-C3 makes
+ * one explicitly-owned instance production-reachable for canonical
+ * exact-commit plans. It remains process-local and non-durable; real-host
+ * verification and deployment remain pending.
  *
  * Starts empty every process start, and stays that way by design: a
  * restart must never let previously issued-but-unconsumed material survive
