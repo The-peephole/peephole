@@ -928,3 +928,106 @@ above).
 
 D-032 is Accepted as of 2026-09-28. M10 is complete for the four canonical
 generated-secret names. M11 (temporary database support) has not started.
+
+## D-033 - Temporary PostgreSQL previews use a separate host-local tenant cluster
+
+**Status:** Proposed — architecture locked in M11-A/A2/A3/A4, not yet
+implemented or production-verified.
+
+M11's first production slice supports exactly one temporary PostgreSQL
+database plus one application role per admitted `fullstack-v1` preview,
+where the backend declares exactly a `pg` dependency and exactly a
+`DATABASE_URL` environment requirement. Admission is restricted to the
+trusted FullStack orchestration path only: `services/backend-runtime-api/controlPlane.ts`'s
+`createInternal()` rejects any plan carrying a non-null
+`databaseRequirement` when `orchestrationKey` is null, so the public,
+standalone `backend-v1` create path can never admit a database-requiring
+plan. `QueuedBackendRuntime` gains the already-existing, already
+server-derived `orchestrationKey` (== the FullStack preview's own id) so
+the backend worker can identify the durable owner of a database it
+provisions without ever accepting that identity from a client.
+
+The decision reached after a four-phase investigation (M11-A read the
+existing M8-M10 codebase; M11-A2 corrected several errors an independent
+review found in that first pass; M11-A3 performed a **read-only** audit of
+the actual production host, sanitized, no secret ever read into a
+document, no production change made; M11-A4 corrected the PostgreSQL
+role/privilege sequence against actual PostgreSQL 18 semantics, since the
+production host runs 18.6, not 16) is:
+
+- **Two structurally separate PostgreSQL clusters**, both on the existing
+  production host: the current control-plane cluster (`18-main`,
+  `127.0.0.1:5432`, existing `PEEPHOLE_DATABASE_URL`, confirmed via the
+  M11-A3 audit to already be exactly this) is untouched; a new, dedicated
+  tenant cluster (`18-tenant`, a fixed host-local address, a new port)
+  holds only temporary preview databases and their `pv_*` roles. Because
+  PostgreSQL roles are cluster-global, this separation is what lets the
+  security proof for M11 avoid depending on auditing or revoking every
+  unrelated database's `PUBLIC` privileges on a shared cluster. No new
+  PostgreSQL package is required — the production host already has the
+  Debian/Ubuntu multi-cluster tooling (`postgresql-common`) installed.
+- **Durable, secret-free ownership evidence only.** A new control-plane
+  table records `{resourceId, previewId, backendRuntimeId, status,
+  timestamps}` — never a password, a SCRAM verifier, a `DATABASE_URL`, or
+  a host/port. `resourceId` alone derives both the database name and the
+  role name (`pv_<resourceId>`). Its foreign key to
+  `peephole_fullstack_previews(id)` is `ON DELETE RESTRICT`, deliberately
+  never `CASCADE` and never `SET NULL` (unlike that table's existing
+  *shared*-resource FKs) — a temporary database is exclusively owned by
+  one preview, so its ownership evidence must survive until physical
+  cleanup is verified, not merely until the parent row is touched.
+  `StoredFullStackPreview` itself gains no new field; the ownership table
+  is the sole durable source, queried by `previewId`.
+- **A dedicated host-local network endpoint**, reached through exactly one
+  new host-only address and exactly one new `INPUT`-chain firewall
+  exception — not `FORWARD`, since a destination bound to a
+  root-namespace-owned interface resolves as host-local before the routing
+  decision that would send it through `FORWARD` in the first place. The
+  existing `ingress-only` invariant (no default route, unconditional
+  egress `DROP`, no NAT/MASQUERADE) is otherwise completely unmodified;
+  general backend internet egress remains denied.
+- **Process-local-only credential delivery**, through a second, dedicated,
+  single-fixed-file tmpfs mount and an extended trusted bootstrap — never
+  by widening M10's `PreviewGeneratedSecretName` allowlist or its
+  `NAME=value` file format, both of which remain exactly what they were
+  before M11.
+- **A client-computed SCRAM-SHA-256 verifier**, never a raw password, in
+  any `CREATE ROLE` statement PostgreSQL ever parses or logs. Raw password
+  material exists only in Peephole process memory, the credential tmpfs
+  file, the sandboxed child's own environment, and the SCRAM handshake
+  itself.
+- **A least-privileged provisioning role** (`NOSUPERUSER CREATEDB
+  CREATEROLE NOREPLICATION NOBYPASSRLS`), never superuser, authenticating
+  to the tenant cluster over a local Unix-domain socket with a static,
+  operator-managed credential — not `peer`/`pg_ident` OS-identity mapping,
+  because the production `peephole.service` unit (read during the M11-A3
+  audit) has no `User=` directive and therefore runs as root; a
+  root-peer-mapped provisioning role would let any root process on the
+  host authenticate as it with no credential check at all.
+- **Three-set orphan reconciliation** at startup and on a maintenance
+  interval — durable ownership rows, physical `pv_*` databases, and
+  physical `pv_*` roles compared independently, never a name prefix
+  trusted alone. An unowned Peephole-shaped object is an audit failure
+  (fail closed); a database observed without its owning role is a
+  structurally-impossible shape (fail closed); a provisioning role found
+  to unexpectedly lack the `SET` membership its own sequence always grants
+  is an invariant violation (fail closed, never silently repaired with a
+  new grant).
+- **Production activation is gated on host capacity, not on this design.**
+  The production host audited in M11-A3 is a documented, already-tight
+  2 vCPU / ~1.9 GiB RAM target with no swap. Before M11 production
+  activation, the host RAM must increase to roughly 4 GiB or more (default
+  recommendation) or an equivalently reviewed capacity analysis must prove
+  safe headroom. This gate does not block design, portable implementation,
+  or PostgreSQL/real-gVisor verification work -- only final production
+  acceptance, mirroring how M10's own production activation was gated on
+  its own dedicated real-host phase.
+
+See `docs/TEMPORARY_DATABASES.md` for the full design, including the exact
+locked provisioning/teardown SQL sequences, the complete crash-window
+table, and the planned test matrix.
+
+D-033 is Proposed. It is not Accepted until implementation (M11-C),
+real-host/real-gVisor verification, and production verification are all
+complete -- the same bar D-032 was held to before its own Accepted status.
+M11 (`docs/MVP_ROADMAP.md` stage 11) remains unchecked.

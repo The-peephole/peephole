@@ -79,7 +79,9 @@ OCI `process.env`/`config.json` path via a tmpfs-backed bind mount and
 trusted bootstrap. Arbitrary or user-supplied secrets, arbitrary
 environment-variable management, and temporary database provisioning remain
 unsupported. Do not read M10's existence as "arbitrary secrets are
-supported."
+supported." Temporary database provisioning (M11) has an architecture
+design locked in D-033/docs/TEMPORARY_DATABASES.md, but zero implementation
+-- do not read that document's existence as "M11 is supported" either.
 
 ## Architecture to Preserve
 

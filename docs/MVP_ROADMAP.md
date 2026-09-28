@@ -139,7 +139,12 @@ docs/EPHEMERAL_SECRETS.md for the full design and the 2026-09-28 real-gVisor
 and production verification record. Stage 10 is explicitly **not**: arbitrary
 environment-variable management, user-supplied credentials, arbitrary
 backends, database provisioning, or relaxed backend egress -- all of those
-remain unimplemented. Stage 11 is untouched and has not started.
+remain unimplemented. Stage 11 is untouched and has not started, still
+`[ ]`. Its architecture has since been designed and locked (D-033,
+`docs/TEMPORARY_DATABASES.md`) -- a separate host-local tenant PostgreSQL
+cluster, `fullstack-v1`-only, `pg`+`DATABASE_URL`-only admission -- but
+that is a design document only; no implementation, migration, network
+rule, or second PostgreSQL cluster exists yet.
 
 Build Adapter generalization is complete as an architecture change: an
 explicit resolver selects `static-html-v1` or `vite-react-npm-v1`, detects

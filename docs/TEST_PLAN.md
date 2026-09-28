@@ -57,8 +57,11 @@ this document). Ephemeral generated secrets (roadmap stage 10) are
 implemented and covered at both the portable and real-gVisor-gated layers,
 production-verified in M10-C4B (see section 5's M10 generated-secret
 subsection and docs/EPHEMERAL_SECRETS.md); temporary databases (roadmap
-stage 11) still have
-no test at any layer -- that contract is not implemented.
+stage 11) still have no test at any layer -- that contract is not
+implemented. Its planned test matrix (portable, PostgreSQL-18 integration,
+real-gVisor, and a prepared-not-executed production runbook) is documented
+in docs/TEMPORARY_DATABASES.md section 19, but no test in that matrix has
+been written yet.
 
 ## 3. Portable Tests
 
@@ -837,7 +840,10 @@ Add coverage in the same order as product development:
     printing a secret to stdout never reaches Peephole's own logs -- all
     passed, both portable and real-gVisor-gated)
 11. temporary database tenancy, credentials, lifecycle, and cleanup -- not
-    started (M11)
+    started (M11); architecture designed and locked (D-033,
+    docs/TEMPORARY_DATABASES.md section 19 for the planned portable,
+    PostgreSQL-18 integration, real-gVisor, and production test matrix),
+    but no test exists yet
 
 The full-stack fixture becomes eligible for these tests only as each required
 contract is actually implemented.

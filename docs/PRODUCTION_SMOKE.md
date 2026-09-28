@@ -420,6 +420,23 @@ None of the above changed this document's own automated commands or their
 security model. D-032 is Accepted and M10 is complete for the four canonical
 generated-secret names as of 2026-09-28.
 
+## M11 temporary-database verification (design only, not executed)
+
+M11 (temporary PostgreSQL previews) is **design only** as of this writing --
+see D-033 (Proposed) and docs/TEMPORARY_DATABASES.md. No implementation,
+migration, tenant PostgreSQL cluster, or network rule exists yet, so
+nothing below has been run, and nothing in this document's own automated
+`npm run smoke:production`/`smoke:production:host` commands exercises it.
+docs/TEMPORARY_DATABASES.md section 19 records the full planned production
+acceptance runbook (capacity prerequisite first, then a real fixture
+create/query/DELETE cycle, independently-recorded graceful-stop and
+intentional `MainPID` `SIGKILL` crash-recovery evidence, the tenant-DB
+startup reaper, and a final unchanged host smoke pass) -- that runbook is
+not duplicated here to avoid two documents drifting out of sync; this
+section exists only as a pointer for a future session executing it.
+Production activation additionally requires the host RAM prerequisite in
+docs/TEMPORARY_DATABASES.md section 17, which has not been performed.
+
 ## M9 production verification record (2026-09-21)
 
 This is a one-off, manually-performed verification record, not a claim that
