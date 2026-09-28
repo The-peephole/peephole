@@ -375,6 +375,118 @@ describe("VethNatNetworkProvisioner.createIngressOnly", () => {
   })
 })
 
+describe("VethNatNetworkProvisioner.createIngressOnly temporaryDatabaseAccess", () => {
+  let leaseDir: string
+  let processRunner: FakeProcessRunner
+  let allocator: SubnetAllocator
+  let provisioner: VethNatNetworkProvisioner
+
+  beforeEach(async () => {
+    leaseDir = await mkdtemp(path.join(os.tmpdir(), "peephole-net-leases-"))
+    processRunner = new FakeProcessRunner()
+    allocator = new SubnetAllocator({
+      leaseDir,
+      bootId: async () => "test-boot",
+      processStartTime: async () => "test-start",
+      syncDirectory: async () => undefined,
+    })
+    provisioner = new VethNatNetworkProvisioner({
+      processRunner,
+      subnetAllocator: allocator,
+    })
+  })
+
+  afterEach(async () => {
+    await rm(leaseDir, { recursive: true, force: true })
+  })
+
+  it("adds exactly one /32 route to the fixed tenant database address, alongside the directly-connected lease route", async () => {
+    await provisioner.createIngressOnly("a1".padEnd(32, "1"), {
+      temporaryDatabaseAccess: true,
+    })
+    const lines = commandLines(processRunner)
+
+    const databaseRouteLines = lines.filter(
+      (line) => line.includes("192.168.253.1/32") && line.includes("route add"),
+    )
+    expect(databaseRouteLines).toHaveLength(1)
+    expect(databaseRouteLines[0]).toMatch(
+      /^ip netns exec peephole-\d+ ip route add 192\.168\.253\.1\/32 via 10\.200\.\d+\.\d+ dev vpph\d+$/,
+    )
+    // Still no default route -- the capability adds one narrow additional
+    // route, never a broader egress path.
+    expect(lines.some((line) => line.includes("route add default"))).toBe(false)
+  })
+
+  it("adds exactly one INPUT ACCEPT rule for tcp/5433 to the fixed tenant address, before the existing DROP", async () => {
+    await provisioner.createIngressOnly("a2".padEnd(32, "2"), {
+      temporaryDatabaseAccess: true,
+    })
+    const lines = commandLines(processRunner)
+    const inputChain = createdChain(lines, "ppi")
+    const chainLines = lines.filter((line) =>
+      line.startsWith(`iptables -w 5 -A ${inputChain} `),
+    )
+
+    expect(chainLines).toEqual([
+      `iptables -w 5 -A ${inputChain} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT`,
+      `iptables -w 5 -A ${inputChain} -d 192.168.253.1/32 -p tcp --dport 5433 -j ACCEPT`,
+      `iptables -w 5 -A ${inputChain} -j DROP`,
+    ])
+  })
+
+  it("grants no other host service, port, protocol, NAT, or default route", async () => {
+    await provisioner.createIngressOnly("a3".padEnd(32, "3"), {
+      temporaryDatabaseAccess: true,
+    })
+    const lines = commandLines(processRunner)
+
+    expect(lines).not.toContain(expect.stringContaining("MASQUERADE"))
+    expect(lines).not.toContain(expect.stringContaining("--dport 53"))
+    expect(lines.filter((line) => line.includes("192.168.253.1"))).toHaveLength(
+      2,
+    ) // exactly the route and the INPUT accept rule
+    expect(lines.some((line) => /-p udp.*192\.168\.253\.1/.test(line))).toBe(
+      false,
+    )
+  })
+
+  it("leaves a non-database ingress-only namespace byte-for-byte unchanged", async () => {
+    await provisioner.createIngressOnly("a4".padEnd(32, "4"))
+    const lines = commandLines(processRunner)
+
+    expect(lines.some((line) => line.includes("192.168.253.1"))).toBe(false)
+    const inputChain = createdChain(lines, "ppi")
+    const chainLines = lines.filter((line) =>
+      line.startsWith(`iptables -w 5 -A ${inputChain} `),
+    )
+    expect(chainLines).toEqual([
+      `iptables -w 5 -A ${inputChain} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT`,
+      `iptables -w 5 -A ${inputChain} -j DROP`,
+    ])
+  })
+
+  it("tears down the database route/rule along with everything else", async () => {
+    const handle = await provisioner.createIngressOnly("a5".padEnd(32, "5"), {
+      temporaryDatabaseAccess: true,
+    })
+    processRunner.calls.length = 0
+
+    await handle.teardown()
+
+    const lines = commandLines(processRunner)
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        "ip netns list",
+        "ip -o link show",
+        "iptables -w 5 -S",
+        "iptables -w 5 -t nat -S",
+        "ip6tables -w 5 -S",
+      ]),
+    )
+  })
+})
+
 function commandLines(processRunner: FakeProcessRunner): string[] {
   return processRunner.calls.map((call) =>
     [call.command, ...call.args].join(" "),

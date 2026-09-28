@@ -67,14 +67,93 @@ describe("NetworkLeaseManager", () => {
       string,
       unknown
     >
+    // A marker from before `policy` existed could never have
+    // `temporaryDatabaseAccess` either -- that field was added later still.
     delete marker.policy
+    delete marker.temporaryDatabaseAccess
     await writeFile(markerPath, JSON.stringify(marker))
 
     await expect(
       manager.requireOwnedLease(lease.leaseDir),
     ).resolves.toMatchObject({
       policy: "egress-nat",
+      temporaryDatabaseAccess: false,
     })
+  })
+
+  it("accepts a legacy v1 marker with policy but without temporaryDatabaseAccess as disabled", async () => {
+    const lease = await allocate(manager)
+    const markerPath = path.join(lease.leaseDir, "lease.json")
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<
+      string,
+      unknown
+    >
+    delete marker.temporaryDatabaseAccess
+    await writeFile(markerPath, JSON.stringify(marker))
+
+    await expect(
+      manager.requireOwnedLease(lease.leaseDir),
+    ).resolves.toMatchObject({
+      policy: "egress-nat",
+      temporaryDatabaseAccess: false,
+    })
+  })
+
+  it("always persists an explicit temporaryDatabaseAccess capability", async () => {
+    const lease = await manager.allocate({
+      allocationId: "e".repeat(32),
+      uplink: "eth0",
+      policy: "ingress-only",
+      dnsServers: [],
+      temporaryDatabaseAccess: true,
+    })
+    const marker = JSON.parse(
+      await readFile(path.join(lease.leaseDir, "lease.json"), "utf8"),
+    ) as Record<string, unknown>
+
+    expect(marker.temporaryDatabaseAccess).toBe(true)
+  })
+
+  it("rejects a non-boolean temporaryDatabaseAccess instead of treating it as legacy", async () => {
+    const lease = await allocate(manager)
+    const markerPath = path.join(lease.leaseDir, "lease.json")
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<
+      string,
+      unknown
+    >
+    marker.temporaryDatabaseAccess = "true"
+    await writeFile(markerPath, JSON.stringify(marker))
+
+    await expect(manager.requireOwnedLease(lease.leaseDir)).rejects.toThrow(
+      /schema is invalid/,
+    )
+  })
+
+  it("rejects temporaryDatabaseAccess true on an egress-nat policy instead of silently downgrading it", async () => {
+    const lease = await allocate(manager)
+    const markerPath = path.join(lease.leaseDir, "lease.json")
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<
+      string,
+      unknown
+    >
+    marker.temporaryDatabaseAccess = true
+    await writeFile(markerPath, JSON.stringify(marker))
+
+    await expect(manager.requireOwnedLease(lease.leaseDir)).rejects.toThrow(
+      /schema is invalid/,
+    )
+  })
+
+  it("rejects temporaryDatabaseAccess true for a fresh egress-nat allocation", async () => {
+    await expect(
+      manager.allocate({
+        allocationId: "f".repeat(32),
+        uplink: "eth0",
+        policy: "egress-nat",
+        dnsServers: ["172.31.0.2"],
+        temporaryDatabaseAccess: true,
+      }),
+    ).rejects.toThrow(/only valid for an ingress-only lease/)
   })
 
   it("always persists an explicit ingress-only policy", async () => {

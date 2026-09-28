@@ -253,8 +253,13 @@ export class BackendRuntimeSupervisor {
     )
     await this.controlPlane.markPhase(runtimeId, "starting")
     const secrets = this.issueAndTakeGeneratedSecrets(runtimeId, plan)
+    // Always null: a database-requiring plan already fails closed with
+    // DATABASE_UNAVAILABLE, above run()'s own databaseRequirement check,
+    // strictly before sandbox allocation is ever reached -- this supervisor
+    // never obtains or passes real temporary-database material (M11-C1/C3;
+    // wiring real material through is M11-C4).
     const handle = await runPhase("RUNTIME_START_FAILED", () =>
-      this.runtimeProcessStarter.start(workspace, plan, secrets),
+      this.runtimeProcessStarter.start(workspace, plan, secrets, null),
     )
 
     try {

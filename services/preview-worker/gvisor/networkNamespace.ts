@@ -1,5 +1,9 @@
 import { isIPv4 } from "node:net"
 
+import {
+  TENANT_DATABASE_HOST,
+  TENANT_DATABASE_PORT,
+} from "../../../core/backendDatabase/databaseUrl"
 import type { ProcessRunner } from "./processRunner"
 import { NodeProcessRunner } from "./nodeProcessRunner"
 import { NetworkOrphanReaper } from "./networkOrphanReaper"
@@ -203,7 +207,9 @@ export class VethNatNetworkProvisioner {
    */
   async createIngressOnly(
     id: string,
+    options: { temporaryDatabaseAccess?: boolean } = {},
   ): Promise<IngressOnlyNetworkNamespaceHandle> {
+    const temporaryDatabaseAccess = options.temporaryDatabaseAccess ?? false
     const uplink = await this.defaultUplinkInterface()
     this.activity.activate(id)
     let lease: NetworkLease | undefined
@@ -214,6 +220,7 @@ export class VethNatNetworkProvisioner {
         uplink,
         policy: "ingress-only",
         dnsServers: [],
+        temporaryDatabaseAccess,
       })
       await this.run([
         "link",
@@ -254,6 +261,22 @@ export class VethNatNetworkProvisioner {
       // Deliberately no default route: the backend must have no outbound
       // path at all, not merely a firewalled one. Only the directly
       // connected /30 to the host is reachable.
+
+      if (lease.temporaryDatabaseAccess) {
+        // The one narrow exception: an explicit /32 host route to the fixed
+        // tenant PostgreSQL address, added alongside (never replacing) the
+        // directly-connected lease-subnet route -- see
+        // docs/TEMPORARY_DATABASES.md section 7.
+        await this.runInNamespace(lease.namespace, [
+          "route",
+          "add",
+          `${TENANT_DATABASE_HOST}/32`,
+          "via",
+          lease.hostIp,
+          "dev",
+          lease.peerVeth,
+        ])
+      }
 
       await this.configureIngressOnlyFirewall(lease)
       await this.configureIpv6Deny(lease)
@@ -317,6 +340,25 @@ export class VethNatNetworkProvisioner {
       "-j",
       "ACCEPT",
     ])
+    if (names.temporaryDatabaseAccess) {
+      // The one narrow permission this capability grants: new connections
+      // from the sandbox to the fixed tenant PostgreSQL address/port,
+      // inserted before the unconditional DROP below -- see
+      // docs/TEMPORARY_DATABASES.md section 7/section 18. No other host
+      // service or port is ever reachable.
+      await this.iptablesRun([
+        "-A",
+        names.inputChain,
+        "-d",
+        `${TENANT_DATABASE_HOST}/32`,
+        "-p",
+        "tcp",
+        "--dport",
+        String(TENANT_DATABASE_PORT),
+        "-j",
+        "ACCEPT",
+      ])
+    }
     await this.iptablesRun(["-A", names.inputChain, "-j", "DROP"])
 
     // Nothing should ever be forwarded into this namespace from elsewhere.

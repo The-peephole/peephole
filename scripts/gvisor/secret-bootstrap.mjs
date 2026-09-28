@@ -5,6 +5,10 @@ import process from "node:process"
 import { fileURLToPath } from "node:url"
 
 const SECRET_FILE = "/run/secrets/env"
+// A structurally separate fixed path from SECRET_FILE above -- never parsed
+// with the NAME=value grammar below, and DATABASE_URL is never added to
+// ALLOWED_NAMES. See docs/TEMPORARY_DATABASES.md section 15.
+const DATABASE_CREDENTIAL_FILE = "/run/secrets/database-url"
 const NODE_BINARY = "/usr/local/bin/node"
 const ALLOWED_NAMES = new Set([
   "JWT_SECRET",
@@ -29,6 +33,7 @@ const NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/
 const VALUE_PATTERN = /^[A-Za-z0-9_-]+$/
 const MAX_FILE_BYTES = 16 * 1024
 const MAX_VALUE_BYTES = 4096
+const MAX_DATABASE_URL_BYTES = 4096
 
 export function parseSecretMaterial(contents) {
   if (
@@ -66,8 +71,37 @@ export function parseSecretMaterial(contents) {
   return environment
 }
 
+/** The database credential file's entire content is the raw URL, never a
+ * `NAME=value` line -- this never shares NAME_PATTERN/VALUE_PATTERN parsing
+ * with parseSecretMaterial above. At most one trailing newline is stripped;
+ * anything else (empty, oversized, embedded newline) fails closed. */
+export function parseDatabaseCredentialMaterial(contents) {
+  if (typeof contents !== "string") {
+    throw new Error("Malformed database credential material.")
+  }
+  const byteLength = Buffer.byteLength(contents, "utf8")
+  if (byteLength === 0 || byteLength > MAX_DATABASE_URL_BYTES) {
+    throw new Error("Malformed database credential material.")
+  }
+  const trimmed = contents.endsWith("\n") ? contents.slice(0, -1) : contents
+  if (trimmed.length === 0 || trimmed.includes("\n")) {
+    throw new Error("Malformed database credential material.")
+  }
+  return trimmed
+}
+
+async function readOptionalFile(filePath) {
+  try {
+    return await readFile(filePath, "utf8")
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null
+    throw error
+  }
+}
+
 export async function runSecretBootstrap({
   secretFile = SECRET_FILE,
+  databaseCredentialFile = DATABASE_CREDENTIAL_FILE,
   nodeBinary = NODE_BINARY,
   childArgs = process.argv.slice(2),
   baseEnvironment = process.env,
@@ -76,10 +110,31 @@ export async function runSecretBootstrap({
   if (childArgs.length === 0) {
     throw new Error("Backend entrypoint is missing.")
   }
-  const contents = await readFile(secretFile, "utf8")
-  const secrets = parseSecretMaterial(contents)
+
+  // A zero-length read is treated the same as an absent file: when only one
+  // of the two credentials is mounted for this run, the OTHER fixed path
+  // still resolves to the base rootfs's own empty placeholder (never a real,
+  // legitimately-empty credential -- both writers always emit at least one
+  // non-empty line/URL) rather than ENOENT, since it is baked into the
+  // image itself rather than created at mount time. See
+  // build-base-rootfs.sh's own comment on why that placeholder must be
+  // world-readable.
+  let secrets = {}
+  const generatedContents = await readOptionalFile(secretFile)
+  if (generatedContents !== null && generatedContents.length > 0) {
+    secrets = parseSecretMaterial(generatedContents)
+  }
+
+  let databaseEnvironment = {}
+  const databaseContents = await readOptionalFile(databaseCredentialFile)
+  if (databaseContents !== null && databaseContents.length > 0) {
+    databaseEnvironment = {
+      DATABASE_URL: parseDatabaseCredentialMaterial(databaseContents),
+    }
+  }
+
   const child = spawnChild(nodeBinary, childArgs, {
-    env: { ...baseEnvironment, ...secrets },
+    env: { ...baseEnvironment, ...secrets, ...databaseEnvironment },
     shell: false,
     stdio: "inherit",
   })

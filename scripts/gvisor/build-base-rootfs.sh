@@ -72,6 +72,25 @@ install -D -m 0555 \
   "$OUT_DIR/opt/peephole/secret-bootstrap.mjs"
 install -d -m 0755 "$OUT_DIR/run/secrets"
 
+# Fixed, empty placeholder files for the two credential bind mounts
+# (ociConfig.ts). Baking both destinations into the immutable image lets
+# each be bind-mounted individually -- never a directory bind onto
+# `/run/secrets` itself -- so the M10 generated-secret file and the M11
+# database-credential file can coexist as independent sibling mounts. A
+# destination created only by mounting over an already-read-only parent
+# would not be creatable by runsc at all, which is exactly why these two
+# files must already exist here rather than being created at mount time.
+#
+# Mode 0644 (root-owned, world-readable): when only ONE of the two
+# credentials is present for a run, the trusted bootstrap (running as the
+# unprivileged sandbox uid, never root) still needs to open the OTHER,
+# unmounted placeholder to observe that it is empty and skip it -- a
+# root-owned 0000 file would instead fail with EACCES, not the "absent"
+# ENOENT/empty case the bootstrap actually handles. Both files are always
+# empty here, so world-readability leaks nothing.
+install -D -m 0644 /dev/null "$OUT_DIR/run/secrets/env"
+install -D -m 0644 /dev/null "$OUT_DIR/run/secrets/database-url"
+
 # The sandbox process runs as uid/gid 65534 (nobody/nogroup), never root.
 # Its HOME and npm cache are created on the quota-backed /workspace mount;
 # nothing in this copied base rootfs is intentionally writable at runtime.

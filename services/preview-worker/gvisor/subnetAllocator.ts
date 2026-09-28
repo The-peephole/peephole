@@ -74,6 +74,14 @@ export interface NetworkLease extends AllocatedSubnet, NetworkNames {
   readonly allocationId: string
   readonly uplink: string
   readonly policy: NetworkLeasePolicy
+  /**
+   * M11-C3's one narrow additional capability: an `ingress-only` lease that
+   * may also reach the fixed tenant PostgreSQL endpoint (§7/§15 of
+   * docs/TEMPORARY_DATABASES.md). A marker written before this field existed
+   * means `false`, never reinterpreted as enabled -- see `isMarker()`.
+   * Always `false` for the `egress-nat` policy.
+   */
+  readonly temporaryDatabaseAccess: boolean
   readonly dnsServers: readonly string[]
   readonly creatorPid: number
   readonly creatorProcessStartTime: string | null
@@ -99,6 +107,13 @@ interface NetworkLeaseMarker {
    * policy; newly persisted markers always contain it.
    */
   policy?: NetworkLeasePolicy
+  /**
+   * Markers written before M11-C3 did not have this field. Absence is
+   * deliberately interpreted only as `false` -- an old lease is never
+   * reinterpreted as database-enabled. Newly persisted markers always
+   * contain it explicitly.
+   */
+  temporaryDatabaseAccess?: boolean
   egressChain: string
   inputChain: string
   returnChain: string
@@ -186,6 +201,9 @@ export class NetworkLeaseManager {
     uplink: string
     policy: NetworkLeasePolicy
     dnsServers: readonly string[]
+    /** M11-C3, default `false`. Only ever valid for `policy: "ingress-only"`
+     * -- see `NetworkLease.temporaryDatabaseAccess`'s doc comment. */
+    temporaryDatabaseAccess?: boolean
   }): Promise<NetworkLease> {
     assertAllocationId(options.allocationId)
     if (!INTERFACE_PATTERN.test(options.uplink)) {
@@ -197,12 +215,19 @@ export class NetworkLeaseManager {
           "An ingress-only network lease must not configure DNS servers.",
         )
       }
-    } else if (
-      options.dnsServers.length === 0 ||
-      options.dnsServers.some((ip) => !isAllowedDnsServer(ip)) ||
-      new Set(options.dnsServers).size !== options.dnsServers.length
-    ) {
-      throw new Error("Network lease requires valid IPv4 DNS servers.")
+    } else {
+      if (
+        options.dnsServers.length === 0 ||
+        options.dnsServers.some((ip) => !isAllowedDnsServer(ip)) ||
+        new Set(options.dnsServers).size !== options.dnsServers.length
+      ) {
+        throw new Error("Network lease requires valid IPv4 DNS servers.")
+      }
+      if (options.temporaryDatabaseAccess) {
+        throw new Error(
+          "Temporary-database network access is only valid for an ingress-only lease.",
+        )
+      }
     }
     const root = await this.getLeaseRoot()
     return this.withAllocationLock(async () => {
@@ -320,6 +345,7 @@ export class NetworkLeaseManager {
         uplink: value.uplink,
         policy: value.policy ?? "egress-nat",
         dnsServers: value.dnsServers,
+        temporaryDatabaseAccess: value.temporaryDatabaseAccess ?? false,
       },
       value,
     )
@@ -418,6 +444,7 @@ export class NetworkLeaseManager {
       uplink: string
       policy: NetworkLeasePolicy
       dnsServers: readonly string[]
+      temporaryDatabaseAccess?: boolean
     },
     ownership?: Pick<
       NetworkLeaseMarker,
@@ -431,6 +458,7 @@ export class NetworkLeaseManager {
       allocationId: options.allocationId,
       uplink: options.uplink,
       policy: options.policy,
+      temporaryDatabaseAccess: options.temporaryDatabaseAccess ?? false,
       dnsServers: [...options.dnsServers],
       creatorPid: ownership?.creatorPid ?? process.pid,
       creatorProcessStartTime:
@@ -553,6 +581,7 @@ export class NetworkLeaseManager {
         uplink: value.uplink,
         policy: value.policy ?? "egress-nat",
         dnsServers: value.dnsServers,
+        temporaryDatabaseAccess: value.temporaryDatabaseAccess ?? false,
       },
       value,
     )
@@ -1122,6 +1151,7 @@ function toMarker(lease: NetworkLease): NetworkLeaseMarker {
     prefixLength: lease.prefixLength,
     uplink: lease.uplink,
     policy: lease.policy,
+    temporaryDatabaseAccess: lease.temporaryDatabaseAccess,
     egressChain: lease.egressChain,
     inputChain: lease.inputChain,
     returnChain: lease.returnChain,
@@ -1175,6 +1205,10 @@ function isMarker(value: unknown): value is NetworkLeaseMarker {
     (marker.policy === undefined ||
       marker.policy === "egress-nat" ||
       marker.policy === "ingress-only") &&
+    (marker.temporaryDatabaseAccess === undefined ||
+      typeof marker.temporaryDatabaseAccess === "boolean") &&
+    (marker.temporaryDatabaseAccess !== true ||
+      marker.policy === "ingress-only") &&
     typeof marker.egressChain === "string" &&
     typeof marker.inputChain === "string" &&
     typeof marker.returnChain === "string" &&
@@ -1201,15 +1235,22 @@ function isExpectedMarkerKeys(
   expectedKeys: readonly string[],
 ): boolean {
   const actual = Object.keys(marker).sort().join(",")
-  const current = [...expectedKeys, "policy"].sort().join(",")
+  const current = [...expectedKeys, "policy", "temporaryDatabaseAccess"]
+    .sort()
+    .join(",")
+  const policyOnly = [...expectedKeys, "policy"].sort().join(",")
   const legacy = [...expectedKeys].sort().join(",")
-  return actual === current || actual === legacy
+  return actual === current || actual === policyOnly || actual === legacy
 }
 
 function sameMarker(lease: NetworkLease, marker: NetworkLeaseMarker): boolean {
   return (
     stableMarkerJson(toMarker(lease)) ===
-    stableMarkerJson({ ...marker, policy: marker.policy ?? "egress-nat" })
+    stableMarkerJson({
+      ...marker,
+      policy: marker.policy ?? "egress-nat",
+      temporaryDatabaseAccess: marker.temporaryDatabaseAccess ?? false,
+    })
   )
 }
 

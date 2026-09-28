@@ -1,6 +1,6 @@
 # Temporary PostgreSQL Previews (M11) — Design
 
-**Status: PARTIALLY IMPLEMENTED (M11-C2B in progress). Not deployed. Not
+**Status: PARTIALLY IMPLEMENTED (M11-C3 in progress). Not deployed. Not
 production-verified.**
 
 M11 (`docs/MVP_ROADMAP.md` stage 11, "temporary database support") remains
@@ -8,12 +8,23 @@ M11 (`docs/MVP_ROADMAP.md` stage 11, "temporary database support") remains
 M11-C2A implements durable ownership plus isolated PostgreSQL provision/revoke
 primitives and PostgreSQL 18 integration proof. M11-C2B adds the three-set
 tenant catalog and fail-closed reconciliation primitives, including startup
-`reapAll()` and age-bounded maintenance `reap()` semantics. These primitives
-are not wired into runtime execution. There is still no new network rule or
-second PostgreSQL cluster, and `services/production/server.ts` is unchanged.
-`BackendRuntimePlan.platformEnvironment` remains exactly
-`PORT`/`HOST`/`NODE_ENV`, and `PreviewGeneratedSecretName` remains exactly
-`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`.
+`reapAll()` and age-bounded maintenance `reap()` semantics. M11-C3 adds the
+downstream credential-delivery and host-only network primitives this
+document's §15 and §7 describe: canonical `DATABASE_URL` assembly
+(`core/backendDatabase/databaseUrl.ts`), a dedicated
+`/run/peephole/db-credentials` tmpfs filesystem and orphan reaper structurally
+separate from M10's own `/run/peephole/secrets`, trusted-bootstrap support for
+the fixed `/run/secrets/database-url` file alongside M10's `/run/secrets/env`,
+a `temporaryDatabaseAccess` capability on the durable ingress-only network
+lease with the exact `/32` route and INPUT-chain rule this document locks,
+and the matching `NetworkOrphanReaper` validation/cleanup. None of this is
+wired into runtime execution: `BackendRuntimeSupervisor` still never obtains
+or passes real database material, and a database-requiring plan still fails
+closed with `DATABASE_UNAVAILABLE` before sandbox allocation (M11-C1). There
+is still no real tenant PostgreSQL cluster, no `pphdb0` interface, and
+`services/production/server.ts` is unchanged. `BackendRuntimePlan.platformEnvironment`
+remains exactly `PORT`/`HOST`/`NODE_ENV`, and `PreviewGeneratedSecretName`
+remains exactly `JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`.
 
 This document is the output of a four-phase, code-and-production-grounded
 architecture investigation (M11-A through M11-A4) conducted before any
@@ -65,10 +76,10 @@ stays `[ ]` regardless of how many of these sub-stages complete.
 | M11-A | Architecture investigation / read-only production audit / final architecture lock | **COMPLETE** |
 | M11-B | Design documentation (this document, D-033) | **COMPLETE** |
 | M11-C1 | Portable types / admission / ownership foundation | **COMPLETE** |
-| M11-C2 | PostgreSQL provisioning + durable ownership / reconciliation | **CURRENT** |
+| M11-C2 | PostgreSQL provisioning + durable ownership / reconciliation | **COMPLETE** |
 | M11-C2A | Durable ownership + PostgreSQL provisioning foundation | **COMPLETE** |
-| M11-C2B | Three-set reconciliation / reaper | **CURRENT — three-set reconciliation PR** |
-| M11-C3 | Credential delivery + host-only sandbox network integration | NOT STARTED |
+| M11-C2B | Three-set reconciliation / reaper | **COMPLETE** |
+| M11-C3 | Credential delivery + host-only sandbox network integration | **CURRENT — credential/network implementation PR** |
 | M11-C4 | Integrated FullStack lifecycle | NOT STARTED |
 | M11-D | Real Linux / real-gVisor verification | NOT STARTED |
 | M11-E | Production infrastructure activation + production acceptance | NOT STARTED |
@@ -80,10 +91,20 @@ normal revoke primitives, with real PostgreSQL 18 integration coverage.
 M11-C2B adds ownership-proven, audit-before-mutation reconciliation across the
 durable row, physical database, and physical role sets. It implements startup
 and maintenance policy while failing closed on unowned, malformed, or
-privilege-incompatible physical state. It is not wired into the runtime:
-database-requiring plans still fail closed in the worker with
-`DATABASE_UNAVAILABLE`. M11-C3/M11-C4 remain required before any
-database-requiring backend can run.
+privilege-incompatible physical state. M11-C3 adds the primitives that would
+deliver an already-provisioned credential to a backend sandbox and grant only
+that sandbox the narrow network capability to reach the future tenant
+PostgreSQL listener: the `DATABASE_URL` builder, a process-memory-only
+runtime credential type, the dedicated `/run/peephole/db-credentials` tmpfs
+filesystem and its orphan reaper, trusted-bootstrap support for the fixed
+`database-url` file, an extended low-level process-starter boundary that
+validates plan/material/runtime-id agreement, and the `temporaryDatabaseAccess`
+network-lease capability with its exact `/32` route, exact INPUT-chain rule,
+and matching `NetworkOrphanReaper` validation. None of this is wired into the
+runtime: database-requiring plans still fail closed in the worker with
+`DATABASE_UNAVAILABLE`, strictly before sandbox allocation, and no database is
+provisioned as part of a real FullStack execution. M11-C4 remains required
+before any database-requiring backend can actually run.
 
 **The production host's RAM is a documented future prerequisite, not
 something already done.** M11-A3 found the production host to be a tight
@@ -429,21 +450,31 @@ during the M11-A3 read-only audit (`ens5` on `172.31.36.11/20`, VPC subnet
 confirmed from `services/preview-worker/gvisor/subnetAllocator.ts`; no
 dummy/bridge interface exists yet).
 
-### Target (future, not configured yet)
+### Target (host side still future; sandbox side implemented in M11-C3)
 
 ```text
 root namespace:
-  dummy interface: pphdb0
-  address:         192.168.253.1/32
+  dummy interface: pphdb0                          -- still not created
+  address:         192.168.253.1/32                -- still not bound
 
 tenant postgres:
-  listen_addresses = 192.168.253.1
+  listen_addresses = 192.168.253.1                 -- cluster does not exist
   port             = 5433
 
 sandbox route (per lease, added alongside the existing directly-attached
 lease subnet route -- never replacing it):
-  192.168.253.1/32 via <lease.hostIp> dev peerVeth
+  192.168.253.1/32 via <lease.hostIp> dev peerVeth  -- implemented, M11-C3
 ```
+
+M11-C3 implements the *sandbox-side* half of this target exactly as locked
+below: `VethNatNetworkProvisioner.createIngressOnly(id, {
+temporaryDatabaseAccess: true })` adds this precise route and the INPUT rule
+in §"Packet path" below, and `NetworkOrphanReaper` validates/cleans exactly
+this addition, all portably testable against fake namespaces/process
+runners. What M11-C3 does **not** do is create `pphdb0`, bind
+`192.168.253.1` on any real host, or stand up `18-tenant` — those remain
+M11-E's real host/network activation, gated on this document's own §17
+capacity prerequisite.
 
 `192.168.253.1/32` was chosen specifically because it collides with nothing
 observed on the live host: it is outside the fully-reserved
@@ -474,9 +505,11 @@ exact destination-IP + port ACCEPT
 192.168.253.1:5433
 ```
 
-Future allow rule (inserted **before** the existing per-lease `inputChain`
-deny, on the same chain the existing `ESTABLISHED,RELATED → ACCEPT, else
-DROP` rules already live on):
+Allow rule (implemented, M11-C3 — `configureIngressOnlyFirewall()` in
+`networkNamespace.ts`, mirrored by `expectedRules()` in
+`networkOrphanReaper.ts`), inserted **before** the existing per-lease
+`inputChain` deny, on the same chain the existing `ESTABLISHED,RELATED →
+ACCEPT, else DROP` rules already live on:
 
 ```text
 -i <hostVeth>
@@ -931,7 +964,7 @@ COOKIE_SECRET
 CSRF_SECRET
 ```
 
-`DATABASE_URL` is designed to use a structurally separate mechanism — not because the
+`DATABASE_URL` uses a structurally separate mechanism — not because the
 underlying tmpfs-bind-mount-plus-trusted-bootstrap *pattern* is wrong for
 it, but because M10's existing `GENERATED_VALUE_PATTERN`
 (`/^[A-Za-z0-9_-]+$/`) would reject a real connection string outright (it
@@ -940,14 +973,20 @@ is an external, failable side effect, unlike M10's pure in-memory secret
 generation — a different broker shape entirely (§16 in the earlier design
 phases; reflected here only as the delivery-file consequence).
 
-Future host path (not created yet):
+**Implemented in M11-C3** (`services/preview-worker/gvisor/databaseCredentialFilesystem.ts`,
+`core/backendDatabase/databaseUrl.ts`, `scripts/gvisor/secret-bootstrap.mjs`).
+Not yet reachable from any real execution — `BackendRuntimeSupervisor` never
+constructs this material (M11-C4), and the reaper below is not wired into
+`services/production/server.ts` (also M11-C4+).
+
+Host path:
 
 ```text
 /run/peephole/db-credentials/<runtimeId>/database-url
 ```
 
-Future sandbox path (read-only bind mount, single file — mirroring M10's
-own single-file bind-mount pattern exactly):
+Sandbox path (read-only bind mount, single file — mirroring M10's own
+single-file bind-mount pattern exactly):
 
 ```text
 /run/secrets/database-url
@@ -956,21 +995,38 @@ own single-file bind-mount pattern exactly):
 Properties:
 
 - a dedicated tmpfs root, entirely separate from M10's own
-  `/run/peephole/secrets` root;
+  `/run/peephole/secrets` root (`TmpfsDatabaseCredentialFilesystem` refuses
+  to construct if the two would overlap);
 - a single fixed file — no generic `NAME=value` parsing of any kind, so
   there is no newline/`=`/env-name injection surface to defend against in
   the first place;
-- the file's entire content would be the raw `DATABASE_URL` value, nothing
-  else;
-- the trusted bootstrap (to be extended) would read this second fixed path
-  if present, trim exactly one trailing newline, and set
-  `process.env.DATABASE_URL` to its full content verbatim — no parsing
-  logic beyond that;
+- the file's entire content is the raw `DATABASE_URL` value plus exactly one
+  trailing newline, nothing else;
+- the trusted bootstrap reads this second fixed path if present, trims
+  exactly one trailing newline, and sets `process.env.DATABASE_URL` to its
+  full content verbatim — no parsing logic beyond that; it also now reads
+  the M10 secret file only if present, so the bootstrap supports generated
+  secrets alone, the database credential alone, or both together, and is
+  skipped entirely by the caller when neither is needed;
+- has its own narrow `DatabaseCredentialOrphanReaper`, mirroring
+  `GeneratedSecretOrphanReaper`'s `reapAll()`/age-bounded `reap()` discipline,
+  not yet wired into production startup;
 - would be removed on both normal teardown and startup/maintenance
-  reconciliation, the same lifecycle discipline M10's own tmpfs secret
-  file already has today.
+  reconciliation once M11-C4 wires the reaper in, the same lifecycle
+  discipline M10's own tmpfs secret file already has today.
 
-`DATABASE_URL` would be assembled **only** from: the server-generated
+**Mount composition with M10 (M11-C3):** the OCI spec no longer bind-mounts
+M10's whole per-runtime directory onto `/run/secrets` itself. Both credential
+files are now bind-mounted individually onto their own fixed placeholder
+files (`/run/secrets/env`, `/run/secrets/database-url`) baked directly into
+the immutable base rootfs image (`scripts/gvisor/build-base-rootfs.sh`) —
+sibling mounts, never nested on top of one another. This is what lets the two
+credential sources coexist for one plan without ever needing a writable or
+symlink-based union of the two host roots, and without changing what the
+sandbox actually sees at `/run/secrets/env` (M10's own sandbox-visible
+semantics are unchanged).
+
+`DATABASE_URL` is assembled **only** from: the server-generated
 `pv_<resource_id>` identifier (used identically as both database name and
 role name), the server-generated password, the fixed configured host
 (`192.168.253.1`), and the fixed configured port (`5433`). No repository
@@ -1081,7 +1137,9 @@ repository.
 
 ---
 
-## 19. Test plan (planned — no tests exist yet)
+## 19. Test plan (portable and PostgreSQL-18-integration coverage now exists
+for C1/C2/C3; real-gVisor and production-acceptance rows below remain
+planned only)
 
 ### Portable
 
@@ -1111,6 +1169,40 @@ repository.
   ever written; nothing else validates.
 - Teardown ordering: `SET ROLE` → `DROP DATABASE` → `RESET ROLE` → `DROP
   ROLE`, and that `RESET ROLE` always precedes `DROP ROLE`.
+
+**M11-C3 additions (implemented — `tests/databaseUrl.test.ts`,
+`tests/databaseCredentialFilesystem.test.ts`, `tests/secretBootstrap.test.ts`,
+`tests/backendRuntimeProcess.test.ts`, `tests/networkNamespace.test.ts`,
+`tests/networkOrphanReaper.test.ts`, `tests/subnetAllocator.test.ts`,
+`tests/gvisorAdapter.test.ts`):**
+
+- `DATABASE_URL` builder: resource-derived role/database, mismatch rejection,
+  fixed host/port, standard URL encoding of the password, opaque output,
+  no raw value in errors;
+- credential filesystem: fixed path/filename, `0700`/`0600` modes, tmpfs
+  verification, root-overlap rejection (including against M10's own root),
+  traversal/symlink rejection, exclusive creation, bounded size, idempotent
+  remove, and the matching orphan reaper's `reapAll()`/age-bounded `reap()`;
+- trusted bootstrap: generated-only, database-only, and combined child
+  environments; DATABASE_URL never parsed by the generated-secret grammar;
+  malformed/empty/oversized/multi-line database credential material rejected
+  without printing it; signal forwarding unchanged;
+- OCI mount composition: the M10 mount narrowed from a directory bind onto
+  `/run/secrets` to an individual file bind onto `/run/secrets/env`; the two
+  credential files coexist as independent sibling mounts; no raw URL in
+  `config.json`/argv; plan/material/runtime-id mismatches fail closed; DB
+  credential cleanup is attempted (independently of generated-secret
+  cleanup, combined via `AggregateError` when both fail) after namespace,
+  OCI-construction, and runsc-start failures, and on normal exit/`stop()`;
+- network capability: exact `/32` route and exact INPUT rule for a
+  `temporaryDatabaseAccess` lease and nothing else; legacy markers (no
+  `policy`, or `policy` without `temporaryDatabaseAccess`) read as disabled;
+  non-boolean or policy-incoherent capability values fail closed;
+  `GVisorSandboxProvisioner`'s per-workspace namespace never silently
+  upgrades/downgrades a already-created namespace's capability; and
+  `NetworkOrphanReaper` rejects a DB route/rule on a non-DB lease, a wrong
+  IP, a broader CIDR, a wrong port, UDP, an unexpected extra rule, and any
+  default route on an ingress-only lease (DB-enabled or not).
 
 ### PostgreSQL 18 integration
 

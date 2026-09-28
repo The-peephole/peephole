@@ -30,8 +30,8 @@ still retained as a soft limit, but it is no longer the security boundary.
 | `/proc` | virtual procfs | gVisor-managed |
 | Compressed GitHub archive | process memory plus host-only bundle staging | 50 MiB limit and admission reservation |
 | Published artifact copy | artifact storage | at most 100 MiB per accepted output, outside workspace quota |
-| Generated-secret injection (M10, production-enabled, four canonical names only) | dedicated `/run/peephole/secrets/<runtime-id>` host tmpfs root | per-runtime directory `0700`, fixed file `0600`, read-only bind at `/run/secrets`; preflight capability check rejects non-tmpfs backing |
-| Temporary-database credential injection (M11, **design only, not implemented** -- see `docs/TEMPORARY_DATABASES.md`) | proposed dedicated `/run/peephole/db-credentials/<runtime-id>` host tmpfs root, structurally separate from the M10 root above | proposed: single fixed file (`database-url`), read-only bind at `/run/secrets/database-url`; no `NAME=value` parsing; not implemented |
+| Generated-secret injection (M10, production-enabled, four canonical names only) | dedicated `/run/peephole/secrets/<runtime-id>` host tmpfs root | per-runtime directory `0700`, fixed file `0600`, read-only bind at `/run/secrets/env` (narrowed from a directory bind onto `/run/secrets` itself to an individual file bind onto a fixed placeholder baked into the base rootfs, M11-C3, so it can coexist with the row below); preflight capability check rejects non-tmpfs backing |
+| Temporary-database credential injection (M11-C3 primitives implemented, not wired into runtime execution -- see `docs/TEMPORARY_DATABASES.md`) | dedicated `/run/peephole/db-credentials/<runtime-id>` host tmpfs root, structurally separate from the M10 root above | single fixed file (`database-url`), read-only bind at `/run/secrets/database-url`; no `NAME=value` parsing |
 
 The ext4 mount root is owned by uid/gid 65534 with mode `0700`. World-writable
 `0777` is no longer required: the production host process is privileged for

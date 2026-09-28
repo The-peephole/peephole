@@ -27,8 +27,19 @@ export interface GVisorPreviewWorkspace extends LocalPreviewWorkspace {
    * `ensureNetworkNamespace`: a workspace never mixes the two policies on
    * one namespace. Intended for a supervised backend runtime process, never
    * for install/build. Torn down by `destroy()`.
+   *
+   * `temporaryDatabaseAccess` (M11-C3, default `false`) requests the one
+   * narrow additional capability that lets this namespace also reach the
+   * fixed tenant PostgreSQL endpoint -- see
+   * `core/backendDatabase/databaseUrl.ts` and
+   * docs/TEMPORARY_DATABASES.md section 7. A workspace's namespace is
+   * created once and reused for every later call; a later call requesting a
+   * *different* capability than the namespace already owns must fail
+   * closed rather than silently upgrading or downgrading it.
    */
-  ensureIngressOnlyNetworkNamespace(): Promise<{
+  ensureIngressOnlyNetworkNamespace(options?: {
+    readonly temporaryDatabaseAccess?: boolean
+  }): Promise<{
     path: string
     peerIp: string
   }>

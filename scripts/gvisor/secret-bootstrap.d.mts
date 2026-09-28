@@ -2,8 +2,11 @@ import type { ChildProcess } from "node:child_process"
 
 export function parseSecretMaterial(contents: string): Record<string, string>
 
+export function parseDatabaseCredentialMaterial(contents: string): string
+
 export function runSecretBootstrap(options?: {
   secretFile?: string
+  databaseCredentialFile?: string
   nodeBinary?: string
   childArgs?: string[]
   baseEnvironment?: NodeJS.ProcessEnv

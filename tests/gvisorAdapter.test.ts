@@ -376,6 +376,7 @@ describe("GVisorSandboxProvisioner + RunscCommandRunner (fake runsc)", () => {
 class FakeNetworkProvisioner {
   createCalls: string[] = []
   createIngressOnlyCalls: string[] = []
+  createIngressOnlyOptions: Array<{ temporaryDatabaseAccess?: boolean }> = []
   teardownCounts = { egress: 0, ingressOnly: 0 }
 
   async create(id: string) {
@@ -388,8 +389,12 @@ class FakeNetworkProvisioner {
     }
   }
 
-  async createIngressOnly(id: string) {
+  async createIngressOnly(
+    id: string,
+    options: { temporaryDatabaseAccess?: boolean } = {},
+  ) {
     this.createIngressOnlyCalls.push(id)
+    this.createIngressOnlyOptions.push(options)
     return {
       path: `/var/run/netns/fake-ingress-${id}`,
       peerIp: `10.250.0.${String(this.createIngressOnlyCalls.length)}`,
@@ -475,5 +480,110 @@ describe("GVisorSandboxProvisioner.ensureIngressOnlyNetworkNamespace", () => {
       egress: 0,
       ingressOnly: 0,
     })
+  })
+
+  it("forwards a requested database capability through to the network provisioner", async () => {
+    const processRunner = new FakeProcessRunner()
+    const networkProvisioner = new FakeNetworkProvisioner()
+    const provisioner = new GVisorSandboxProvisioner({
+      baseRootfsImage,
+      bundlesRootDir,
+      processRunner,
+      diskManager: new FakeSandboxDiskManager(bundlesRootDir),
+      networkProvisioner:
+        networkProvisioner as unknown as VethNatNetworkProvisioner,
+    })
+    const workspace = await provisioner.allocate("job-db-ingress")
+
+    const handle = await workspace.ensureIngressOnlyNetworkNamespace({
+      temporaryDatabaseAccess: true,
+    })
+
+    expect(handle.peerIp).toBe("10.250.0.1")
+    expect(networkProvisioner.createIngressOnlyOptions).toEqual([
+      { temporaryDatabaseAccess: true },
+    ])
+
+    await workspace.destroy()
+  })
+
+  it("caches a repeated call requesting the SAME database capability without a mismatch error", async () => {
+    const processRunner = new FakeProcessRunner()
+    const networkProvisioner = new FakeNetworkProvisioner()
+    const provisioner = new GVisorSandboxProvisioner({
+      baseRootfsImage,
+      bundlesRootDir,
+      processRunner,
+      diskManager: new FakeSandboxDiskManager(bundlesRootDir),
+      networkProvisioner:
+        networkProvisioner as unknown as VethNatNetworkProvisioner,
+    })
+    const workspace = await provisioner.allocate("job-db-ingress-repeat")
+
+    const first = await workspace.ensureIngressOnlyNetworkNamespace({
+      temporaryDatabaseAccess: true,
+    })
+    const second = await workspace.ensureIngressOnlyNetworkNamespace({
+      temporaryDatabaseAccess: true,
+    })
+
+    expect(first).toEqual(second)
+    expect(networkProvisioner.createIngressOnlyCalls).toHaveLength(1)
+
+    await workspace.destroy()
+  })
+
+  it("fails closed when a later call requests a different database capability than the namespace already owns", async () => {
+    const processRunner = new FakeProcessRunner()
+    const networkProvisioner = new FakeNetworkProvisioner()
+    const provisioner = new GVisorSandboxProvisioner({
+      baseRootfsImage,
+      bundlesRootDir,
+      processRunner,
+      diskManager: new FakeSandboxDiskManager(bundlesRootDir),
+      networkProvisioner:
+        networkProvisioner as unknown as VethNatNetworkProvisioner,
+    })
+    const workspace = await provisioner.allocate("job-db-mismatch")
+
+    await workspace.ensureIngressOnlyNetworkNamespace({
+      temporaryDatabaseAccess: false,
+    })
+
+    await expect(
+      workspace.ensureIngressOnlyNetworkNamespace({
+        temporaryDatabaseAccess: true,
+      }),
+    ).rejects.toThrow(/capability mismatch/)
+    // Never silently upgraded: still exactly one real namespace created.
+    expect(networkProvisioner.createIngressOnlyCalls).toHaveLength(1)
+
+    await workspace.destroy()
+  })
+
+  it("fails closed the other direction too -- a database namespace can never be silently downgraded", async () => {
+    const processRunner = new FakeProcessRunner()
+    const networkProvisioner = new FakeNetworkProvisioner()
+    const provisioner = new GVisorSandboxProvisioner({
+      baseRootfsImage,
+      bundlesRootDir,
+      processRunner,
+      diskManager: new FakeSandboxDiskManager(bundlesRootDir),
+      networkProvisioner:
+        networkProvisioner as unknown as VethNatNetworkProvisioner,
+    })
+    const workspace = await provisioner.allocate("job-db-mismatch-reverse")
+
+    await workspace.ensureIngressOnlyNetworkNamespace({
+      temporaryDatabaseAccess: true,
+    })
+
+    await expect(
+      workspace.ensureIngressOnlyNetworkNamespace({
+        temporaryDatabaseAccess: false,
+      }),
+    ).rejects.toThrow(/capability mismatch/)
+
+    await workspace.destroy()
   })
 })

@@ -1,5 +1,6 @@
 import type { BackendRuntimePlan } from "../../types/backendRuntime"
 import type { GeneratedSecretMaterial } from "../../types/backendRuntimeSecrets"
+import type { TemporaryDatabaseRuntimeCredentialMaterial } from "../../types/temporaryDatabase"
 import type { LocalPreviewWorkspace } from "../preview-worker/local/localWorkspace"
 
 /**
@@ -65,5 +66,12 @@ export interface BackendRuntimeProcessStarter {
     /** Server-only material, already destructively consumed from the broker
      * by the supervisor. `null` is valid only for an empty names list. */
     secrets: GeneratedSecretMaterial | null,
+    /** Server-only, process-memory-only temporary-database material
+     * (M11-C3). `plan.databaseRequirement == null` iff this is `null` --
+     * see docs/TEMPORARY_DATABASES.md section 15. Not yet supplied by
+     * `BackendRuntimeSupervisor`, which still fails a database-requiring
+     * plan closed with `DATABASE_UNAVAILABLE` before ever reaching this
+     * primitive (M11-C1); wiring real material through is M11-C4. */
+    databaseCredential?: TemporaryDatabaseRuntimeCredentialMaterial | null,
   ): Promise<RuntimeProcessHandle>
 }

@@ -9,7 +9,16 @@ import {
   BackendRuntimeReadinessTimeoutError,
   GVisorBackendRuntimeProcess,
 } from "../services/preview-worker/gvisor/backendRuntimeProcess"
+import {
+  DATABASE_CREDENTIAL_FILE_NAME,
+  TmpfsDatabaseCredentialFilesystem,
+} from "../services/preview-worker/gvisor/databaseCredentialFilesystem"
 import { TmpfsGeneratedSecretFilesystem } from "../services/preview-worker/gvisor/generatedSecretFilesystem"
+import {
+  TENANT_DATABASE_HOST,
+  TENANT_DATABASE_PORT,
+} from "../core/backendDatabase/databaseUrl"
+import { mintTemporaryDatabaseResourceId } from "../core/backendDatabase/resourceIdentity"
 import { createOpaqueSecretValue } from "../core/backendSecrets/generatedSecretValue"
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
 import type {
@@ -18,8 +27,10 @@ import type {
 } from "../services/preview-worker/gvisor/processRunner"
 import type { BackendRuntimePlan } from "../types/backendRuntime"
 import type { GeneratedSecretMaterial } from "../types/backendRuntimeSecrets"
+import type { TemporaryDatabaseRuntimeCredentialMaterial } from "../types/temporaryDatabase"
 
 const SECRET_MARKER = "M10BMarker_7Hn9-Q"
+const DATABASE_URL_MARKER = `postgresql://pv_x:M11CMarker_7Hn9-Q@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/pv_x`
 
 const plan: BackendRuntimePlan = {
   contractVersion: "backend-v1",
@@ -47,6 +58,29 @@ const plan: BackendRuntimePlan = {
 const secretPlan: BackendRuntimePlan = {
   ...plan,
   generatedSecretNames: ["SESSION_SECRET"],
+}
+
+const databasePlan: BackendRuntimePlan = {
+  ...plan,
+  databaseRequirement: { name: "DATABASE_URL" },
+}
+
+const databaseAndSecretPlan: BackendRuntimePlan = {
+  ...secretPlan,
+  databaseRequirement: { name: "DATABASE_URL" },
+}
+
+function databaseCredential(
+  runtimeId = "job-backend",
+  url = DATABASE_URL_MARKER,
+): TemporaryDatabaseRuntimeCredentialMaterial {
+  return {
+    runtimeId,
+    resourceId: mintTemporaryDatabaseResourceId(() =>
+      new Uint8Array(14).fill(5),
+    ),
+    databaseUrl: createOpaqueSecretValue(url),
+  }
 }
 
 class FakeProcessRunner implements ProcessRunner {
@@ -108,6 +142,9 @@ class FakeProcessRunner implements ProcessRunner {
 function fakeWorkspace(
   bundleDir: string,
   peerIp: string,
+  options: {
+    ensureIngressOnlyNetworkNamespace?: GVisorPreviewWorkspace["ensureIngressOnlyNetworkNamespace"]
+  } = {},
 ): GVisorPreviewWorkspace {
   const containers = new Set<string>()
   return {
@@ -121,10 +158,12 @@ function fakeWorkspace(
     unregisterContainer: (id) => containers.delete(id),
     listContainers: () => Array.from(containers),
     ensureNetworkNamespace: async () => "/var/run/netns/fake-egress",
-    ensureIngressOnlyNetworkNamespace: async () => ({
-      path: "/var/run/netns/fake-ingress",
-      peerIp,
-    }),
+    ensureIngressOnlyNetworkNamespace:
+      options.ensureIngressOnlyNetworkNamespace ??
+      (async () => ({
+        path: "/var/run/netns/fake-ingress",
+        peerIp,
+      })),
   }
 }
 
@@ -133,6 +172,7 @@ describe("GVisorBackendRuntimeProcess", () => {
   let port: number
   let bundleDir: string
   let secretRoot: string
+  let dbCredentialRoot: string
 
   beforeEach(async () => {
     server = createServer((socket) => socket.end())
@@ -150,13 +190,25 @@ describe("GVisorBackendRuntimeProcess", () => {
     secretRoot = await mkdtemp(
       path.join(os.tmpdir(), "peephole-runtime-secrets-"),
     )
+    dbCredentialRoot = await mkdtemp(
+      path.join(os.tmpdir(), "peephole-runtime-db-credentials-"),
+    )
   })
 
   afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await rm(bundleDir, { recursive: true, force: true })
     await rm(secretRoot, { recursive: true, force: true })
+    await rm(dbCredentialRoot, { recursive: true, force: true })
   })
+
+  function databaseCredentialFilesystem() {
+    return new TmpfsDatabaseCredentialFilesystem({
+      rootDir: dbCredentialRoot,
+      verifyMemoryBackedRoot: async () => undefined,
+      setOwnership: async () => undefined,
+    })
+  }
 
   it("becomes ready once the internal port accepts a connection", async () => {
     const processRunner = new FakeProcessRunner()
@@ -446,9 +498,8 @@ describe("GVisorBackendRuntimeProcess", () => {
     ).toBe(false)
     expect(config.process.cwd).toBe("/workspace/backend")
     expect(
-      config.mounts.filter(
-        (mount: { destination: string }) =>
-          mount.destination === "/run/secrets",
+      config.mounts.filter((mount: { destination: string }) =>
+        mount.destination.startsWith("/run/secrets"),
       ),
     ).toEqual([])
     expect(config.process.user).toEqual({ uid: 65534, gid: 65534 })
@@ -498,17 +549,28 @@ describe("GVisorBackendRuntimeProcess", () => {
       "src/server.js",
     ])
     expect(config.process.args).not.toContain(SECRET_MARKER)
+    // M11-C3 narrows the M10 mount from a directory bind onto `/run/secrets`
+    // itself to an individual file bind onto the fixed `/run/secrets/env`
+    // placeholder baked into the base rootfs -- see ociConfig.ts and
+    // build-base-rootfs.sh. The sandbox-visible file/content is unchanged.
     const secretMounts = config.mounts.filter(
-      (mount: { destination: string }) => mount.destination === "/run/secrets",
+      (mount: { destination: string }) =>
+        mount.destination === "/run/secrets/env",
     )
     expect(secretMounts).toEqual([
       {
-        destination: "/run/secrets",
+        destination: "/run/secrets/env",
         type: "bind",
-        source: path.join(secretRoot, "job-backend"),
+        source: path.join(secretRoot, "job-backend", "env"),
         options: ["bind", "ro", "nosuid", "nodev", "noexec"],
       },
     ])
+    expect(
+      config.mounts.filter(
+        (mount: { destination: string }) =>
+          mount.destination === "/run/secrets/database-url",
+      ),
+    ).toEqual([])
 
     await handle.stop()
     await expect(readdir(secretRoot)).resolves.toEqual([])
@@ -682,5 +744,399 @@ describe("GVisorBackendRuntimeProcess", () => {
     await expect(
       runtime.start(fakeWorkspace(bundleDir, "127.0.0.1"), tamperedPlan),
     ).rejects.toThrow('Backend runtime plan start command must be "node".')
+  })
+
+  describe("temporary-database credential delivery (M11-C3)", () => {
+    it("injects the database credential through one read-only mount and the trusted bootstrap, without serializing the URL", async () => {
+      const processRunner = new FakeProcessRunner()
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner,
+        databaseCredentialFilesystem: databaseCredentialFilesystem(),
+      })
+      const credential = databaseCredential()
+      const handle = await runtime.start(
+        fakeWorkspace(bundleDir, "127.0.0.1"),
+        { ...databasePlan, internalPort: port },
+        null,
+        credential,
+      )
+      const serialized = await readFile(
+        path.join(bundleDir, "config.json"),
+        "utf8",
+      )
+      const config = JSON.parse(serialized)
+
+      expect(serialized).not.toContain(DATABASE_URL_MARKER)
+      expect(config.process.env).toEqual([
+        "PORT=3000",
+        "HOST=0.0.0.0",
+        "NODE_ENV=production",
+      ])
+      expect(config.process.args).toEqual([
+        "/usr/local/bin/node",
+        "/opt/peephole/secret-bootstrap.mjs",
+        "src/server.js",
+      ])
+      expect(config.process.args).not.toContain(DATABASE_URL_MARKER)
+      const databaseMounts = config.mounts.filter(
+        (mount: { destination: string }) =>
+          mount.destination === "/run/secrets/database-url",
+      )
+      expect(databaseMounts).toEqual([
+        {
+          destination: "/run/secrets/database-url",
+          type: "bind",
+          source: path.join(
+            dbCredentialRoot,
+            "job-backend",
+            DATABASE_CREDENTIAL_FILE_NAME,
+          ),
+          options: ["bind", "ro", "nosuid", "nodev", "noexec"],
+        },
+      ])
+      expect(
+        config.mounts.filter(
+          (mount: { destination: string }) =>
+            mount.destination === "/run/secrets/env",
+        ),
+      ).toEqual([])
+
+      await handle.stop()
+      await expect(readdir(dbCredentialRoot)).resolves.toEqual([])
+    })
+
+    it("mounts both generated secrets and the database credential simultaneously, using the bootstrap exactly once", async () => {
+      const processRunner = new FakeProcessRunner()
+      const generatedSecretFilesystem = new TmpfsGeneratedSecretFilesystem({
+        rootDir: secretRoot,
+        verifyMemoryBackedRoot: async () => undefined,
+        setOwnership: async () => undefined,
+      })
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner,
+        generatedSecretFilesystem,
+        databaseCredentialFilesystem: databaseCredentialFilesystem(),
+      })
+      const secrets: GeneratedSecretMaterial = {
+        runtimeId: "job-backend",
+        values: new Map([
+          ["SESSION_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+        ]),
+      }
+      const credential = databaseCredential()
+      const handle = await runtime.start(
+        fakeWorkspace(bundleDir, "127.0.0.1"),
+        { ...databaseAndSecretPlan, internalPort: port },
+        secrets,
+        credential,
+      )
+      const config = JSON.parse(
+        await readFile(path.join(bundleDir, "config.json"), "utf8"),
+      )
+
+      expect(config.process.args).toEqual([
+        "/usr/local/bin/node",
+        "/opt/peephole/secret-bootstrap.mjs",
+        "src/server.js",
+      ])
+      expect(
+        (config.process.args as string[]).filter(
+          (value) => value === "/opt/peephole/secret-bootstrap.mjs",
+        ),
+      ).toHaveLength(1)
+      expect(
+        config.mounts.filter(
+          (mount: { destination: string }) =>
+            mount.destination === "/run/secrets/env",
+        ),
+      ).toEqual([
+        {
+          destination: "/run/secrets/env",
+          type: "bind",
+          source: path.join(secretRoot, "job-backend", "env"),
+          options: ["bind", "ro", "nosuid", "nodev", "noexec"],
+        },
+      ])
+      expect(
+        config.mounts.filter(
+          (mount: { destination: string }) =>
+            mount.destination === "/run/secrets/database-url",
+        ),
+      ).toEqual([
+        {
+          destination: "/run/secrets/database-url",
+          type: "bind",
+          source: path.join(
+            dbCredentialRoot,
+            "job-backend",
+            DATABASE_CREDENTIAL_FILE_NAME,
+          ),
+          options: ["bind", "ro", "nosuid", "nodev", "noexec"],
+        },
+      ])
+
+      await handle.stop()
+      await expect(readdir(secretRoot)).resolves.toEqual([])
+      await expect(readdir(dbCredentialRoot)).resolves.toEqual([])
+    })
+
+    it("fails closed when database credential material is supplied for a non-database plan", async () => {
+      const processRunner = new FakeProcessRunner()
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner,
+        databaseCredentialFilesystem: databaseCredentialFilesystem(),
+      })
+
+      await expect(
+        runtime.start(
+          fakeWorkspace(bundleDir, "127.0.0.1"),
+          { ...plan, internalPort: port },
+          null,
+          databaseCredential(),
+        ),
+      ).rejects.toThrow(/does not match/)
+      expect(processRunner.calls).toEqual([])
+      await expect(readdir(dbCredentialRoot)).resolves.toEqual([])
+    })
+
+    it("fails closed when a database-requiring plan is started without database credential material", async () => {
+      const processRunner = new FakeProcessRunner()
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner,
+        databaseCredentialFilesystem: databaseCredentialFilesystem(),
+      })
+
+      await expect(
+        runtime.start(fakeWorkspace(bundleDir, "127.0.0.1"), {
+          ...databasePlan,
+          internalPort: port,
+        }),
+      ).rejects.toThrow(/does not match/)
+      expect(processRunner.calls).toEqual([])
+    })
+
+    it("fails closed on a runtime-id mismatch between the workspace and the database credential", async () => {
+      const processRunner = new FakeProcessRunner()
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner,
+        databaseCredentialFilesystem: databaseCredentialFilesystem(),
+      })
+
+      await expect(
+        runtime.start(
+          fakeWorkspace(bundleDir, "127.0.0.1"),
+          { ...databasePlan, internalPort: port },
+          null,
+          databaseCredential("some-other-runtime"),
+        ),
+      ).rejects.toThrow(/does not match/)
+      expect(processRunner.calls).toEqual([])
+    })
+
+    it("fails closed if the plan's database requirement name is ever anything other than DATABASE_URL", async () => {
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner: new FakeProcessRunner(),
+        databaseCredentialFilesystem: databaseCredentialFilesystem(),
+      })
+      const tamperedPlan: BackendRuntimePlan = {
+        ...databasePlan,
+        internalPort: port,
+        databaseRequirement: { name: "POSTGRES_URL" } as unknown as {
+          name: "DATABASE_URL"
+        },
+      }
+
+      await expect(
+        runtime.start(
+          fakeWorkspace(bundleDir, "127.0.0.1"),
+          tamperedPlan,
+          null,
+          databaseCredential(),
+        ),
+      ).rejects.toThrow(/does not match/)
+    })
+
+    it("fails closed when database credential material is supplied but no database credential filesystem is configured", async () => {
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner: new FakeProcessRunner(),
+      })
+
+      await expect(
+        runtime.start(
+          fakeWorkspace(bundleDir, "127.0.0.1"),
+          { ...databasePlan, internalPort: port },
+          null,
+          databaseCredential(),
+        ),
+      ).rejects.toThrow(/unavailable for this runtime/)
+    })
+
+    it("requests the database-capable ingress-only namespace only when database credential material is present", async () => {
+      const processRunner = new FakeProcessRunner()
+      const requests: Array<{ temporaryDatabaseAccess?: boolean } | undefined> =
+        []
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner,
+        databaseCredentialFilesystem: databaseCredentialFilesystem(),
+      })
+      const workspace = fakeWorkspace(bundleDir, "127.0.0.1", {
+        ensureIngressOnlyNetworkNamespace: async (options) => {
+          requests.push(options)
+          return { path: "/var/run/netns/fake-ingress", peerIp: "127.0.0.1" }
+        },
+      })
+
+      const handle = await runtime.start(
+        workspace,
+        { ...databasePlan, internalPort: port },
+        null,
+        databaseCredential(),
+      )
+      await handle.stop()
+
+      expect(requests).toEqual([{ temporaryDatabaseAccess: true }])
+    })
+
+    it("cleans the database credential file when network namespace acquisition fails after it was created", async () => {
+      const processRunner = new FakeProcessRunner()
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner,
+        databaseCredentialFilesystem: databaseCredentialFilesystem(),
+      })
+      const workspace = fakeWorkspace(bundleDir, "127.0.0.1", {
+        ensureIngressOnlyNetworkNamespace: async () => {
+          throw new Error("simulated network namespace failure")
+        },
+      })
+
+      await expect(
+        runtime.start(
+          workspace,
+          { ...databasePlan, internalPort: port },
+          null,
+          databaseCredential(),
+        ),
+      ).rejects.toThrow()
+      await expect(readdir(dbCredentialRoot)).resolves.toEqual([])
+    })
+
+    it("cleans the database credential file when OCI bundle construction/write fails", async () => {
+      const processRunner = new FakeProcessRunner()
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner,
+        databaseCredentialFilesystem: databaseCredentialFilesystem(),
+      })
+
+      await expect(
+        runtime.start(
+          fakeWorkspace(path.join(bundleDir, "missing"), "127.0.0.1"),
+          { ...databasePlan, internalPort: port },
+          null,
+          databaseCredential(),
+        ),
+      ).rejects.toThrow()
+      await expect(readdir(dbCredentialRoot)).resolves.toEqual([])
+    })
+
+    it("cleans the database credential file after a runsc start/container failure surfaces through waitForExit", async () => {
+      const processRunner = new FakeProcessRunner()
+      processRunner.crashResult = {
+        exitCode: 1,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+      }
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner,
+        databaseCredentialFilesystem: databaseCredentialFilesystem(),
+      })
+      const handle = await runtime.start(
+        fakeWorkspace(bundleDir, "127.0.0.1"),
+        { ...databasePlan, internalPort: port },
+        null,
+        databaseCredential(),
+      )
+
+      await expect(handle.waitForExit()).resolves.toEqual({ exitCode: 1 })
+      await expect(readdir(dbCredentialRoot)).resolves.toEqual([])
+    })
+
+    it("removes the database credential file on stop()", async () => {
+      const processRunner = new FakeProcessRunner()
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner,
+        databaseCredentialFilesystem: databaseCredentialFilesystem(),
+      })
+      const handle = await runtime.start(
+        fakeWorkspace(bundleDir, "127.0.0.1"),
+        { ...databasePlan, internalPort: port },
+        null,
+        databaseCredential(),
+      )
+      await expect(readdir(dbCredentialRoot)).resolves.toEqual(["job-backend"])
+
+      await handle.stop()
+
+      await expect(readdir(dbCredentialRoot)).resolves.toEqual([])
+    })
+
+    it("combines independent generated-secret and database-credential cleanup failures into one AggregateError", async () => {
+      const processRunner = new FakeProcessRunner()
+      const realSecretFs = new TmpfsGeneratedSecretFilesystem({
+        rootDir: secretRoot,
+        verifyMemoryBackedRoot: async () => undefined,
+        setOwnership: async () => undefined,
+      })
+      const realDbFs = databaseCredentialFilesystem()
+      const failingSecretFs = {
+        rootDir: realSecretFs.rootDir,
+        create: (m: GeneratedSecretMaterial) => realSecretFs.create(m),
+        remove: async () => {
+          throw new Error("simulated secret cleanup failure")
+        },
+      }
+      const failingDbFs = {
+        rootDir: realDbFs.rootDir,
+        create: (m: TemporaryDatabaseRuntimeCredentialMaterial) =>
+          realDbFs.create(m),
+        remove: async () => {
+          throw new Error("simulated database credential cleanup failure")
+        },
+      }
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner,
+        generatedSecretFilesystem: failingSecretFs,
+        databaseCredentialFilesystem: failingDbFs,
+      })
+      const secrets: GeneratedSecretMaterial = {
+        runtimeId: "job-backend",
+        values: new Map([
+          ["SESSION_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+        ]),
+      }
+      const workspace = fakeWorkspace(bundleDir, "127.0.0.1", {
+        ensureIngressOnlyNetworkNamespace: async () => {
+          throw new Error("simulated network namespace failure")
+        },
+      })
+
+      const error: unknown = await runtime
+        .start(
+          workspace,
+          { ...databaseAndSecretPlan, internalPort: port },
+          secrets,
+          databaseCredential(),
+        )
+        .catch((caught: unknown) => caught)
+
+      expect(error).toBeInstanceOf(AggregateError)
+      const outer = error as AggregateError
+      expect(outer.errors).toHaveLength(2)
+      // outer.errors[0] is the original namespace failure; [1] is whatever
+      // cleanupCredentials() threw -- itself an AggregateError combining the
+      // two independent, always-both-attempted credential cleanup failures.
+      expect(outer.errors[1]).toBeInstanceOf(AggregateError)
+      expect((outer.errors[1] as AggregateError).errors).toHaveLength(2)
+    })
   })
 })
