@@ -918,8 +918,13 @@ expected worker-loop error log lines dated exactly at the intentional
 `SIGKILL` boundary (no secret-bearing content); once those aged past the
 smoke tool's unchanged default 15-minute journal window, the identical,
 unmodified `npm run smoke:production:host` passed every gate, including zero
-service errors. No raw secret value was printed, persisted, or logged at any
-point in this verification.
+service errors. No raw secret value appeared in Peephole's systemd journal,
+HTTP responses, durable state, OCI `config.json`/argv, or the inspected
+runsc persistent state at any point in this verification; the tmpfs secret
+file itself existed only for the runtime's lifetime, as designed, and the
+fixture's own sandboxed child deliberately printed the raw value to its own
+stdout to prove Peephole never forwards that stdout into its journal (see
+above).
 
 D-032 is Accepted as of 2026-09-28. M10 is complete for the four canonical
 generated-secret names. M11 (temporary database support) has not started.

@@ -213,12 +213,15 @@ Build Adapter architecture, bounded frontend target selection, existing
 deployed-site Live Preview, backend detection + environment requirement
 analysis, the narrow backend execution (`backend-v1`) contract,
 frontend/backend routing (`fullstack-v1`), and ephemeral generated secrets
-for a narrow four-name allowlist (M10) are implemented and production
--verified (M9 for stages 8-9, 2026-09-28 for stage 10). Nested build
-execution remains limited to independently installable React + Vite + npm
-targets with a target-local lockfile; backend execution is limited to one
-narrow adapter (Express + npm + lockfile + no database +
-`PORT`/`HOST`/`NODE_ENV`-only env), and the standalone `backend-v1` resource
+for a narrow four-name allowlist (M10) are implemented and
+production-verified (M9 for stages 8-9, 2026-09-28 for stage 10). Nested
+build execution remains limited to independently installable React + Vite +
+npm targets with a target-local lockfile; backend execution is limited to
+one narrow adapter (Express + npm + lockfile + no database, with
+`BackendRuntimePlan.platformEnvironment` fixed to exactly
+`PORT`/`HOST`/`NODE_ENV` and, separately, exactly four server-generated
+names supported through M10's own `generatedSecretNames` path -- see
+"Supported projects" above), and the standalone `backend-v1` resource
 itself still has no public URL -- routing is the separate `fullstack-v1`
 resource's job. None of these has an extension-side Build Preview UI yet.
 

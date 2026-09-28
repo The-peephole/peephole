@@ -53,10 +53,11 @@ target -- portable tests still use it only for structure-detection evidence
 (`tests/realBackendRuntime.test.ts`, section 5) does execute it as the
 pinned `backend-v1`/`fullstack-v1` fixture, and that execution was
 production-verified in M9 (see section 5 and the M9 record near the end of
-this document). Ephemeral generated secrets (roadmap stage 10) are implemented
-and covered at both the portable and real-gVisor-gated layers, production
--verified in M10-C4B (see section 5's M10 generated-secret subsection and
-docs/EPHEMERAL_SECRETS.md); temporary databases (roadmap stage 11) still have
+this document). Ephemeral generated secrets (roadmap stage 10) are
+implemented and covered at both the portable and real-gVisor-gated layers,
+production-verified in M10-C4B (see section 5's M10 generated-secret
+subsection and docs/EPHEMERAL_SECRETS.md); temporary databases (roadmap
+stage 11) still have
 no test at any layer -- that contract is not implemented.
 
 ## 3. Portable Tests

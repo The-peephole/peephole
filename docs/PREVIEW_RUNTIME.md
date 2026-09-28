@@ -242,8 +242,13 @@ contract fully independent from `BuildPlan`/`static-v1`/`static-v2` with its
 own `backend-v1` version namespace. The only implemented adapter is
 `express-node-npm-v1` (`core/analyzer/backendRuntimeAdapter.ts`): Express
 only, npm with a required `package-lock.json`, zero database dependencies,
-and every environment requirement classified `auto-configurable`
-(`PORT`/`HOST`/`NODE_ENV` only). A client may request only repository
+and every environment requirement classified either `auto-configurable`
+(`PORT`/`HOST`/`NODE_ENV` -- the only names ever placed in
+`BackendRuntimePlan.platformEnvironment`) or, since M10,
+`preview-generated-candidate` restricted to exactly
+`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET` (delivered
+separately through `generatedSecretNames`, see §13b, never through
+`platformEnvironment`). A client may request only repository
 identity, the exact commit, and an optional `sourceRoot` hint; the server
 (`services/backend-runtime-api/githubRuntimePlanResolver.ts`) independently
 re-derives everything else at that exact commit, and the worker

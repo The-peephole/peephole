@@ -323,9 +323,10 @@ journal requires a real admitted, server-composed runtime, not a direct
 **Fixture gap (resolved in M10-C4B):** the pre-existing pinned
 `peephole-fixture-fullstack@eae411a288b212201933cebb206126dd5bb0d93e` did not
 declare any generated-secret requirement and must not be described as
-exercising M10. M10-C4B resolved this with a new, separate first-party pinned
-fixture, `The-peephole/peephole-fixture-fullstack` (repository id
-`1371618449`) at commit `e10b08153e49d94a05931820c5325892754db246`, declaring:
+exercising M10. M10-C4B resolved this with a separate, dedicated commit on
+the same repository, `The-peephole/peephole-fixture-fullstack` (repository
+id `1371618449`) at commit `e10b08153e49d94a05931820c5325892754db246`,
+declaring:
 
 ```text
 SESSION_SECRET=

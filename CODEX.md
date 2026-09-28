@@ -62,20 +62,24 @@ Backend execution (`backend-v1`, see docs/PREVIEW_RUNTIME.md and D-030) is a
 wholly separate contract and pipeline from the static build path above: its
 own control plane, worker, gVisor runtime primitive, and ingress-only
 network policy. It supports exactly one adapter (`express-node-npm-v1`:
-Express + npm + a committed lockfile + no database dependency + only
-`PORT`/`HOST`/`NODE_ENV` environment needs) and never produces a public URL
-or a frontend/backend connection. Do not read its existence as "arbitrary
-Node backends are supported" or "full-stack preview is supported."
+Express + npm + a committed lockfile + no database dependency), whose
+`BackendRuntimePlan.platformEnvironment` is fixed to exactly
+`PORT`/`HOST`/`NODE_ENV` and never produces a public URL or a
+frontend/backend connection. Do not read its existence as "arbitrary Node
+backends are supported" or "full-stack preview is supported."
 
 Within that same narrow `backend-v1`/`fullstack-v1` contract, M10 (see D-032
 and docs/EPHEMERAL_SECRETS.md, Accepted/production-verified as of 2026-09-28)
-adds ephemeral, Peephole-*generated* secrets restricted to exactly four
-canonical names (`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`),
-delivered outside the OCI `process.env`/`config.json` path via a
-tmpfs-backed bind mount and trusted bootstrap. Arbitrary or user-supplied
-secrets, arbitrary environment-variable management, and temporary database
-provisioning remain unsupported. Do not read M10's existence as "arbitrary
-secrets are supported."
+separately allows a candidate's environment requirements to also include
+exactly four canonical server-*generated* names
+(`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`), through their
+own `generatedSecretNames` path -- never through `platformEnvironment`,
+which stays exactly `PORT`/`HOST`/`NODE_ENV` -- and delivered outside the
+OCI `process.env`/`config.json` path via a tmpfs-backed bind mount and
+trusted bootstrap. Arbitrary or user-supplied secrets, arbitrary
+environment-variable management, and temporary database provisioning remain
+unsupported. Do not read M10's existence as "arbitrary secrets are
+supported."
 
 ## Architecture to Preserve
 

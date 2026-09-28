@@ -118,9 +118,11 @@ branch name.
 - narrow backend execution (`backend-v1`, one adapter,
   `express-node-npm-v1`): a detected candidate that is Express, uses npm
   with a committed `package-lock.json`, has zero database dependencies, and
-  needs no environment beyond `PORT`/`HOST`/`NODE_ENV` may be started and
-  stopped as a supervised, isolated process inside gVisor; every other
-  candidate stays detected-but-not-executable exactly as before
+  needs no environment beyond `PORT`/`HOST`/`NODE_ENV` (its fixed
+  `platformEnvironment`) plus, optionally, the four M10 canonical
+  generated-secret names below may be started and stopped as a supervised,
+  isolated process inside gVisor; every other candidate stays
+  detected-but-not-executable exactly as before
 - frontend ↔ backend routing (`fullstack-v1`, production-verified M9): a
   separate resource pairs one `backend-v1` runtime with one static build
   behind a single same-origin HTTPS preview, routing only `/api`/`/api/*`;
@@ -144,7 +146,8 @@ branch name.
 - Next.js, WXT, and non-Vite React blockers
 - any backend candidate outside `express-node-npm-v1`'s narrow shape
   (a different framework, a missing lockfile, a database dependency, or an
-  environment requirement beyond `PORT`/`HOST`/`NODE_ENV`)
+  environment requirement beyond `PORT`/`HOST`/`NODE_ENV` and the four M10
+  canonical generated-secret names)
 
 ### Not implemented
 
@@ -211,11 +214,11 @@ two project candidates), evidence of detection only, not of full-stack
 support. Separately and outside the static-preview contract above, that
 same `backend` directory is the pinned, production-verified fixture for the
 `backend-v1`/`fullstack-v1` contract (M9; see docs/PREVIEW_RUNTIME.md), and
-a distinct first-party fixture,
+a separate, dedicated commit on the same repository,
 `The-peephole/peephole-fixture-fullstack@e10b08153e49d94a05931820c5325892754db246`
-(a separate repository, id `1371618449`), is the pinned fixture for M10's
-generated-secret verification (declares `SESSION_SECRET`, exposes
-`/api/secret-check`; see docs/EPHEMERAL_SECRETS.md).
+(repository id `1371618449`, same as the M9 pin above), is the pinned
+fixture for M10's generated-secret verification (declares `SESSION_SECRET`,
+exposes `/api/secret-check`; see docs/EPHEMERAL_SECRETS.md).
 
 ## 11. Product Boundary
 
@@ -242,13 +245,16 @@ silently guessing how a repository should run.
 Stage 11 describes future work and must not be inferred from the existing
 full-stack fixtures or documented as current capability. Stage 8's "narrow"
 qualifier is load-bearing: it supports exactly one backend shape (Express +
-npm + a committed lockfile + zero database dependencies + only
-`PORT`/`HOST`/`NODE_ENV` environment needs), never arbitrary Node backends,
-and its own success is "can safely start/stop/clean up that one process
-inside gVisor" -- not "full-stack preview" by itself. Stage 9 adds exactly
-that: routing one `backend-v1` runtime to one static build behind a single
-same-origin HTTPS preview (`fullstack-v1`). Stage 10 adds, within that same
-narrow contract, generation and injection of exactly
+npm + a committed lockfile + zero database dependencies), whose fixed
+`BackendRuntimePlan.platformEnvironment` was, at that stage alone, only
+`PORT`/`HOST`/`NODE_ENV`; never arbitrary Node backends, and its own success
+is "can safely start/stop/clean up that one process inside gVisor" -- not
+"full-stack preview" by itself. Stage 9 adds exactly that: routing one
+`backend-v1` runtime to one static build behind a single same-origin HTTPS
+preview (`fullstack-v1`). Stage 10 adds, within that same narrow contract
+and through a separate `generatedSecretNames` path (never
+`platformEnvironment`, which today is still fixed to exactly
+`PORT`/`HOST`/`NODE_ENV`), generation and injection of exactly
 `JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET` -- never
 user-supplied credentials, arbitrary environment names, external
 credentials, or database variables/provisioning. None of stages 8-10 means
