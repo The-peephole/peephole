@@ -30,7 +30,7 @@ still retained as a soft limit, but it is no longer the security boundary.
 | `/proc` | virtual procfs | gVisor-managed |
 | Compressed GitHub archive | process memory plus host-only bundle staging | 50 MiB limit and admission reservation |
 | Published artifact copy | artifact storage | at most 100 MiB per accepted output, outside workspace quota |
-| Generated-secret injection foundation (not yet orchestrated/enabled) | dedicated `/run/peephole/secrets/<runtime-id>` host tmpfs root | per-runtime directory `0700`, fixed file `0600`, read-only bind at `/run/secrets`; preflight capability check rejects non-tmpfs backing |
+| Generated-secret injection (M10, production-enabled, four canonical names only) | dedicated `/run/peephole/secrets/<runtime-id>` host tmpfs root | per-runtime directory `0700`, fixed file `0600`, read-only bind at `/run/secrets`; preflight capability check rejects non-tmpfs backing |
 
 The ext4 mount root is owned by uid/gid 65534 with mode `0700`. World-writable
 `0777` is no longer required: the production host process is privileged for

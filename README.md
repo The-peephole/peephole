@@ -159,10 +159,11 @@ smoke described in [Production smoke verification](docs/PRODUCTION_SMOKE.md).
 | Branch selection | Any branch from a bounded (up to 100) list can be selected; it is resolved to an exact commit SHA before analysis, build plan, and preview job creation |
 | Repository structure detection | Reports layout and bounded project-candidate paths; detected frontend candidates can be explicitly selected and receive a separate exact-SHA target analysis |
 | Backend detection | Bounded, read-only evidence (framework, database dependency, unverified entrypoint) for root and nested candidates; never offered as a preview target regardless of execution support |
-| Environment requirement analysis | Classifies declared `.env.example`-family variable *names* only (never a value) as auto-configurable/preview-generated/database/external-routing/user-required/unknown; no value is ever generated, injected, or requested |
+| Environment requirement analysis | Classifies declared `.env.example`-family variable *names* only (never a value) as auto-configurable/preview-generated/database/external-routing/user-required/unknown; analysis itself never generates, injects, or requests a value -- for the narrow `preview-generated-candidate` class, generation happens later and separately, at `backend-v1`/`fullstack-v1` runtime creation (see the M10 row below), never during analysis |
 | Backend execution (`backend-v1`) | The narrow Express + npm runtime is implemented, wired into production, and real-gVisor-verified; the extension UI is still disabled by default (no Build Preview option), and the runtime resource itself never gets a public URL |
 | Frontend ↔ backend routing (`fullstack-v1`) | Implemented and production-verified: a separate resource pairs one `backend-v1` runtime with one static build behind a single same-origin HTTPS preview, routing only `/api`/`/api/*`; not offered as an extension Build Preview option yet |
-| Not implemented | Shared-root workspace orchestration, any backend outside that one narrow shape, secret/env provisioning, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
+| Ephemeral generated secrets (M10) | Implemented and production-verified (2026-09-28): within the same narrow `backend-v1`/`fullstack-v1` contract, Peephole may *generate* and inject values for exactly four server-only names -- `JWT_SECRET`, `SESSION_SECRET`, `COOKIE_SECRET`, `CSRF_SECRET` -- outside the OCI `process.env`/`config.json` path, via a tmpfs-backed bind mount and trusted bootstrap; not offered as an extension Build Preview option yet |
+| Not implemented | Shared-root workspace orchestration, any backend outside that one narrow shape, arbitrary or user-supplied secret/env provisioning, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
 
 Analysis support is broader than production execution support. The official
 Vite + React golden path is
@@ -210,15 +211,19 @@ The production static-preview foundation, GitHub theme synchronization,
 Branch Preview, repository/application structure detection, the explicit
 Build Adapter architecture, bounded frontend target selection, existing
 deployed-site Live Preview, backend detection + environment requirement
-analysis, the narrow backend execution (`backend-v1`) contract, and
-frontend/backend routing (`fullstack-v1`) are implemented and, as of M9,
-production-verified. Nested build execution remains limited to
-independently installable React + Vite + npm targets with a target-local
-lockfile; backend execution is limited to one narrow adapter (Express + npm
-+ lockfile + no database + `PORT`/`HOST`/`NODE_ENV`-only env), and the
-standalone `backend-v1` resource itself still has no public URL -- routing
-is the separate `fullstack-v1` resource's job. Neither has an extension-side
-Build Preview UI yet.
+analysis, the narrow backend execution (`backend-v1`) contract,
+frontend/backend routing (`fullstack-v1`), and ephemeral generated secrets
+for a narrow four-name allowlist (M10) are implemented and
+production-verified (M9 for stages 8-9, 2026-09-28 for stage 10). Nested
+build execution remains limited to independently installable React + Vite +
+npm targets with a target-local lockfile; backend execution is limited to
+one narrow adapter (Express + npm + lockfile + no database, with
+`BackendRuntimePlan.platformEnvironment` fixed to exactly
+`PORT`/`HOST`/`NODE_ENV` and, separately, exactly four server-generated
+names supported through M10's own `generatedSecretNames` path -- see
+"Supported projects" above), and the standalone `backend-v1` resource
+itself still has no public URL -- routing is the separate `fullstack-v1`
+resource's job. None of these has an extension-side Build Preview UI yet.
 
 4. Build Adapter generalization (implemented)
 5. frontend target selection / bounded frontend monorepo support (implemented)
@@ -226,14 +231,18 @@ Build Preview UI yet.
 7. backend detection + environment requirement analysis (implemented)
 8. backend-v1 execution foundation implemented; production-verified in M9
 9. frontend ↔ backend routing; production-verified in M9
-10. ephemeral env / secrets
-11. temporary database support
+10. ephemeral env / secrets; implemented and production-verified in M10-C4B
+    (2026-09-28), narrowly, for exactly four canonical generated-secret names
+11. temporary database support (not started)
 
-Stages 10-11 are roadmap items, not current product support: no generated
-secret and no provisioned database exist yet. Separate operational debt
-includes accessibility review, production observability, automated
-production-smoke orchestration, tighter install-stage package egress, and
-the production-like malicious-script run.
+Stage 10 is implemented and production-verified, narrowly: Peephole may
+*generate* and inject values for exactly `JWT_SECRET`/`SESSION_SECRET`/
+`COOKIE_SECRET`/`CSRF_SECRET`; arbitrary/user-supplied secrets remain
+unsupported. Stage 11 is a roadmap item, not current product support: no
+provisioned database exists yet. Separate operational debt includes
+accessibility review, production observability, automated production-smoke
+orchestration, tighter install-stage package egress, and the
+production-like malicious-script run.
 
 ## Documentation
 

@@ -53,8 +53,12 @@ target -- portable tests still use it only for structure-detection evidence
 (`tests/realBackendRuntime.test.ts`, section 5) does execute it as the
 pinned `backend-v1`/`fullstack-v1` fixture, and that execution was
 production-verified in M9 (see section 5 and the M9 record near the end of
-this document). Secrets and databases (roadmap stages 10-11) still have no
-test at any layer -- those contracts are not implemented.
+this document). Ephemeral generated secrets (roadmap stage 10) are
+implemented and covered at both the portable and real-gVisor-gated layers,
+production-verified in M10-C4B (see section 5's M10 generated-secret
+subsection and docs/EPHEMERAL_SECRETS.md); temporary databases (roadmap
+stage 11) still have
+no test at any layer -- that contract is not implemented.
 
 ## 3. Portable Tests
 
@@ -609,15 +613,18 @@ startup reconciliation. `composeProductionBackendRuntime` is now wired into
 production `main()`. See the M9 production verification record below and in
 docs/PRODUCTION_SMOKE.md.
 
-### M10 generated-secret real-host harness (M10-C4A; not yet run)
+### M10 generated-secret real-host harness (M10-C4A/C4B; complete, passed)
 
 `tests/realBackendRuntime.test.ts` (same file, same `PEEPHOLE_REAL_GVISOR_TESTS
 =1` gate and resource-ownership/cleanup model as above) now also carries two
-generated-secret scenarios, added in M10-C4A. **Neither has been executed on a
-real host in this slice** -- both were only confirmed to load, typecheck, and
-correctly skip in the portable environment; see docs/EPHEMERAL_SECRETS.md's
-M10-C4A status paragraph for exactly what each one asserts and why. In
-summary, they exercise the real `InMemoryBackendRuntimeSecretBroker
+generated-secret scenarios, added in M10-C4A. **Both were run against a real
+Linux/gVisor production host in M10-C4B (2026-09-28, production SHA
+`ef466d09ce91857b5bb8dfa35b77cc9207086468`) and passed 4/4**; in M10-C4A
+itself they were only confirmed to load, typecheck, and correctly skip in the
+portable environment. See docs/EPHEMERAL_SECRETS.md's M10-C4A status
+paragraph for exactly what each one asserts and why, and its M10-C4B status
+paragraph for the executed result. In summary, they exercise the real
+`InMemoryBackendRuntimeSecretBroker
 .issue()/.take()` lifecycle and a real `TmpfsGeneratedSecretFilesystem`
 against a dedicated, uniquely-named tmpfs root under `/run/peephole/
 real-gvisor-secrets-*` -- never production's own `/run/peephole/secrets` --
@@ -650,19 +657,59 @@ production root:
   real tmpfs root, leaving a fresh entry, an unrelated non-runtime-shaped
   entry, and the root itself untouched.
 
-**M10-C4B is the actual real-host execution of this harness**, plus the one
+**M10-C4B was the actual real-host execution of this harness**, plus the one
 acceptance gate it structurally cannot cover: proving that a backend
 deliberately printing its injected secret does not leak into the `peephole`
 systemd journal (Peephole captures/discards the sandboxed process's own
-stdout/stderr, so this needs a real admitted, server-composed runtime, not a
-standalone `GVisorBackendRuntimeProcess` test). That requires a first-party
+stdout/stderr, so this needed a real admitted, server-composed runtime, not a
+standalone `GVisorBackendRuntimeProcess` test). That required a first-party
 pinned fixture that declares a generated secret and exposes `/api/secret-check`
--- the current `peephole-fixture-fullstack@eae411a...` does not exercise M10 at
-all and must not be described as if it does. See docs/PRODUCTION_SMOKE.md for
-the proposed fixture contract and the prepared-but-not-executed C4B command
-sequence (generated-secret preflight check, the real-host suite above, and the
-journal marker check). D-032 remains Proposed and M10 remains incomplete until
-M10-C4B actually runs and its results are recorded.
+-- the pre-existing `peephole-fixture-fullstack@eae411a...` did not exercise
+M10 at all, so a dedicated fixture,
+`The-peephole/peephole-fixture-fullstack@e10b08153e49d94a05931820c5325892754db246`
+(repository id `1371618449`), was added declaring exactly `SESSION_SECRET` and
+exposing `/api/secret-check`. On 2026-09-28, against production SHA
+`ef466d09ce91857b5bb8dfa35b77cc9207086468`, M10-C4B executed and recorded:
+
+- the generated-secret preflight check and the real-gVisor suite above,
+  4/4 passed (see docs/EPHEMERAL_SECRETS.md's M10-C4B status paragraph);
+- a real production FullStack preview built from the pinned fixture, with the
+  server deriving and injecting `SESSION_SECRET` with no client input;
+  `/api/hello` and `/api/secret-check` both returned 200, the latter with
+  `configured: true` and a SHA-256 digest only;
+- a full scan of the production `peephole` systemd journal for the fixture's
+  deliberate `PEEPHOLE_M10_SECRET_LOG_PROBE:<value>` marker, both before and
+  after the run, finding zero occurrences;
+- normal `DELETE` cleanup of the preview, verified complete;
+- with a fresh M10 FullStack preview left in the `ready` state, an
+  intentional `SIGKILL` of only the Peephole service's systemd `MainPID`
+  (not a graceful stop -- this does not exercise the trusted bootstrap's
+  `SIGTERM` forwarding path, which is verified separately through the
+  real-gVisor harness's normal `stop()` path; see
+  docs/EPHEMERAL_SECRETS.md), exercising real crash recovery: systemd's
+  existing `Restart=on-failure` brought the service back automatically;
+  generated secrets, runsc sandboxes, network namespaces, and disk state all
+  reconciled to zero residue on startup; the durable FullStack parent that
+  had been `ready` came back `failed`/`ORCHESTRATION_UNAVAILABLE` after
+  restart/reconciliation, with process-local backend coordinates and secrets
+  never reconstructed; and its old backend route returned 404 afterward;
+- production host smoke (`npm run smoke:production:host`), run twice. The
+  **first** run, executed immediately after the `SIGKILL`/recovery test and
+  still inside the smoke tool's unmodified default 15-minute log lookback
+  window (`PEEPHOLE_SMOKE_LOG_SINCE`, not overridden), correctly reported
+  **BLOCKED** on its "service errors" gate: it matched exactly the two
+  `worker loop error` lines produced by the intentional `MainPID` `SIGKILL`
+  boundary itself, and no other/new errors. Per the accepted acceptance
+  procedure, this BLOCKED result was recorded as-is and not promoted to a
+  pass. Production was then left quiescent (no further crash test, no new
+  preview, no config change) until both error timestamps had aged out of the
+  smoke tool's unchanged 15-minute window by a further ≥1 minute safety
+  margin (~18 minutes total wait). The **second** run used the exact same,
+  unmodified command and produced a full, clean **PRODUCTION SMOKE PASS**.
+
+See docs/PRODUCTION_SMOKE.md for the complete command sequence and output
+record of both smoke runs. D-032 is Accepted and M10 is complete for the four
+canonical generated-secret names as of 2026-09-28.
 
 ### Production-host safety for privileged real-gVisor suites
 
@@ -779,13 +826,16 @@ Add coverage in the same order as product development:
    was completed in M9 -- see section 5 (implemented, production-verified)
 9. frontend/backend routing and cross-origin policy (implemented,
    production-verified in M9 -- see the M9 production verification record)
-10. ephemeral secret redaction, scope, and teardown -- design only, not
-    implemented; see D-032 and docs/EPHEMERAL_SECRETS.md section 17 for the
-    full portable and real-gVisor-gated test list (durable-store/queue/API
-    non-leakage, OCI `config.json` non-leakage, reserved/client-public name
-    rejection, entropy/uniqueness, broker single-consumer and restart
-    fail-closed behavior, host tmpfs cleanup, and a real-host check that a
-    backend printing a secret to stdout never reaches Peephole's own logs)
+10. ephemeral secret redaction, scope, and teardown -- implemented and
+    production-verified (M10-C4B, 2026-09-28) for the four canonical
+    generated-secret names; see D-032 (Accepted) and
+    docs/EPHEMERAL_SECRETS.md section 17 for the full portable and
+    real-gVisor-gated test list (durable-store/queue/API non-leakage, OCI
+    `config.json` non-leakage, reserved/client-public name rejection,
+    entropy/uniqueness, broker single-consumer and restart fail-closed
+    behavior, host tmpfs cleanup, and a real-host check that a backend
+    printing a secret to stdout never reaches Peephole's own logs -- all
+    passed, both portable and real-gVisor-gated)
 11. temporary database tenancy, credentials, lifecycle, and cleanup -- not
     started (M11)
 

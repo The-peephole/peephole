@@ -338,8 +338,10 @@ next to Build Preview (no embedded iframe, no server-side fetch of the
 deployment URL); it does not change the build contract. Backend detection
 reports bounded, evidence-graded read-only candidates and environment
 requirement classifications; neither executes anything, provisions anything,
-or changes the build contract. The remaining expansion starts with backend
-execution, then routing, ephemeral secrets, and databases.
+or changes the build contract. Backend execution, frontend/backend routing
+(M9), and ephemeral generated secrets for a narrow four-name allowlist (M10)
+are now implemented and production-verified; the remaining expansion is
+temporary database support (M11, not started).
 
 The generalized Build Adapter boundary preserves the worker ports and adds no
 fixture-specific production branches; it is unchanged by backend detection

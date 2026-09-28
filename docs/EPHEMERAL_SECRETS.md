@@ -1,18 +1,30 @@
 # Ephemeral Environment / Secrets (M10) — Design
 
-**Status: Partially implemented through M10-C4A real-gVisor verification
-harness.** Generated-material policy/broker, tmpfs/OCI/bootstrap injection,
-strict names-only plan validation, fail-closed supervisor orchestration,
+**Status: Implemented and production-verified (M10-C4B complete, 2026-09-28).**
+Generated-material policy/broker, tmpfs/OCI/bootstrap injection, strict
+names-only plan validation, fail-closed supervisor orchestration,
 exact-commit eligibility, and explicit production broker/filesystem/preflight/
-reaper wiring now exist for the four canonical names. An environment-gated
-(`PEEPHOLE_REAL_GVISOR_TESTS=1`) real-host test harness now exists in
-`tests/realBackendRuntime.test.ts` to prove child-environment injection,
+reaper wiring exist for the four canonical names. The environment-gated
+(`PEEPHOLE_REAL_GVISOR_TESTS=1`) real-host test harness in
+`tests/realBackendRuntime.test.ts` -- proving child-environment injection,
 `config.json`/argv non-leakage, tmpfs lifetime, trusted-bootstrap PID 1 signal
 forwarding, `runsc --root` state non-persistence of the raw value, and bounded
-orphan reaping -- but it has not yet been run on a real host. Real-gVisor/
-production-host verification and production deployment remain pending for
-M10-C4B. D-032 remains Proposed and `docs/MVP_ROADMAP.md` stage 10 remains
-unchecked.
+orphan reaping -- has now run on the real production host and passed 4/4. A
+real production FullStack preview was created against the pinned M10 fixture
+(`The-peephole/peephole-fixture-fullstack@e10b08153e49d94a05931820c5325892754db246`),
+independently derived `SESSION_SECRET` server-side from the pinned commit,
+proved `/api/secret-check` returns only a SHA-256 digest, produced zero
+journal hits for the fixture's deliberate raw-value stdout probe, and normal
+`DELETE` cleanup passed. Separately, with a fresh preview from the same
+fixture left `ready`, an intentional `peephole` main-process `SIGKILL` (not a
+graceful stop, not a `SIGTERM`-forwarding test -- that is verified through
+the harness's normal `stop()` path above) was followed by full systemd
+recovery, generated-secret/runsc/network/disk reconciliation to zero residue,
+the `ready` durable-parent record coming back
+`failed`/`ORCHESTRATION_UNAVAILABLE` without reconstructing lost
+coordinates/secrets, and old-route revocation -- see D-032 for the full
+record. D-032 is Accepted and `docs/MVP_ROADMAP.md` stage 10 is checked
+complete.
 
 This never relaxes `SECRET_ENV_REQUIRED`/`BACKEND_REQUIRED` for the static
 `static-v1`/`static-v2` contract, never starts M11 (temporary database
@@ -512,7 +524,7 @@ treated as the existing `CONFLICT`/409 case. Do not hash low-entropy
 user-supplied values, even salted — that is an offline-guessable oracle for
 low-entropy secrets. This is explicitly deferred, not part of this slice.
 
-## 12. API / type design (production-code path active; host verification pending)
+## 12. API / type design (production-code path active; real-host and production verified)
 
 Design goal: secrets and public config are distinct types; nothing
 secret-shaped is reachable through a type that is also serialized to
@@ -602,10 +614,11 @@ and artifact roots explicitly forbidden. Startup performs the generated-secret
 capability check and fail-closed `reapAll()` before worker construction or any
 listener; bounded maintenance calls `reap()` with the existing orphan age.
 FullStack gains no secret field and reuses its backend child's existing runtime
-path. Real-host tmpfs/bootstrap/runsc behavior, trusted-bootstrap PID 1 signal
-semantics, and `runsc --root` persistence inspection remain unverified;
-production deployment has not occurred. These are M10-C4 work. D-032 remains
-Proposed and M10 remains incomplete.
+path. At the C3 stage, real-host tmpfs/bootstrap/runsc behavior,
+trusted-bootstrap PID 1 signal semantics, and `runsc --root` persistence
+inspection remained unverified, and production deployment had not occurred.
+M10-C4A (harness) and M10-C4B (real-host/production execution), below,
+completed that verification; D-032 is Accepted and M10 is complete.
 
 **M10-C4A implementation status:** an environment-gated
 (`PEEPHOLE_REAL_GVISOR_TESTS=1`) real-host harness now exists in
@@ -634,10 +647,48 @@ runtime-id-shaped directory from a real tmpfs root, leaving a fresh entry, an
 unrelated non-runtime-shaped entry, and the root itself untouched. No test
 output ever contains the raw generated value, even in assertion-failure text
 (every raw-value comparison reduces to a boolean before reaching an
-assertion). **None of this has been run against a real Linux/gVisor host in
-this slice** -- the suite remains `describe.skipIf`-gated and was only
-confirmed to load, typecheck, and skip correctly in the portable environment.
-M10-C4B is the real-host execution of this harness.
+assertion). **None of this had been run against a real Linux/gVisor host in
+the C4A slice** -- the suite remained `describe.skipIf`-gated and was only
+confirmed to load, typecheck, and skip correctly in the portable environment
+at that point. M10-C4B, below, is the real-host execution of this harness.
+
+**M10-C4B production verification status (complete, 2026-09-28):** the
+M10-C4A harness above was run against a real Linux/gVisor host (production
+SHA `ef466d09ce91857b5bb8dfa35b77cc9207086468`) and passed 4/4: the full
+issue-to-take-to-`GVisorBackendRuntimeProcess.start()` lifecycle, tmpfs
+injection with correct permissions and post-`stop()` removal, `config.json`/
+`process.args`/OCI `process.env` non-leakage, the bounded
+symlink-refusing/device-skipping scan finding the raw value absent from the
+dedicated `runsc --root` state both while active and after deletion (see
+§18, Open Question 1), the ingress-only network regression, and the orphan
+reaper reaping only the intended entry. Beyond the harness, a real production
+FullStack preview was created from the pinned fixture
+`The-peephole/peephole-fixture-fullstack` at commit
+`e10b08153e49d94a05931820c5325892754db246` (repository id `1371618449`),
+which declares exactly `SESSION_SECRET` and exposes `/api/secret-check`: the
+server derived and delivered the value with no client input, `/api/hello`
+and `/api/secret-check` both returned 200 with `configured: true` and a
+SHA-256 digest only, and a full journal scan for the fixture's deliberate
+`PEEPHOLE_M10_SECRET_LOG_PROBE:<value>` marker found zero occurrences both
+before and after the run. Normal `DELETE` cleanup was verified, and,
+separately, the Peephole service's systemd `MainPID` was intentionally
+`SIGKILL`ed, with the M10 FullStack preview above still `ready`, to exercise
+crash recovery: systemd's existing `Restart=on-failure` brought the service
+back automatically, generated secrets/runsc sandboxes/network namespaces/disk
+state fully reconciled to zero residue, the durable FullStack parent that had
+been `ready` came back `failed`/`ORCHESTRATION_UNAVAILABLE` after
+restart/reconciliation without process-local backend coordinates or secrets
+ever being reconstructed, its old backend route returned 404 afterward, and
+the final production host smoke
+(`npm run smoke:production:host`) passed completely -- after an initial
+run inside the smoke tool's unmodified default 15-minute lookback window
+correctly reported `BLOCKED` on two expected worker-error lines produced by
+the intentional `SIGKILL` boundary itself; no smoke setting was overridden,
+no new errors appeared, and re-running the identical, unmodified command
+once those two log lines aged out of the window produced a clean
+`PRODUCTION SMOKE PASS` (see docs/PRODUCTION_SMOKE.md and
+docs/TEST_PLAN.md for the full record). D-032 is Accepted and M10 is
+complete for the four canonical generated-secret names as of 2026-09-28.
 
 While building this harness, static review of `GVisorBackendRuntimeProcess`
 found that `stop()` unconditionally sent `runsc kill ... SIGKILL` to every
@@ -662,8 +713,17 @@ unchanged. This is covered by new portable regression tests
 (`tests/gvisorAdapter.test.ts`, `tests/backendRuntimeProcess.test.ts`) proving
 the signal choice and the bounded-wait behavior; the real-host secret test
 above is the first scenario that actually depends on a caught, forwarded
-signal reaching a child process. This fix has not been exercised against real
-runsc; that verification is also M10-C4B's job.
+signal reaching a child process. M10-C4B exercised this fix against real
+runsc through the real-gVisor suite's normal `RuntimeProcessHandle.stop()`
+path, confirming the trusted bootstrap's `SIGTERM` forwarding actually reaches
+the sandboxed child under real runsc PID 1 semantics. The separate,
+intentional production `MainPID` `SIGKILL` test (below) is a different
+scenario -- it kills the Peephole service process itself, which cannot call
+`stop()` on anything, so it is not a graceful-stop/forwarding test; it
+verifies systemd restart, startup orphan reconciliation, and
+generated-secret/runsc/network/disk residue cleanup instead, and every
+orphaned runtime it reconciles goes through the existing forceful
+(`SIGKILL`-based) reaper paths, not the `SIGTERM` forwarding path above.
 
 ### Bounds (env-name and value safety)
 
@@ -762,7 +822,7 @@ user-supplied `DATABASE_URL` as a workaround — `findUnsupportedReason`
 `databaseDependencies.length > 0` independently of the environment-requirement
 check, and this design does not touch that rejection.
 
-## 17. Test plan (portable: implemented; real-gVisor: harness implemented, not yet run)
+## 17. Test plan (portable: implemented; real-gVisor: implemented and run, passed)
 
 Portable (no real gVisor needed):
 
@@ -802,62 +862,72 @@ Portable (no real gVisor needed):
 
 Real-gVisor-gated (`PEEPHOLE_REAL_GVISOR_TESTS=1`), required before claiming
 production support — portable tests alone do not prove host secret cleanup.
-As of M10-C4A, the first five of these are implemented in
-`tests/realBackendRuntime.test.ts` (see the M10-C4A status paragraph above for
-exactly how) but have not yet been run on a real host; the last two remain
-open for M10-C4B/production-fixture work:
+The first five of these were implemented in `tests/realBackendRuntime.test.ts`
+in M10-C4A (see the M10-C4A status paragraph above for exactly how) and run
+against a real Linux/gVisor host, passing 4/4, in M10-C4B on 2026-09-28
+(production SHA `ef466d09ce91857b5bb8dfa35b77cc9207086468`); the last two were
+settled by M10-C4B's production FullStack E2E and intentional-crash test,
+described in the M10-C4B status paragraph above:
 
-- [implemented, unrun] The sandboxed process's own environment actually
+- [verified, passed] The sandboxed process's own environment actually
   contains the correct generated value(s) (a fixture backend that echoes
   back a SHA-256 digest of what it received on an internal-only
   `/secret-check` endpoint, checked from the host's root-namespace probe path
   already used for readiness — never the raw value over the wire).
-- [implemented, unrun] After the container exits/is stopped, the host-side
+- [verified, passed] After the container exits/is stopped, the host-side
   tmpfs secret directory for that `runtimeId` no longer exists.
-- [implemented, unrun] `config.json` on disk, inspected directly on the host,
+- [verified, passed] `config.json` on disk, inspected directly on the host,
   never contains the secret value at any point during the runtime's life; nor
   does argv; nor does a bounded, symlink-refusing scan of the dedicated
   `runsc --root` state directory, both while the container is active and
   after it is deleted.
-- [implemented, unrun] The trusted secret bootstrap's `SIGTERM` forwarding
+- [verified, passed] The trusted secret bootstrap's `SIGTERM` forwarding
   actually reaches the sandboxed child under real runsc PID 1 semantics (a
   fixed, non-secret sentinel file written by the child on receipt), exercised
   through the real `RuntimeProcessHandle.stop()` — see the M10-C4A status
   paragraph above for the `SIGKILL`→`SIGTERM` production fix this required.
-- [implemented, unrun] Backend egress remains unconditionally blocked for the
+  This is verified only through the harness's normal `stop()` path; the
+  separate intentional `MainPID` `SIGKILL`/systemd-recovery test (see the
+  M10-C4B status paragraph above) is not a graceful-stop/forwarding test and
+  is not evidence for this item.
+- [verified, passed] Backend egress remains unconditionally blocked for the
   generated-secret variant specifically (a narrow no-default-route check),
   alongside the unchanged, unmodified pre-existing ingress-only suite in the
   same file.
-- [not yet implemented — needs a production fixture, see below] A backend
-  process that does `console.log(secretValue)` does not cause that value to
-  appear in Peephole's own systemd journal (confirms §10's "never logged"
-  policy holds under real stdio plumbing, not just in the unit-level
-  `NodeProcessRunner` contract). This cannot be exercised by a standalone
-  `GVisorBackendRuntimeProcess` test — it requires a real admitted,
-  server-composed runtime whose stdout/stderr Peephole itself captures and
-  discards, and a first-party pinned fixture that declares a generated secret
-  (the current `peephole-fixture-fullstack@eae411a...` does not). See
+- [verified, passed] A backend process that does `console.log(secretValue)`
+  does not cause that value to appear in Peephole's own systemd journal
+  (confirms §10's "never logged" policy holds under real stdio plumbing, not
+  just in the unit-level `NodeProcessRunner` contract). Verified in M10-C4B
+  against a real admitted, server-composed FullStack preview built from the
+  first-party pinned fixture `The-peephole/peephole-fixture-fullstack@e10b081...`,
+  which declares `SESSION_SECRET` and deliberately logs a fixed
+  `PEEPHOLE_M10_SECRET_LOG_PROBE:<value>` marker on startup; a full journal
+  scan found zero occurrences of that marker before or after the run. See
   docs/TEST_PLAN.md's real-gVisor section and docs/PRODUCTION_SMOKE.md for the
-  prepared, not-yet-executed C4B procedure and the proposed fixture contract.
-- [not yet implemented] A deliberately interrupted job (crash mid-run) leaves
-  no live host tmpfs secret residue after the new bounded reaper sweep runs,
-  mirroring the existing `GVisorOrphanReaper`/`docs/SANDBOX_DISK_SECURITY.md`
-  "after a deliberately interrupted job" verification pattern -- the M10-C4A
-  orphan-reaper test covers a synthetically staged stale entry, not an actual
-  mid-run crash.
+  complete executed record.
+- [verified, passed — via production crash test, not a synthetic reaper-only
+  test] A deliberately interrupted job (crash mid-run) leaves no live host
+  tmpfs secret residue after the new bounded reaper sweep runs, mirroring the
+  existing `GVisorOrphanReaper`/`docs/SANDBOX_DISK_SECURITY.md` "after a
+  deliberately interrupted job" verification pattern. The M10-C4A
+  orphan-reaper test covers a synthetically staged stale entry; M10-C4B's
+  intentional production `MainPID` `SIGKILL` (see status paragraph above)
+  additionally proved this against a real mid-run crash of the Peephole
+  service itself, with startup reconciliation reducing generated-secret,
+  runsc, network, and disk state to zero residue.
 
 ## 18. Open questions
 
 1. Does `runsc`'s internal `--root` state directory retain its own copy of
    the OCI spec (or the secret-bearing tmpfs paths) beyond what this design
-   controls? Still unverified on a real host as of M10-C4A. A bounded,
-   symlink-refusing scan for the exact raw value now exists
-   (`tests/realBackendRuntime.test.ts`, using a dedicated per-test `runsc
-   --root`, never production's shared root) and will run in M10-C4B. Per
-   §9's own framing, a `runsc`-retained copy of the runtime-id-shaped
-   *path* (not the value) is expected and acceptable; only a raw-value
-   finding would be a real problem, and only the M10-C4B run can settle
-   this (§3, §9).
+   controls? **Settled by M10-C4B (2026-09-28).** A bounded, symlink-refusing
+   scan for the exact raw value (`tests/realBackendRuntime.test.ts`, using a
+   dedicated per-test `runsc --root`, never production's shared root) ran
+   against a real Linux/gVisor host and found the raw value absent, both
+   while the container was active and after it was deleted. Per §9's own
+   framing, a `runsc`-retained copy of the runtime-id-shaped *path* (not the
+   value) is expected and acceptable, and that is exactly what was observed;
+   no raw-value finding occurred (§3, §9).
 2. Is `/run` guaranteed tmpfs on every intended production host image, or
    should Peephole mount and own a dedicated, explicitly-tmpfs path (e.g.
    `/run/peephole` created and verified during preflight, alongside the

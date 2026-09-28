@@ -14,13 +14,17 @@ later full-stack roadmap.
 5. [x] frontend target selection / bounded frontend monorepo support
 6. [x] existing deployed-site Live Preview
 7. [x] backend detection + environment requirement analysis
-8. [ ] backend-v1 execution foundation implemented; production verification pending
-9. [ ] frontend ↔ backend routing
-10. [ ] ephemeral env / secrets
+8. [x] backend-v1 execution foundation implemented; production-verified in M9
+9. [x] frontend ↔ backend routing; production-verified in M9
+10. [x] ephemeral env / secrets; production-verified in M10-C4B (2026-09-28),
+    narrowly, for exactly four canonical generated-secret names
 11. [ ] temporary database support
 
-The full-stack fixture proves only its independently installable frontend
-target. It is not evidence that any of stages 7-11 are implemented.
+Stage 11 is not started. The full-stack fixture proves only its
+independently installable frontend target under plain Build Preview; it is
+not itself evidence that stages 8-10 are implemented -- see D-030/D-031/D-032
+and docs/PREVIEW_RUNTIME.md/docs/EPHEMERAL_SECRETS.md for the actual
+production verification record.
 
 ## Bootstrap
 

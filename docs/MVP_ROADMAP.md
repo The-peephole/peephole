@@ -40,11 +40,23 @@ The production runner accepts only:
    `package-lock.json`, `npm ci`, a `build` script, and a deterministic static
    output directory.
 
-The analyzer recognizes more evidence than the worker can execute. Vue/Svelte
-Vite, pnpm/yarn/bun, monorepos, backends, persistent servers, secrets, and
-databases remain non-runnable. Repository homepage metadata and a confirmed
-GitHub deployment are both shown as external links opened in a new tab; there
-is no embedded deployed-site iframe.
+The analyzer recognizes more evidence than the worker can execute. For this
+static Build Preview contract specifically, Vue/Svelte Vite, pnpm/yarn/bun,
+monorepos, and arbitrary backends/persistent servers remain non-runnable.
+Repository homepage metadata and a confirmed GitHub deployment are both shown
+as external links opened in a new tab; there is no embedded deployed-site
+iframe.
+
+Separately from the static Build Preview contract above, a narrow,
+server-side-only `backend-v1`/`fullstack-v1` contract exists and is
+production-verified (M9): exactly one backend shape
+(`express-node-npm-v1`) paired with its frontend, with no extension UI
+exposure. Within that same narrow contract, M10 adds server-*generated*
+secrets restricted to exactly four canonical names
+(`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`),
+production-verified in M10-C4B -- see stages 9-10 below and
+docs/EPHEMERAL_SECRETS.md. Arbitrary backends, arbitrary or user-supplied
+secrets, and temporary databases (stage 11) remain unsupported.
 
 ## Completed Foundation Milestones
 
@@ -95,10 +107,11 @@ is no embedded deployed-site iframe.
 - [x] production host smoke passes with both wired into
       `services/production/server.ts`
 
-This remains narrowly scoped: one supported backend adapter, no arbitrary
-Node backend, no generated secret, and no provisioned database. Stage 8 was
-implemented before this milestone but only production-verified here; see
-"Next Development Sequence" below for exact stage numbering.
+At the M9 milestone, this was still narrowly scoped: one supported backend
+adapter, no arbitrary Node backend, no generated secret, and no provisioned
+database. Stage 8 was implemented before this milestone but only
+production-verified here; see "Next Development Sequence" below for exact
+stage numbering.
 
 ## Next Development Sequence
 
@@ -114,15 +127,19 @@ because a fixture or interface for it exists.
 7. [x] backend detection + environment requirement analysis
 8. [x] backend-v1 execution foundation implemented; production-verified in M9
 9. [x] frontend ↔ backend routing; production-verified in M9
-10. [ ] ephemeral env / secrets
+10. [x] ephemeral env / secrets
 11. [ ] temporary database support
 
-Stage 10 has a design (not an implementation): a generated-secrets-only
-first slice restricted to the existing `preview-generated-candidate`
-allowlist, delivered outside the OCI `process.env`/`config.json` path found
-to persist to real disk. See D-032 and docs/EPHEMERAL_SECRETS.md. Stage 10
-stays unchecked until that design is actually built, tested, and
-production-verified; stage 11 is untouched and has not started.
+Stage 10 is implemented and production-verified, narrowly: Peephole may
+*generate* and inject values for exactly four server-only secret names --
+`JWT_SECRET`, `SESSION_SECRET`, `COOKIE_SECRET`, `CSRF_SECRET` -- delivered
+outside the OCI `process.env`/`config.json` path found to persist to real
+disk, via a tmpfs-backed bind mount and a trusted bootstrap. See D-032 and
+docs/EPHEMERAL_SECRETS.md for the full design and the 2026-09-28 real-gVisor
+and production verification record. Stage 10 is explicitly **not**: arbitrary
+environment-variable management, user-supplied credentials, arbitrary
+backends, database provisioning, or relaxed backend egress -- all of those
+remain unimplemented. Stage 11 is untouched and has not started.
 
 Build Adapter generalization is complete as an architecture change: an
 explicit resolver selects `static-html-v1` or `vite-react-npm-v1`, detects
@@ -260,8 +277,11 @@ production-verified in M9 through the separate `fullstack-v1` parent
 resource (`/v1/fullstack-previews`), which reports its own public HTTPS
 origin and routes only `/api`/`/api/*` to the backend; the standalone
 `backend-v1` resource (`/v1/backend-runtimes`) still never reports a URL of
-its own. A generated secret and a provisioned database remain unimplemented
-(stages 10-11). `static-v1`/`static-v2`/`BuildPlan`/the static artifact
+its own. A provisioned database remains unimplemented (stage 11); a
+Peephole-*generated* secret restricted to exactly `JWT_SECRET`/
+`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET` is now implemented and
+production-verified as stage 10 -- see D-032 and docs/EPHEMERAL_SECRETS.md.
+`static-v1`/`static-v2`/`BuildPlan`/the static artifact
 pipeline are unchanged. Persistence in this stage remains in-memory only
 (see D-030); the ingress-only network policy was initially unit-tested only
 and was later verified against a real gVisor/Linux production host and
@@ -300,8 +320,25 @@ routing support). It is now also the pinned fixture for the narrow
 gVisor `backend-v1` process (`express-node-npm-v1` adapter only) and
 frontend/backend routing through a dedicated `FullStackPreview` origin. This
 remains the one narrow supported backend shape -- it does not imply support
-for arbitrary Node backends, generated secrets, or provisioned databases
-(stages 10-11).
+for arbitrary Node backends or provisioned databases (stage 11). This M9 pin
+itself declares no generated-secret requirement and remains immutable.
+
+A separate, dedicated commit on the same repository is the pinned fixture for
+stage 10's own production verification:
+
+```text
+repository: The-peephole/peephole-fixture-fullstack
+repository id: 1371618449
+commit: e10b08153e49d94a05931820c5325892754db246
+```
+
+This M10 pin declares exactly one generated-secret requirement
+(`SESSION_SECRET`) and exposes `GET /api/secret-check`, which reports only a
+SHA-256 digest, never the raw value. It was production-verified on
+2026-09-28 against deployed revision `ef466d09ce91857b5bb8dfa35b77cc9207086468`
+-- see D-032 and docs/EPHEMERAL_SECRETS.md for the full verification record.
+It does not imply support for arbitrary secret names, user-supplied
+credentials, or provisioned databases (stage 11).
 
 ## Cross-Cutting Work
 
