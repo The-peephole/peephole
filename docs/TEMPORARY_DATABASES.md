@@ -18,11 +18,20 @@ M10:
 - **M11-A** read the actual M8-M10 codebase (backend/fullstack lifecycle,
   the M10 generated-secret path, network isolation, existing PostgreSQL
   usage, the existing reaper/ownership model) and produced a first design.
-- **M11-A2** independently reviewed M11-A and corrected several errors:
-  a network-topology assumption that only holds for a remote database, a
-  fixture-repository misattribution, an overclaimed raw-secret-hygiene
-  statement, and a missing `platformEnvironment`/`generatedSecretNames`
-  distinction.
+- **M11-A2** independently reviewed M11-A and corrected several errors: a
+  network-topology assumption that only holds for a remote database; added
+  the real FullStack-only admission split (§2 below); propagated the
+  durable FullStack ownership identity to the backend worker design (§3);
+  corrected PostgreSQL role/`CREATEROLE`/`SET` semantics; closed the
+  `PUBLIC` CONNECT race with `ALLOW_CONNECTIONS false`; replaced a
+  raw-password `CREATE ROLE` design with a client-computed SCRAM verifier;
+  expanded orphan reconciliation from a two-set (database + durable row)
+  comparison to the current three-set (database + role + durable row)
+  design (§14); narrowed teardown to `DROP DATABASE` + `DROP ROLE` with no
+  automatic `DROP OWNED`; replaced an M10-secret-broker-shaped
+  issue/take design with the current `TemporaryDatabaseProvisioner` shape;
+  and replaced a generic `NAME=value` credential-file parser with the
+  current single fixed `database-url` file.
 - **M11-A3** performed a **read-only** audit of the actual production EC2
   host (`3.34.33.24`) — real CPU/RAM/disk, the real installed PostgreSQL
   version, the real control-plane database topology (sanitized only, no
@@ -37,8 +46,27 @@ M10:
   evidence gathered in M11-A3 rather than an assumption.
 
 The verdict at the end of M11-A4 was `READY_FOR_M11_DESIGN_DOCS`. This
-document is that deliverable. It authorizes writing M11-C (implementation)
-next; it does not itself implement anything.
+document is that deliverable. It does not itself implement anything, and
+this PR alone does not authorize starting implementation. After this
+design-document PR is reviewed and merged, the planned next stage is
+M11-C1.
+
+### M11 stage sequence
+
+Planning/status terminology only — this is not a new roadmap stage
+numbering, and it does not change `docs/MVP_ROADMAP.md` stage 11, which
+stays `[ ]` regardless of how many of these sub-stages complete.
+
+| Stage | Scope | Status |
+|---|---|---|
+| M11-A | Architecture investigation / read-only production audit / final architecture lock | **COMPLETE** |
+| M11-B | Design documentation (this document, D-033) | **CURRENT — PR #33** |
+| M11-C1 | Portable types / admission / ownership foundation | NOT STARTED |
+| M11-C2 | PostgreSQL provisioning + durable ownership / reconciliation | NOT STARTED |
+| M11-C3 | Credential delivery + host-only sandbox network integration | NOT STARTED |
+| M11-C4 | Integrated FullStack lifecycle | NOT STARTED |
+| M11-D | Real Linux / real-gVisor verification | NOT STARTED |
+| M11-E | Production infrastructure activation + production acceptance | NOT STARTED |
 
 **The production host's RAM is a documented future prerequisite, not
 something already done.** M11-A3 found the production host to be a tight
@@ -125,17 +153,19 @@ createForOrchestration()                          (trusted, worker-only,
                                                      FullStackPreviewSupervisor)
 ```
 
-`backendRuntimeAdapter.ts` stays **context-free** — it has no notion of who
-is asking. It may resolve a plan that carries:
+`backendRuntimeAdapter.ts` is designed to stay **context-free** — it would
+have no notion of who is asking. It would be extended to resolve a plan
+that carries a new, proposed field:
 
 ```ts
 databaseRequirement: { name: "DATABASE_URL" } | null
 ```
 
-The split between "may admit a DB-requiring plan" and "may not" belongs
-entirely to `createInternal()`, the one place that already knows whether
-the caller is the trusted orchestration boundary (`orchestrationKey !==
-null`) or a public request (`orchestrationKey === null`):
+The split between "may admit a DB-requiring plan" and "may not" is designed
+to belong entirely to `createInternal()` (an existing function), the one
+place that already knows today whether the caller is the trusted
+orchestration boundary (`orchestrationKey !== null`) or a public request
+(`orchestrationKey === null`):
 
 ```text
 databaseRequirement != null
@@ -144,28 +174,29 @@ orchestrationKey == null
 → UNSUPPORTED_BACKEND
 ```
 
-Only the trusted FullStack path — where `orchestrationKey` is always
-`FullStackPreview.id`, minted server-side inside
-`FullStackPreviewSupervisor`, never client input — may admit a DB-requiring
-plan.
+Under this design, only the trusted FullStack path — where
+`orchestrationKey` is always `FullStackPreview.id`, minted server-side
+inside `FullStackPreviewSupervisor`, never client input — would be able to
+admit a DB-requiring plan.
 
-The client, in every case:
+The client, under this design, in every case:
 
-- cannot supply `orchestrationKey`;
-- cannot request "database capability";
-- cannot provide a database identity, name, or role;
-- cannot provide a database credential;
-- cannot provide `DATABASE_URL` or any component of it.
+- would not be able to supply `orchestrationKey`;
+- would not be able to request "database capability";
+- would not be able to provide a database identity, name, or role;
+- would not be able to provide a database credential;
+- would not be able to provide `DATABASE_URL` or any component of it.
 
-The server independently re-resolves every piece of evidence (framework,
-dependency, environment requirement classification) from the exact pinned
-commit, the same way it already does for every other backend-v1 evidence
-class.
+The server would independently re-resolve every piece of database
+evidence (framework, dependency, environment requirement classification)
+from the exact pinned commit, the same way it already does today for
+every other backend-v1 evidence class.
 
-**No new public contract version.** `BackendRuntimePlan` gains one
-additional, optional, server-derived field — the same backward-compatible
-pattern M10 used when it added `generatedSecretNames` without bumping
-`BACKEND_RUNTIME_CONTRACT_VERSION` away from `"backend-v1"`.
+**No new public contract version planned.** `BackendRuntimePlan` would gain
+one additional, optional, server-derived field — the same
+backward-compatible pattern M10 used when it added `generatedSecretNames`
+without bumping `BACKEND_RUNTIME_CONTRACT_VERSION` away from
+`"backend-v1"`.
 
 ---
 
@@ -187,29 +218,31 @@ FullStackPreview.id
                                                     found: today's QueuedBackendRuntime
                                                     carries only {runtimeId,
                                                     repository, plan})
-  → BackendRuntimeSupervisor (worker) now knows the durable FullStack owner
-    without ever accepting anything from a client
+  → BackendRuntimeSupervisor (worker) would then know the durable
+    FullStack owner without ever accepting anything from a client
 ```
 
-**Invariant, re-checked at the worker boundary, not just trusted from
-admission:**
+**Invariant, to be re-checked at the worker boundary, not just trusted
+from admission:**
 
 ```text
 databaseRequirement != null → orchestrationKey != null
 ```
 
-`BackendRuntimeSupervisor.run(queued)` asserts this defensively before ever
-calling the provisioner, and fails closed if it is ever violated — the same
-"never trust upstream, re-verify at each boundary" discipline this
-supervisor already applies by re-running `validateBackendRuntimePlan()`
-even though the control plane validated the plan once already.
+`BackendRuntimeSupervisor.run(queued)` (an existing method) would assert
+this defensively before ever calling the provisioner, and would fail
+closed if it were ever violated — the same "never trust upstream,
+re-verify at each boundary" discipline this supervisor already applies
+today by re-running `validateBackendRuntimePlan()` even though the control
+plane validated the plan once already.
 
-**`StoredFullStackPreview.databaseResourceId` is deliberately not added.**
-The durable ownership table in §6 is the sole durable source of DB-resource
-ownership, queried by `previewId`. Adding a second, redundant pointer on
-`StoredFullStackPreview` would be exactly the class of driftable coordinate
-that type's own existing doc comment already forbids for network
-coordinates (`peerIp`/`dialTarget`-style fields).
+**`StoredFullStackPreview.databaseResourceId` is deliberately planned to
+not be added.** The durable ownership table in §6 is designed to be the
+sole durable source of DB-resource ownership, queried by `previewId`.
+Adding a second, redundant pointer on `StoredFullStackPreview` would be
+exactly the class of driftable coordinate that type's own existing doc
+comment already forbids for network coordinates (`peerIp`/`dialTarget`-style
+fields).
 
 ---
 
@@ -230,19 +263,20 @@ created_at            timestamptz not null
 updated_at            timestamptz not null
 ```
 
-`resource_id` is the canonical, server-minted, Postgres-identifier-safe id
-(fixed-length, lowercase, `[a-z][a-z0-9_]{7,30}`, never derived from
-repository/branch/client input) that is the **single** source both the
-database name and the role name are derived from:
+`resource_id` is designed to be the canonical, server-minted,
+Postgres-identifier-safe id (fixed-length, lowercase,
+`[a-z][a-z0-9_]{7,30}`, never derived from repository/branch/client input)
+that would be the **single** source both the database name and the role
+name are derived from:
 
 ```text
 database name = pv_<resource_id>
 role name     = pv_<resource_id>
 ```
 
-No redundant `database_name`/`role_name` columns are added unless
+No redundant `database_name`/`role_name` columns are planned unless
 implementation analysis later proves a concrete need (e.g. a future
-requirement to decouple the two names) — until then this would be pure
+requirement to decouple the two names) — until then those would be pure
 duplication of `resource_id`.
 
 **Never made durable, in this table or anywhere else:**
@@ -288,17 +322,18 @@ worse, potentially the still-live physical database) in an orphaned,
 harder-to-trace state. `CASCADE` is explicitly forbidden because it could
 delete ownership evidence *before* physical DB/role cleanup has been
 verified — exactly the failure mode this whole design exists to prevent.
-`RESTRICT` (PostgreSQL's `NO ACTION` made explicit) makes it *structurally
-impossible* to delete a `peephole_fullstack_previews` row while any
-`peephole_temporary_databases` row still references it.
+`RESTRICT` (PostgreSQL's `NO ACTION` made explicit) would make it
+*structurally impossible* to delete a `peephole_fullstack_previews` row
+while any `peephole_temporary_databases` row still references it.
 
-In practice this is a pure safety net: nothing in the current codebase ever
-issues a raw `DELETE FROM peephole_fullstack_previews` (every existing
-lifecycle transition is a `status` `UPDATE`, confirmed by reading
-`FullStackPreviewStartupReconciler` and the control plane) — rows persist
-indefinitely as historical records. Ownership evidence therefore survives,
-by construction, until the row itself reaches `revoked` (§13), which only
-happens after physical DB+role cleanup has actually been verified.
+In practice this would be a pure safety net: nothing in the current
+codebase ever issues a raw `DELETE FROM peephole_fullstack_previews`
+(every existing lifecycle transition is a `status` `UPDATE`, confirmed by
+reading `FullStackPreviewStartupReconciler` and the control plane) — rows
+persist indefinitely as historical records today, and this design does not
+change that. Ownership evidence would therefore survive, by construction,
+until the row itself reaches `revoked` (§13), which would only happen
+after physical DB+role cleanup has actually been verified.
 **Terminal-row (`revoked`) retention or pruning for table-growth reasons is
 a separate, later operational decision, out of scope for this design.**
 
@@ -467,10 +502,10 @@ route. No new `OUTPUT`, `FORWARD`, or `returnChain` rule is needed.
 explicitly in both the sandbox's added route and the firewall rule — never
 a CIDR, never a range, never a wildcard port.
 
-**No DNS requirement:** `DATABASE_URL` is assembled with the fixed,
+**No DNS requirement:** `DATABASE_URL` would be assembled with the fixed,
 numeric `192.168.253.1` address directly, never a hostname — the sandbox
-needs no DNS resolution capability for this path (and, per the existing
-`ingress-only` policy, has none).
+would need no DNS resolution capability for this path (and, per the
+existing `ingress-only` policy, has none today).
 
 ---
 
@@ -488,11 +523,11 @@ address. No arbitrary source range.
 
 ### Provisioning (administrative) connection
 
-Uses the local PostgreSQL **Unix-domain socket**, never the sandbox-facing
-TCP endpoint. This keeps Peephole's own provisioning traffic structurally
-separate from tenant application traffic (distinguishable in `pg_hba.conf`
-and in any logging), and means the provisioning path never depends on the
-`pphdb0` dummy interface at all.
+Designed to use the local PostgreSQL **Unix-domain socket**, never the
+sandbox-facing TCP endpoint. This would keep Peephole's own provisioning
+traffic structurally separate from tenant application traffic
+(distinguishable in `pg_hba.conf` and in any logging), and would mean the
+provisioning path never depends on the `pphdb0` dummy interface at all.
 
 **Authentication: password/SCRAM, not `peer`/`pg_ident` mapping.** This is
 an evidence-based decision, not an assumption: the M11-A3 audit read the
@@ -504,11 +539,12 @@ must be privileged for gVisor/runsc/loop-device/network-namespace
 operations). A `peer`-mapped provisioning role would map to OS user `root`
 — meaning *any* root-privileged process on the host, not specifically
 Peephole, could authenticate as the provisioning role with no credential
-check at all. That is a strictly broader trust boundary than every other
-privilege boundary in this design, which are all explicit, narrow, provable
-grants. The provisioning role therefore uses a **static, operator-managed
-credential**, not generated or rotated by Peephole itself — the same *kind*
-of credential `PEEPHOLE_DATABASE_URL` already is today.
+check at all. That would be a strictly broader trust boundary than every
+other privilege boundary in this design, all of which are designed as
+explicit, narrow, provable grants. The provisioning role is therefore
+designed to use a **static, operator-managed credential**, never generated
+or rotated by Peephole itself — the same *kind* of credential
+`PEEPHOLE_DATABASE_URL` already is today.
 
 Future config concept (not created yet):
 
@@ -626,10 +662,10 @@ The raw password must never appear in:
 - OCI `config.json` or `process.args`;
 - an idempotency/fingerprint computation.
 
-It exists only in Peephole process memory, the credential tmpfs file
-(§16), the sandboxed child's own process environment, and inside the
-PostgreSQL SCRAM client authentication handshake (a cryptographic exchange,
-never a logged SQL statement).
+It is designed to exist only in Peephole process memory, the credential
+tmpfs file (§16), the sandboxed child's own process environment, and
+inside the PostgreSQL SCRAM client authentication handshake (a
+cryptographic exchange, never a logged SQL statement).
 
 **M11 implementation must integration-test the verifier round trip against
 real PostgreSQL 18** — provision a role via a client-computed verifier,
@@ -694,12 +730,13 @@ open architectural question.
 12. return DatabaseCredentialMaterial
 ```
 
-This closes the well-known `PUBLIC`-connect race exactly: the database is
-either non-existent or connection-disabled (`ALLOW_CONNECTIONS false`) for
-its entire existence through step 7; only step 8 opens it, by which point
-`PUBLIC` has already been revoked. `CREATE DATABASE`'s own inability to run
-inside a transaction block is irrelevant here — `ALLOW_CONNECTIONS false`,
-not a transaction, is what closes the window.
+This sequence is designed to close the well-known `PUBLIC`-connect race
+exactly: the database would be either non-existent or connection-disabled
+(`ALLOW_CONNECTIONS false`) for its entire existence through step 7; only
+step 8 opens it, by which point `PUBLIC` has already been revoked.
+`CREATE DATABASE`'s own inability to run inside a transaction block is
+irrelevant here — `ALLOW_CONNECTIONS false`, not a transaction, is what
+would close the window.
 
 **Wording precision, locked:** do not describe this sequence as making
 `pv_<id>`'s own ability to connect "impossible to revoke" or claim
@@ -846,15 +883,15 @@ object *combined with* a matching durable row does. The teardown body the
 reaper runs for the "role + database" case is the *identical* `SET
 ROLE`/`RESET ROLE`-bounded sequence from §12, not a bare `DROP`.
 
-**Ordering:** the tenant-DB startup reaper runs in the same phase as the
-existing `GVisorOrphanReaper.reapAll()`/`NetworkOrphanReaper.reapAll()`/
+**Ordering:** the tenant-DB startup reaper is designed to run in the same
+phase as the existing `GVisorOrphanReaper.reapAll()`/`NetworkOrphanReaper.reapAll()`/
 `GeneratedSecretOrphanReaper.reapAll()` calls in `services/production/server.ts`
 — **before** `FullStackPreviewStartupReconciler.reconcile()`, so that by
 the time a durable FullStack parent is terminalized to `failed`, its
-database is already provably gone. A reaper that cannot even reach the
-tenant cluster during startup aborts startup entirely (fail closed), the
-same posture the existing network reaper already takes when it cannot
-prove a lease's liveness.
+database would already be provably gone. A reaper that cannot even reach
+the tenant cluster during startup would abort startup entirely (fail
+closed), the same posture the existing network reaper already takes today
+when it cannot prove a lease's liveness.
 
 Periodic **maintenance** reaping (not `reapAll()`, the bounded `reap()`
 variant) may use an age threshold to distinguish "actively provisioning
@@ -877,7 +914,7 @@ COOKIE_SECRET
 CSRF_SECRET
 ```
 
-`DATABASE_URL` uses a structurally separate mechanism — not because the
+`DATABASE_URL` is designed to use a structurally separate mechanism — not because the
 underlying tmpfs-bind-mount-plus-trusted-bootstrap *pattern* is wrong for
 it, but because M10's existing `GENERATED_VALUE_PATTERN`
 (`/^[A-Za-z0-9_-]+$/`) would reject a real connection string outright (it
@@ -906,14 +943,17 @@ Properties:
 - a single fixed file — no generic `NAME=value` parsing of any kind, so
   there is no newline/`=`/env-name injection surface to defend against in
   the first place;
-- the file's entire content is the raw `DATABASE_URL` value, nothing else;
-- the trusted bootstrap (extended) reads this second fixed path if present,
-  trims exactly one trailing newline, and sets `process.env.DATABASE_URL`
-  to its full content verbatim — no parsing logic beyond that;
-- removed on both normal teardown and startup/maintenance reconciliation,
-  the same lifecycle discipline M10's own tmpfs secret file already has.
+- the file's entire content would be the raw `DATABASE_URL` value, nothing
+  else;
+- the trusted bootstrap (to be extended) would read this second fixed path
+  if present, trim exactly one trailing newline, and set
+  `process.env.DATABASE_URL` to its full content verbatim — no parsing
+  logic beyond that;
+- would be removed on both normal teardown and startup/maintenance
+  reconciliation, the same lifecycle discipline M10's own tmpfs secret
+  file already has today.
 
-`DATABASE_URL` is assembled **only** from: the server-generated
+`DATABASE_URL` would be assembled **only** from: the server-generated
 `pv_<resource_id>` identifier (used identically as both database name and
 role name), the server-generated password, the fixed configured host
 (`192.168.253.1`), and the fixed configured port (`5433`). No repository
@@ -943,20 +983,21 @@ exactly this two-layer pattern for the control-plane cluster today —
 at the systemd level, **and** `server.ts`'s own `applyPostgresMigrations()`
 connection attempt at process startup, rather than trusting `Requires=`
 alone. Extending the unit with `After=postgresql@18-tenant.service` /
-`Requires=postgresql@18-tenant.service` is a minimal, direct extension of
-an existing, working pattern — not a new mechanism.
+`Requires=postgresql@18-tenant.service` would be a minimal, direct
+extension of an existing, working pattern — not a new mechanism.
 
-Systemd ordering alone is insufficient: a unit reaching `active` does not
-guarantee the postmaster has finished recovery and is actually accepting
-connections at that instant. The tenant-DB startup reaper (§14) is
-Peephole's own real, provable capability check, exactly analogous to why
-`applyPostgresMigrations()` still runs against the control-plane cluster
-today despite the existing `Requires=` already being in place.
+Systemd ordering alone would be insufficient: a unit reaching `active`
+does not guarantee the postmaster has finished recovery and is actually
+accepting connections at that instant. The tenant-DB startup reaper (§14)
+is designed to be Peephole's own real, provable capability check, exactly
+analogous to why `applyPostgresMigrations()` still runs against the
+control-plane cluster today despite the existing `Requires=` already being
+in place.
 
 **If the tenant cluster is required for reconciliation (i.e. any
-non-terminal ownership row exists) and is unavailable, Peephole startup
-fails closed** — it does not proceed to open public listeners with unproven
-database state.
+non-terminal ownership row exists) and is unavailable, Peephole startup is
+designed to fail closed** — it would not proceed to open public listeners
+with unproven database state.
 
 ---
 
@@ -1004,19 +1045,19 @@ Same repository, `The-peephole/peephole-fixture-fullstack` (id
 established M9 (`eae411a...`)/M10 (`e10b081...`) pattern, never a new
 repository.
 
-- Backend env template gains `DATABASE_URL=`.
-- `pg` added as the backend's only new dependency — no ORM, no ambiguity
-  for the admission logic in §2 to resolve.
-- Startup performs one bounded, fixed action against the injected database
-  (e.g. `CREATE TABLE IF NOT EXISTS db_check (id int)` plus one `SELECT 1`)
-  — never an unbounded migration.
-- `GET /api/db-check` returns a **fixed, non-secret** shape only —
+- The backend env template would gain `DATABASE_URL=`.
+- `pg` would be added as the backend's only new dependency — no ORM, no
+  ambiguity for the admission logic in §2 to resolve.
+- Startup would perform one bounded, fixed action against the injected
+  database (e.g. `CREATE TABLE IF NOT EXISTS db_check (id int)` plus one
+  `SELECT 1`) — never an unbounded migration.
+- `GET /api/db-check` must return a **fixed, non-secret** shape only —
   `{ "connected": true }` or `{ "connected": false, "reason": "<generic>" }`
   — no row contents, no connection string, no hostname, no port. Mirrors
   `/api/secret-check`'s SHA-256-digest-only precedent; here there is not
   even a value to digest, a boolean is the whole point.
 - Must not require or accept an externally-supplied `DATABASE_URL` — if
-  Peephole's injected value is absent, the fixture fails closed
+  Peephole's injected value is absent, the fixture must fail closed
   (`connected: false`), never silently falling back to any other database.
 - Must not require or attempt to reach any database outside the one
   Peephole itself injects.
@@ -1106,27 +1147,33 @@ Extending the existing `PEEPHOLE_REAL_GVISOR_TESTS=1`-gated suite pattern:
 - the database and role are gone (checked directly against `18-tenant`)
   after `stop()`.
 
-### Production acceptance — prepared, not executed
+### Production acceptance — prepared runbook, not executed
 
-- the capacity prerequisite (§17) is satisfied **first**;
-- `18-tenant` is installed and configured per this design;
-- a real, dedicated M11 fixture commit (§18) is provisioned;
-- a real `fullstack-v1` preview is created;
-- the fixture's `/api/db-check` is queried through the routed backend and
-  confirmed `connected: true`;
-- normal `DELETE` cleanup, confirmed both at the FullStack-parent level and
-  directly against `18-tenant`;
-- **independent, separately recorded** graceful-stop evidence and
-  intentional `MainPID` `SIGKILL` crash-recovery evidence — never conflated
-  in the same report, matching §13's locked discipline exactly;
-- systemd restart;
-- the tenant-DB startup reaper's observed behavior;
-- the durable FullStack parent's fail-closed transition;
-- zero DB/role/network/runsc/tmpfs/disk residue, checked directly;
-- the unchanged, unmodified `npm run smoke:production:host` still passes.
+This is a checklist for a future session to follow. None of it has been
+done; `18-tenant` does not exist and this runbook has not been run.
+
+- confirm the capacity prerequisite (§17) is satisfied **first**;
+- install and configure `18-tenant` per this design;
+- provision a real, dedicated M11 fixture commit (§18);
+- create a real `fullstack-v1` preview;
+- query the fixture's `/api/db-check` through the routed backend and
+  confirm `connected: true`;
+- perform normal `DELETE` cleanup, confirmed both at the FullStack-parent
+  level and directly against `18-tenant`;
+- separately record **independent** graceful-stop evidence and intentional
+  `MainPID` `SIGKILL` crash-recovery evidence — never conflated in the same
+  report, matching §13's locked discipline exactly;
+- restart via systemd;
+- observe the tenant-DB startup reaper's behavior;
+- observe the durable FullStack parent's fail-closed transition;
+- confirm zero DB/role/network/runsc/tmpfs/disk residue, checked directly;
+- confirm the unchanged, unmodified `npm run smoke:production:host` still
+  passes.
 
 None of this is executed by this document. It is the acceptance runbook
-M11-C's real-host verification phase will follow.
+M11-E's production infrastructure activation and acceptance stage will
+follow, after M11-C1 through M11-C4's implementation and M11-D's real
+Linux/real-gVisor verification are complete.
 
 ---
 
@@ -1137,12 +1184,20 @@ M11-C's real-host verification phase will follow.
    requirement — an infrastructure/cost decision this document cannot make.
 2. Whether a brief `peephole.service`/host restart is acceptable for that
    RAM change, and the maintenance-window decision that implies.
-3. Final confirmation of the `192.168.253.1` candidate address (found
-   collision-free against everything observed during the M11-A3 audit) or
-   an operator-preferred alternative in the same non-overlapping spirit.
-4. `18-tenant`'s exact `shared_buffers`/`max_connections`/`work_mem` tuning
+3. `18-tenant`'s exact `shared_buffers`/`max_connections`/`work_mem` tuning
    should be finalized against the real, post-upsize host, not solely the
    proportional estimate in §17.
+
+`192.168.253.1/32:5433` (§7) is **not** an open question — it is a locked
+architecture target, found collision-free against every route, address,
+and interface observed on the production host during the M11-A3 read-only
+audit. What remains is an ordinary deployment-time safety check, not an
+unresolved decision: **before M11-E changes networking, re-run
+collision/routing validation and abort activation if `192.168.253.1` is no
+longer safe** (e.g. the VPC subnet layout or the job-lease pool has since
+changed). This is the same kind of pre-flight re-check `ensureProductionPreflight()`
+already performs for other host assumptions before production startup
+proceeds — not a sign the address itself is still undecided.
 
 Everything else decidable from the existing codebase and the production
 facts gathered in M11-A3 has been decided in this document.

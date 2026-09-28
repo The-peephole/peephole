@@ -173,10 +173,11 @@ changes it:
 5. frontend target selection / bounded frontend monorepo support (implemented)
 6. existing deployed-site Live Preview (implemented)
 7. backend detection + environment requirement analysis (implemented)
-8. backend-v1 execution foundation implemented; production verification pending (see D-030)
-9. frontend ↔ backend routing
-10. ephemeral env / secrets
-11. temporary database support
+8. backend-v1 execution foundation -- implemented; production-verified in M9 (see D-030)
+9. frontend ↔ backend routing -- implemented; production-verified in M9 (see D-031)
+10. ephemeral env / generated secrets -- implemented; production-verified in M10 (see D-032)
+11. temporary database support -- architecture locked in D-033 /
+    docs/TEMPORARY_DATABASES.md; not implemented
 
 Each stage must expose a reviewed contract and preserve earlier security
 boundaries. In particular, do not jump from a full-stack fixture to backend
