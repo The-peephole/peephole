@@ -341,7 +341,8 @@ requirement classifications; neither executes anything, provisions anything,
 or changes the build contract. Backend execution, frontend/backend routing
 (M9), and ephemeral generated secrets for a narrow four-name allowlist (M10)
 are now implemented and production-verified; the remaining expansion is
-temporary database support (M11, not started).
+temporary database support (M11, not started; architecture designed and
+locked in D-033/docs/TEMPORARY_DATABASES.md, not yet implemented).
 
 The generalized Build Adapter boundary preserves the worker ports and adds no
 fixture-specific production branches; it is unchanged by backend detection

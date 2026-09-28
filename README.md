@@ -239,7 +239,9 @@ Stage 10 is implemented and production-verified, narrowly: Peephole may
 *generate* and inject values for exactly `JWT_SECRET`/`SESSION_SECRET`/
 `COOKIE_SECRET`/`CSRF_SECRET`; arbitrary/user-supplied secrets remain
 unsupported. Stage 11 is a roadmap item, not current product support: no
-provisioned database exists yet. Separate operational debt includes
+provisioned database exists yet, though its architecture has since been
+designed and locked (see D-033 and docs/TEMPORARY_DATABASES.md) with no
+implementation started. Separate operational debt includes
 accessibility review, production observability, automated production-smoke
 orchestration, tighter install-stage package egress, and the
 production-like malicious-script run.

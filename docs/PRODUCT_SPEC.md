@@ -259,7 +259,8 @@ and through a separate `generatedSecretNames` path (never
 user-supplied credentials, arbitrary environment names, external
 credentials, or database variables/provisioning. None of stages 8-10 means
 "arbitrary Node backends are supported," and stage 11 (temporary databases)
-remains unimplemented.
+remains unimplemented -- its architecture is designed and locked (D-033,
+docs/TEMPORARY_DATABASES.md), not built.
 
 Build Adapter generalization is an internal capability boundary. The
 implemented adapters cover package-free root static HTML and root or

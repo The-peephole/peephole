@@ -221,3 +221,12 @@ and network startup reconciliation have completed.
 - A host administrator can mutate networking after validation. Host root and
   firewall integrity remain trusted; cleanup deliberately preserves ambiguous
   state rather than deleting a merely similar resource.
+
+**Planned, not implemented:** M11 (temporary PostgreSQL previews, currently
+DESIGN ONLY -- see `docs/TEMPORARY_DATABASES.md` and D-033) proposes exactly
+one narrow addition to the `backend-v1` ingress-only policy above: a single
+new `INPUT`-chain exception (never `FORWARD`, `egressChain`, `returnChain`,
+or NAT/MASQUERADE) letting a sandbox reach one fixed host-local
+`/32` PostgreSQL destination on one fixed TCP port. No code implementing
+this exists yet, and the policy described in this document is unchanged
+until it does.

@@ -423,9 +423,11 @@ Known limitations and follow-up work:
 - the dedicated malicious dependency-script suite still needs its recorded
   production-like AWS run;
 - temporary database provisioning (roadmap stage 11) remains unimplemented;
-  ephemeral generated-secret injection (roadmap stage 10) is implemented and
-  production-verified, but only for the four canonical names -- see
-  section 13b.
+  its architecture is designed and locked (D-033,
+  docs/TEMPORARY_DATABASES.md) but nothing has been built, deployed, or
+  verified; ephemeral generated-secret injection (roadmap stage 10) is
+  implemented and production-verified, but only for the four canonical
+  names -- see section 13b.
 
 The official current Vite + React pin is
 `The-peephole/peephole-fixture-vite-react@4a2c3b78e15d90865ed565c3d38c4045b5a5235f`
