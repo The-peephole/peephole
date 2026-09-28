@@ -63,6 +63,7 @@ describe("resolveBackendRuntimePlan", () => {
       start: { command: "node", args: ["src/server.js"] },
       platformEnvironment: { HOST: "0.0.0.0", NODE_ENV: "production" },
       generatedSecretNames: [],
+      databaseRequirement: null,
     })
   })
 
@@ -107,11 +108,154 @@ describe("resolveBackendRuntimePlan", () => {
     },
   )
 
-  it("rejects a candidate with a database dependency", () => {
+  it("admits exact pg + server-side DATABASE_URL as names-only metadata", () => {
+    const plan = resolveBackendRuntimePlan(
+      repository,
+      candidate({
+        databaseDependencies: ["pg"],
+        environmentRequirements: [
+          requirement({
+            name: "DATABASE_URL",
+            requirementKind: "database-requirement",
+            sensitivity: "secret-like",
+          }),
+        ],
+      }),
+    )
+
+    expect(plan?.databaseRequirement).toEqual({ name: "DATABASE_URL" })
+    expect(Object.keys(plan!.platformEnvironment)).not.toContain("DATABASE_URL")
+  })
+
+  it("preserves database and generated-secret metadata independently", () => {
+    const plan = resolveBackendRuntimePlan(
+      repository,
+      candidate({
+        databaseDependencies: ["pg"],
+        environmentRequirements: [
+          requirement({
+            name: "DATABASE_URL",
+            requirementKind: "database-requirement",
+            sensitivity: "secret-like",
+          }),
+          requirement({
+            name: "SESSION_SECRET",
+            requirementKind: "preview-generated-candidate",
+            sensitivity: "secret-like",
+          }),
+        ],
+      }),
+    )
+
+    expect(plan).toMatchObject({
+      databaseRequirement: { name: "DATABASE_URL" },
+      generatedSecretNames: ["SESSION_SECRET"],
+    })
+  })
+
+  it("rejects pg without DATABASE_URL", () => {
     expect(
       resolveBackendRuntimePlan(
         repository,
         candidate({ databaseDependencies: ["pg"] }),
+      ),
+    ).toBeNull()
+  })
+
+  it("rejects DATABASE_URL without pg", () => {
+    expect(
+      resolveBackendRuntimePlan(
+        repository,
+        candidate({
+          environmentRequirements: [
+            requirement({
+              name: "DATABASE_URL",
+              requirementKind: "database-requirement",
+            }),
+          ],
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  it.each([
+    ["pg", "mysql2"],
+    ["pg", "prisma"],
+    ["pg", "@prisma/client"],
+    ["prisma"],
+    ["@prisma/client"],
+  ])("rejects unsupported database dependencies %j", (...dependencies) => {
+    expect(
+      resolveBackendRuntimePlan(
+        repository,
+        candidate({
+          databaseDependencies: dependencies,
+          environmentRequirements: [
+            requirement({
+              name: "DATABASE_URL",
+              requirementKind: "database-requirement",
+            }),
+          ],
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  it.each([
+    "REDIS_URL",
+    "POSTGRES_URL",
+    "POSTGRESQL_URL",
+    "PGHOST",
+    "PGPASSWORD",
+  ])("rejects pg with unsupported database requirement %s", (name) => {
+    expect(
+      resolveBackendRuntimePlan(
+        repository,
+        candidate({
+          databaseDependencies: ["pg"],
+          environmentRequirements: [
+            requirement({ name, requirementKind: "database-requirement" }),
+          ],
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  it("rejects pg + DATABASE_URL plus another database requirement", () => {
+    expect(
+      resolveBackendRuntimePlan(
+        repository,
+        candidate({
+          databaseDependencies: ["pg"],
+          environmentRequirements: [
+            requirement({
+              name: "DATABASE_URL",
+              requirementKind: "database-requirement",
+            }),
+            requirement({
+              name: "REDIS_URL",
+              requirementKind: "database-requirement",
+            }),
+          ],
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  it("rejects client-public DATABASE_URL", () => {
+    expect(
+      resolveBackendRuntimePlan(
+        repository,
+        candidate({
+          databaseDependencies: ["pg"],
+          environmentRequirements: [
+            requirement({
+              name: "DATABASE_URL",
+              requirementKind: "database-requirement",
+              exposure: "client-public",
+            }),
+          ],
+        }),
       ),
     ).toBeNull()
   })
@@ -205,7 +349,6 @@ describe("resolveBackendRuntimePlan", () => {
     ["OPENAI_API_KEY", "user-required", "server"],
     ["TOKEN", "user-required", "server"],
     ["PASSWORD", "user-required", "server"],
-    ["DATABASE_URL", "database-requirement", "server"],
     ["REDIS_URL", "database-requirement", "server"],
     ["SOME_UNUSUAL_NAME", "unknown", "server"],
     ["VITE_SECRET", "user-required", "client-public"],
@@ -267,6 +410,22 @@ describe("resolveBackendRuntimePlan", () => {
     },
   )
 
+  it("rejects an unknown name even if classified as auto-configurable", () => {
+    expect(
+      resolveBackendRuntimePlan(
+        repository,
+        candidate({
+          environmentRequirements: [
+            requirement({
+              name: "DATABASE_URL",
+              requirementKind: "auto-configurable",
+            }),
+          ],
+        }),
+      ),
+    ).toBeNull()
+  })
+
   it("only ever places PORT/HOST/NODE_ENV in the runtime environment", () => {
     const plan = resolveBackendRuntimePlan(repository, candidate())
 
@@ -281,6 +440,12 @@ describe("resolveBackendRuntimePlan", () => {
     const plan = resolveBackendRuntimePlan(repository, candidate())
 
     expect(plan?.generatedSecretNames).toEqual([])
+  })
+
+  it("keeps databaseRequirement null for an existing non-database backend", () => {
+    expect(
+      resolveBackendRuntimePlan(repository, candidate())?.databaseRequirement,
+    ).toBeNull()
   })
 
   it("requires an exact 40-character commit SHA in the repository ref", () => {
@@ -312,7 +477,27 @@ describe("resolveBackendExecutionSupport", () => {
     expect(support.evidence.join(" ")).toContain("fastify")
   })
 
-  it("reports supported: false for a database-dependent backend", () => {
+  it("describes an eligible database candidate without claiming provisioning", () => {
+    const support = resolveBackendExecutionSupport(
+      candidate({
+        databaseDependencies: ["pg"],
+        environmentRequirements: [
+          requirement({
+            name: "DATABASE_URL",
+            requirementKind: "database-requirement",
+          }),
+        ],
+      }),
+    )
+
+    expect(support.supported).toBe(true)
+    expect(support.evidence.join(" ")).toContain(
+      "temporary database availability",
+    )
+    expect(support.evidence.join(" ")).not.toContain("provisioned")
+  })
+
+  it("reports supported: false for an unsupported database-dependent backend", () => {
     const support = resolveBackendExecutionSupport(
       candidate({ databaseDependencies: ["prisma"] }),
     )

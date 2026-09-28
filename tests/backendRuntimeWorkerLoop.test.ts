@@ -32,12 +32,14 @@ const plan: BackendRuntimePlan = {
     NODE_ENV: "production",
   },
   generatedSecretNames: [],
+  databaseRequirement: null,
 }
 
 const queuedRuntime: QueuedBackendRuntime = {
   runtimeId: "runtime-1",
   repository,
   plan,
+  orchestrationKey: null,
 }
 
 class FakeQueue implements BackendRuntimeQueueConsumer {

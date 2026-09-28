@@ -60,13 +60,19 @@ stays `[ ]` regardless of how many of these sub-stages complete.
 | Stage | Scope | Status |
 |---|---|---|
 | M11-A | Architecture investigation / read-only production audit / final architecture lock | **COMPLETE** |
-| M11-B | Design documentation (this document, D-033) | **CURRENT — PR #33** |
-| M11-C1 | Portable types / admission / ownership foundation | NOT STARTED |
+| M11-B | Design documentation (this document, D-033) | **COMPLETE** |
+| M11-C1 | Portable types / admission / ownership foundation | **CURRENT — implementation PR** |
 | M11-C2 | PostgreSQL provisioning + durable ownership / reconciliation | NOT STARTED |
 | M11-C3 | Credential delivery + host-only sandbox network integration | NOT STARTED |
 | M11-C4 | Integrated FullStack lifecycle | NOT STARTED |
 | M11-D | Real Linux / real-gVisor verification | NOT STARTED |
 | M11-E | Production infrastructure activation + production acceptance | NOT STARTED |
+
+M11-C1 adds the portable representation, trusted FullStack admission, queue
+ownership identity, and resource-identity foundation only. It does not
+provision PostgreSQL or deliver `DATABASE_URL`; database-requiring plans fail
+closed in the worker with `DATABASE_UNAVAILABLE`. M11-C2, M11-C3, and M11-C4
+remain required before any database-requiring backend can run.
 
 **The production host's RAM is a documented future prerequisite, not
 something already done.** M11-A3 found the production host to be a tight

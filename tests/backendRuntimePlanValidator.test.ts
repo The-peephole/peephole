@@ -30,12 +30,20 @@ const plan: BackendRuntimePlan = {
     NODE_ENV: "production",
   },
   generatedSecretNames: [],
+  databaseRequirement: null,
 }
 
 function withGeneratedSecretNames(value: unknown): BackendRuntimePlan {
   return {
     ...plan,
     generatedSecretNames: value as readonly PreviewGeneratedSecretName[],
+  }
+}
+
+function withDatabaseRequirement(value: unknown): BackendRuntimePlan {
+  return {
+    ...plan,
+    databaseRequirement: value as BackendRuntimePlan["databaseRequirement"],
   }
 }
 
@@ -104,5 +112,48 @@ describe("validateBackendRuntimePlan generatedSecretNames", () => {
     expect(() => validateBackendRuntimePlan(extraEnvironment)).toThrow(
       /exactly PORT, HOST, and NODE_ENV/,
     )
+  })
+})
+
+describe("validateBackendRuntimePlan databaseRequirement", () => {
+  it("accepts null independently of generated secrets", () => {
+    const candidate = withGeneratedSecretNames(["SESSION_SECRET"])
+    expect(validateBackendRuntimePlan(candidate).databaseRequirement).toBeNull()
+  })
+
+  it("accepts the exact names-only DATABASE_URL contract", () => {
+    const candidate = withDatabaseRequirement({ name: "DATABASE_URL" })
+    expect(validateBackendRuntimePlan(candidate)).toBe(candidate)
+  })
+
+  it.each([
+    undefined,
+    "DATABASE_URL",
+    { name: "POSTGRES_URL" },
+    { name: "DATABASE_URL", value: "postgres://secret" },
+    { name: "DATABASE_URL", host: "tenant.internal" },
+    { name: "DATABASE_URL", port: 5433 },
+    { name: "DATABASE_URL", password: "secret" },
+  ])("rejects malformed or value-bearing shape %#", (value) => {
+    expect(() =>
+      validateBackendRuntimePlan(withDatabaseRequirement(value)),
+    ).toThrow(/exact names-only DATABASE_URL contract/)
+  })
+
+  it("keeps platform, generated-secret, and database metadata independently restricted", () => {
+    const candidate = {
+      ...plan,
+      generatedSecretNames: ["JWT_SECRET"] as const,
+      databaseRequirement: { name: "DATABASE_URL" } as const,
+    }
+    const validated = validateBackendRuntimePlan(candidate)
+
+    expect(Object.keys(validated.platformEnvironment)).toEqual([
+      "PORT",
+      "HOST",
+      "NODE_ENV",
+    ])
+    expect(validated.generatedSecretNames).toEqual(["JWT_SECRET"])
+    expect(validated.databaseRequirement).toEqual({ name: "DATABASE_URL" })
   })
 })

@@ -52,11 +52,17 @@ const plan: BackendRuntimePlan = {
     NODE_ENV: "production",
   },
   generatedSecretNames: [],
+  databaseRequirement: null,
 }
 
 const secretPlan: BackendRuntimePlan = {
   ...plan,
   generatedSecretNames: ["SESSION_SECRET"],
+}
+
+const databasePlan: BackendRuntimePlan = {
+  ...plan,
+  databaseRequirement: { name: "DATABASE_URL" },
 }
 
 const requester = { subject: "user-1", ip: "203.0.113.10" }
@@ -275,6 +281,20 @@ async function createAndLease(
   return { runtimeId: created.runtime.id, job: leased.job }
 }
 
+async function createAndLeaseForOrchestration(
+  controlPlane: BackendRuntimeControlPlane,
+  queue: InMemoryBackendRuntimeQueue,
+) {
+  const created = await controlPlane.createForOrchestration(
+    { repository, contractVersion: "backend-v1" },
+    requester.subject,
+    "fullstack-00000000-0000-0000-0000-000000000001",
+  )
+  const leased = await queue.lease("worker-1")
+  if (!leased) throw new Error("Expected a queued runtime.")
+  return { runtimeId: created.runtime.id, job: leased.job }
+}
+
 describe("BackendRuntimeSupervisor", () => {
   const createdRoots: string[] = []
 
@@ -282,6 +302,68 @@ describe("BackendRuntimeSupervisor", () => {
     for (const root of createdRoots.splice(0)) {
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  it("fails a corrupt database job without orchestration identity before any execution boundary", async () => {
+    const {
+      controlPlane,
+      queue,
+      fetcher,
+      sandbox,
+      installRunner,
+      starter,
+      supervisor,
+    } = compose(10 * 60_000, "file", undefined, databasePlan)
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    const fetch = vi.spyOn(fetcher, "fetch")
+    const allocate = vi.spyOn(sandbox, "allocate")
+
+    await supervisor.run({ ...job, orchestrationKey: null })
+
+    const final = await controlPlane.get(runtimeId, requester)
+    expect(final).toMatchObject({
+      status: "failed",
+      errorCode: "RUNTIME_UNAVAILABLE",
+    })
+    expect(allocate).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+    expect(installRunner.calls).toEqual([])
+    expect(starter.lastHandle).toBeNull()
+  })
+
+  it("fails an owned database job with DATABASE_UNAVAILABLE before any execution boundary", async () => {
+    const {
+      controlPlane,
+      queue,
+      fetcher,
+      sandbox,
+      installRunner,
+      starter,
+      supervisor,
+    } = compose(10 * 60_000, "file", undefined, databasePlan)
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    const fetch = vi.spyOn(fetcher, "fetch")
+    const allocate = vi.spyOn(sandbox, "allocate")
+
+    await supervisor.run(job)
+
+    const final = await controlPlane.get(runtimeId, requester)
+    expect(final).toMatchObject({
+      status: "failed",
+      errorCode: "DATABASE_UNAVAILABLE",
+      errorMessage:
+        "The backend runtime's temporary database is unavailable. Start a new preview.",
+    })
+    expect(allocate).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+    expect(installRunner.calls).toEqual([])
+    expect(starter.lastHandle).toBeNull()
   })
 
   it("runs fetch -> install -> start -> running, then stays running until told to stop", async () => {

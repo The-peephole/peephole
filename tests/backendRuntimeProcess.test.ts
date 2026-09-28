@@ -41,6 +41,7 @@ const plan: BackendRuntimePlan = {
     NODE_ENV: "production",
   },
   generatedSecretNames: [],
+  databaseRequirement: null,
 }
 
 const secretPlan: BackendRuntimePlan = {

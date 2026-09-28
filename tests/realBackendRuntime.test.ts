@@ -80,6 +80,7 @@ const fixturePlan: BackendRuntimePlan = {
     NODE_ENV: "production",
   },
   generatedSecretNames: [],
+  databaseRequirement: null,
 }
 
 interface RealBackendEnvironment {

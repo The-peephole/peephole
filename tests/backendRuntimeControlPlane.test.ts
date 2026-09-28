@@ -30,6 +30,12 @@ const plan: BackendRuntimePlan = {
     NODE_ENV: "production",
   },
   generatedSecretNames: [],
+  databaseRequirement: null,
+}
+
+const databasePlan: BackendRuntimePlan = {
+  ...plan,
+  databaseRequirement: { name: "DATABASE_URL" },
 }
 
 const requester = { subject: "user-1", ip: "203.0.113.10" }
@@ -105,6 +111,102 @@ describe("BackendRuntimeControlPlane", () => {
     expect(result.runtime.status).toBe("queued")
     expect(result.runtime.sourceRoot).toBe("backend")
     expect(resolver.resolve).toHaveBeenCalledWith(repository, undefined)
+  })
+
+  it("queues null orchestration identity for an ordinary standalone runtime", async () => {
+    const { controlPlane, queue } = compose()
+
+    await controlPlane.create(createRequest(), requester)
+
+    expect((await queue.lease("worker-1"))?.job.orchestrationKey).toBeNull()
+  })
+
+  it("rejects a standalone database plan before store creation or queueing", async () => {
+    const { controlPlane, store, queue } = compose(databasePlan)
+    const create = vi.spyOn(store, "create")
+    const enqueue = vi.spyOn(queue, "enqueue")
+
+    await expect(
+      controlPlane.create(createRequest(), requester),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_BACKEND",
+      status: 422,
+      message: "This backend does not satisfy the backend-v1 contract.",
+    })
+    expect(create).not.toHaveBeenCalled()
+    expect(enqueue).not.toHaveBeenCalled()
+  })
+
+  it("admits the same database plan through trusted FullStack orchestration", async () => {
+    const { controlPlane, queue } = compose(databasePlan)
+    const orchestrationKey = "fullstack-00000000-0000-0000-0000-000000000001"
+
+    const result = await controlPlane.createForOrchestration(
+      createRequest(),
+      requester.subject,
+      orchestrationKey,
+    )
+    const queued = await queue.lease("worker-1")
+
+    expect(result.created).toBe(true)
+    expect(queued?.job.orchestrationKey).toBe(orchestrationKey)
+    expect(queued?.job.plan.databaseRequirement).toEqual({
+      name: "DATABASE_URL",
+    })
+  })
+
+  it("keeps database capability and orchestration identity out of the public runtime", async () => {
+    const { controlPlane } = compose(databasePlan)
+    const result = await controlPlane.createForOrchestration(
+      createRequest(),
+      requester.subject,
+      "fullstack-00000000-0000-0000-0000-000000000001",
+    )
+    const serialized = JSON.stringify(result.runtime)
+
+    expect(result.runtime).not.toHaveProperty("databaseRequirement")
+    expect(result.runtime).not.toHaveProperty("orchestrationKey")
+    expect(serialized).not.toContain("DATABASE_URL")
+    expect(serialized).not.toContain("resourceId")
+    expect(result.runtime).not.toHaveProperty("host")
+    expect(result.runtime).not.toHaveProperty("port")
+  })
+
+  it("ignores attempted internal-field injection and uses only server-derived values", async () => {
+    const { controlPlane, queue } = compose()
+    const injectedRequest = {
+      ...createRequest(),
+      orchestrationKey: "fullstack-client-controlled",
+      databaseRequirement: { name: "DATABASE_URL" },
+    }
+
+    await controlPlane.create(injectedRequest, requester)
+    const queued = await queue.lease("worker-1")
+
+    expect(queued?.job.orchestrationKey).toBeNull()
+    expect(queued?.job.plan.databaseRequirement).toBeNull()
+  })
+
+  it("carries no database connection material in plan, queue, or public runtime", async () => {
+    const { controlPlane, queue } = compose(databasePlan)
+    const result = await controlPlane.createForOrchestration(
+      createRequest(),
+      requester.subject,
+      "fullstack-00000000-0000-0000-0000-000000000001",
+    )
+    const queued = await queue.lease("worker-1")
+    const serialized = JSON.stringify({
+      queued: queued?.job,
+      runtime: result.runtime,
+    })
+
+    expect(serialized).not.toContain("postgres://")
+    expect(serialized).not.toMatch(
+      /"(password|credential|connectionString|databaseUrl|databaseHost|databasePort|scramVerifier)"/i,
+    )
+    expect(queued?.job.plan.databaseRequirement).toEqual({
+      name: "DATABASE_URL",
+    })
   })
 
   it("passes the sourceRoot hint through to the resolver without treating it as authoritative", async () => {

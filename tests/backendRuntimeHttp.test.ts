@@ -34,6 +34,7 @@ const plan: BackendRuntimePlan = {
     NODE_ENV: "production",
   },
   generatedSecretNames: [],
+  databaseRequirement: null,
 }
 
 function compose(
@@ -163,6 +164,30 @@ describe("createBackendRuntimeHttpHandler", () => {
 
     expect(response.status).toBe(400)
   })
+
+  it.each(["orchestrationKey", "databaseRequirement"])(
+    "rejects client injection of internal field %s",
+    async (field) => {
+      const handle = compose()
+
+      const response = await handle({
+        method: "POST",
+        path: "/v1/backend-runtimes",
+        headers: {},
+        body: {
+          repository,
+          contractVersion: "backend-v1",
+          [field]: field === "orchestrationKey" ? "fullstack-client" : null,
+        },
+        requester,
+      })
+
+      expect(response).toMatchObject({
+        status: 400,
+        body: { error: { code: "INVALID_REQUEST" } },
+      })
+    },
+  )
 
   it("returns 404 for an unknown route", async () => {
     const handle = compose()

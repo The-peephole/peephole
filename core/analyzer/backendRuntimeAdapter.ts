@@ -8,6 +8,7 @@ import { BACKEND_RUNTIME_CONTRACT_VERSION } from "../../types/backendRuntime"
 import type { PreviewRepositoryRef } from "../../types/preview"
 import type { PreviewGeneratedSecretName } from "../../types/backendRuntimeSecrets"
 import type { EnvironmentRequirement } from "../../types/environment"
+import { BACKEND_RUNTIME_DATABASE_ENV_NAME } from "../../types/backendRuntimeDatabase"
 import { isEligiblePreviewGeneratedSecretName } from "../backendSecrets/generatedSecretPolicy"
 import { isSafePreviewSourceRoot } from "../preview/sourceRoot"
 import { isNpmBackendPackageManagerDeclaration } from "./backendPackageManager"
@@ -17,9 +18,10 @@ import { isNpmBackendPackageManagerDeclaration } from "./backendPackageManager"
  * DETECTION-TO-EXECUTION only for a very narrow shape -- see
  * `docs/PREVIEW_RUNTIME.md`. A candidate detected by M7
  * (`core/analyzer/backendDetector.ts`) with a *different* framework, a
- * database dependency, a missing lockfile, an unresolved entrypoint, or any
- * environment requirement outside fixed `PORT`/`HOST`/`NODE_ENV` or the
- * canonical server-only generated-secret policy is never supported here --
+ * unsupported database shape, a missing lockfile, an unresolved entrypoint,
+ * or any environment requirement outside fixed `PORT`/`HOST`/`NODE_ENV`, the
+ * canonical server-only generated-secret policy, or the exact names-only M11
+ * `pg` + `DATABASE_URL` capability is never supported here --
  * "Backend detected" and "Execution
  * supported" are always evaluated separately, and this function is the
  * single place that draws that line for both client-side display and
@@ -48,7 +50,9 @@ export function resolveBackendExecutionSupport(
     supported: true,
     adapterId: "express-node-npm-v1",
     evidence: [
-      "express dependency, package-lock.json, a safe Node entrypoint, and only platform-owned or canonical generated-secret environment requirements were found",
+      candidate.databaseDependencies.length === 1
+        ? "express and pg dependencies, package-lock.json, a safe Node entrypoint, and the exact server-side DATABASE_URL capability requirement were found; temporary database availability is determined later by trusted orchestration"
+        : "express dependency, package-lock.json, a safe Node entrypoint, and only platform-owned or canonical generated-secret environment requirements were found",
     ],
   }
 }
@@ -95,6 +99,10 @@ export function resolveBackendRuntimePlan(
       NODE_ENV: "production",
     },
     generatedSecretNames,
+    databaseRequirement:
+      candidate.databaseDependencies.length === 1
+        ? { name: BACKEND_RUNTIME_DATABASE_ENV_NAME }
+        : null,
   }
 }
 
@@ -119,13 +127,29 @@ function findUnsupportedReason(candidate: BackendCandidate): string | null {
     return "A safe Node entrypoint could not be resolved."
   }
 
-  if (candidate.databaseDependencies.length > 0) {
-    return "Database dependencies are not supported until temporary database provisioning exists."
+  const databaseRequirements = candidate.environmentRequirements.filter(
+    (requirement) => requirement.requirementKind === "database-requirement",
+  )
+  const hasDatabaseDependency = candidate.databaseDependencies.length > 0
+  const hasDatabaseRequirement = databaseRequirements.length > 0
+
+  if (hasDatabaseDependency || hasDatabaseRequirement) {
+    const exactDatabaseShape =
+      candidate.databaseDependencies.length === 1 &&
+      candidate.databaseDependencies[0] === "pg" &&
+      databaseRequirements.length === 1 &&
+      databaseRequirements[0]?.name === BACKEND_RUNTIME_DATABASE_ENV_NAME &&
+      databaseRequirements[0]?.exposure === "server"
+
+    if (!exactDatabaseShape) {
+      return "The database dependency and requirement shape is not supported."
+    }
   }
 
   const unsupportedRequirement = candidate.environmentRequirements.find(
     (requirement) =>
-      requirement.requirementKind !== "auto-configurable" &&
+      !isSupportedPlatformRequirement(requirement) &&
+      requirement.requirementKind !== "database-requirement" &&
       !isSupportedGeneratedSecretRequirement(requirement),
   )
   if (unsupportedRequirement) {
@@ -133,6 +157,15 @@ function findUnsupportedReason(candidate: BackendCandidate): string | null {
   }
 
   return null
+}
+
+function isSupportedPlatformRequirement(
+  requirement: EnvironmentRequirement,
+): boolean {
+  return (
+    requirement.requirementKind === "auto-configurable" &&
+    ["PORT", "HOST", "NODE_ENV"].includes(requirement.name)
+  )
 }
 
 function isSupportedGeneratedSecretRequirement(
