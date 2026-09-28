@@ -36,6 +36,7 @@ async function main(explicitTestUrl: string) {
           "tests/postgresIntegration.test.ts",
           "tests/postgresFullStackPreview.test.ts",
           "tests/postgresTemporaryDatabase.test.ts",
+          "tests/postgresTemporaryDatabaseReaper.test.ts",
         ],
         {
           stdio: "inherit",
