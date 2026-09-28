@@ -15,13 +15,22 @@ import { generatePreviewSecretValue } from "../../core/backendSecrets/generatedS
 import type { OpaqueSecretValue } from "../../types/backendRuntimeSecrets"
 import type { TemporaryDatabaseCredentialMaterial } from "../../types/temporaryDatabase"
 import type {
+  TemporaryDatabasePhysicalCleaner,
   TemporaryDatabaseOwnershipStore,
   TenantAdminSession,
   TenantDatabaseAdmin,
 } from "./ports"
+import {
+  assertSafePostgresIdentifier,
+  readProvisioningSessionPolicy,
+  withTemporaryDatabaseRole,
+} from "./tenantSessionPolicy"
+import {
+  PostgresTemporaryDatabasePhysicalCleaner,
+  TemporaryDatabasePhysicalCleanupError,
+} from "./temporaryDatabasePhysicalCleaner"
 
 const SCRAM_SALT_BYTES = 16
-const SAFE_POSTGRES_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/
 
 export class TemporaryDatabaseProvisioningError extends Error {
   constructor() {
@@ -40,6 +49,7 @@ export class TemporaryDatabaseRevocationError extends Error {
 export interface TemporaryDatabaseProvisionerDependencies {
   readonly ownershipStore: TemporaryDatabaseOwnershipStore
   readonly tenantAdmin: TenantDatabaseAdmin
+  readonly physicalCleaner?: TemporaryDatabasePhysicalCleaner
   readonly createResourceId?: () => TemporaryDatabaseResourceId
   readonly generatePassword?: () => OpaqueSecretValue
   readonly saltEntropy?: ResourceEntropySource
@@ -61,6 +71,7 @@ export class TemporaryDatabaseProvisioner {
   private readonly generatePassword: () => OpaqueSecretValue
   private readonly saltEntropy: ResourceEntropySource
   private readonly now: () => Date
+  private readonly physicalCleaner: TemporaryDatabasePhysicalCleaner
 
   constructor(
     private readonly dependencies: TemporaryDatabaseProvisionerDependencies,
@@ -71,6 +82,9 @@ export class TemporaryDatabaseProvisioner {
       dependencies.generatePassword ?? generatePreviewSecretValue
     this.saltEntropy = dependencies.saltEntropy ?? randomBytes
     this.now = dependencies.now ?? (() => new Date())
+    this.physicalCleaner =
+      dependencies.physicalCleaner ??
+      new PostgresTemporaryDatabasePhysicalCleaner(dependencies.tenantAdmin)
   }
 
   async provision(
@@ -89,8 +103,7 @@ export class TemporaryDatabaseProvisioner {
 
       const password = this.generatePassword()
       await this.dependencies.tenantAdmin.withSession(async (session) => {
-        const provisioningRole = await readProvisioningSessionIdentity(session)
-        await assertCreateroleSelfGrantPolicy(session)
+        const provisioningRole = await readProvisioningSessionPolicy(session)
         const iterations = await readScramIterations(session)
         const salt = this.saltEntropy(SCRAM_SALT_BYTES)
         if (!(salt instanceof Uint8Array) || salt.length !== SCRAM_SALT_BYTES) {
@@ -109,14 +122,19 @@ export class TemporaryDatabaseProvisioner {
         await session.query(
           `CREATE DATABASE ${objectName} WITH OWNER = ${objectName} TEMPLATE = template0 ENCODING = 'UTF8' ALLOW_CONNECTIONS = false`,
         )
-        await withRole(session, objectName, provisioningRole, async () => {
-          await session.query(
-            `REVOKE CONNECT, TEMPORARY ON DATABASE ${objectName} FROM PUBLIC`,
-          )
-          await session.query(
-            `ALTER DATABASE ${objectName} ALLOW_CONNECTIONS true`,
-          )
-        })
+        await withTemporaryDatabaseRole(
+          session,
+          objectName,
+          provisioningRole,
+          async () => {
+            await session.query(
+              `REVOKE CONNECT, TEMPORARY ON DATABASE ${objectName} FROM PUBLIC`,
+            )
+            await session.query(
+              `ALTER DATABASE ${objectName} ALLOW_CONNECTIONS true`,
+            )
+          },
+        )
       })
 
       await this.dependencies.ownershipStore.markProvisioned(
@@ -136,28 +154,21 @@ export class TemporaryDatabaseProvisioner {
 
   async revoke(resourceId: TemporaryDatabaseResourceId): Promise<void> {
     const validatedResourceId = validateTemporaryDatabaseResourceId(resourceId)
-    const objectName = deriveTemporaryDatabaseObjectName(validatedResourceId)
-    let dropRoleAttempted = false
-
     try {
       await this.dependencies.ownershipStore.markRevoking(
         validatedResourceId,
         this.now(),
       )
-      await this.dependencies.tenantAdmin.withSession(async (session) => {
-        const provisioningRole = await readProvisioningSessionIdentity(session)
-        await withRole(session, objectName, provisioningRole, async () => {
-          await session.query(`DROP DATABASE ${objectName} WITH (FORCE)`)
-        })
-        dropRoleAttempted = true
-        await session.query(`DROP ROLE ${objectName}`)
-      })
+      await this.physicalCleaner.cleanupFull(validatedResourceId)
       await this.dependencies.ownershipStore.markRevoked(
         validatedResourceId,
         this.now(),
       )
-    } catch {
-      if (dropRoleAttempted) {
+    } catch (error) {
+      if (
+        error instanceof TemporaryDatabasePhysicalCleanupError &&
+        error.databaseRemoved
+      ) {
         await this.dependencies.ownershipStore
           .markRevokeFailed(validatedResourceId, this.now())
           .catch(() => undefined)
@@ -188,77 +199,4 @@ async function readScramIterations(
     throw new Error("Tenant SCRAM iteration policy is invalid.")
   }
   return iterations
-}
-
-async function readProvisioningSessionIdentity(
-  session: TenantAdminSession,
-): Promise<string> {
-  const result = await session.query<{
-    session_user: string
-    current_user: string
-  }>("SELECT session_user AS session_user, current_user AS current_user")
-  const sessionUser = result.rows[0]?.session_user
-  const currentUser = result.rows[0]?.current_user
-  assertSafePostgresIdentifier(sessionUser)
-  assertSafePostgresIdentifier(currentUser)
-  if (sessionUser !== currentUser) {
-    throw new Error("Tenant administrative session identity is unsafe.")
-  }
-  return sessionUser
-}
-
-async function assertCreateroleSelfGrantPolicy(
-  session: TenantAdminSession,
-): Promise<void> {
-  const result = await session.query<{ createrole_self_grant: string }>(
-    "SHOW createrole_self_grant",
-  )
-  if (result.rows[0]?.createrole_self_grant !== "") {
-    throw new Error("Tenant role self-grant policy is unsafe.")
-  }
-}
-
-async function withRole<T>(
-  session: TenantAdminSession,
-  roleName: string,
-  expectedProvisioningRole: string,
-  operation: () => Promise<T>,
-): Promise<T> {
-  assertSafePostgresIdentifier(roleName)
-  assertSafePostgresIdentifier(expectedProvisioningRole)
-  await session.query(`SET ROLE ${roleName}`)
-  let outcome: { ok: true; value: T } | { ok: false; error: unknown }
-  try {
-    outcome = { ok: true, value: await operation() }
-  } catch (error) {
-    outcome = { ok: false, error }
-  }
-
-  try {
-    await session.query("RESET ROLE")
-  } catch {
-    session.discard()
-    throw new Error("Tenant administrative session could not reset role.")
-  }
-
-  try {
-    const restoredRole = await readProvisioningSessionIdentity(session)
-    if (restoredRole !== expectedProvisioningRole) {
-      throw new Error(
-        "Tenant administrative session identity was not restored.",
-      )
-    }
-  } catch {
-    session.discard()
-    throw new Error("Tenant administrative session identity is unproven.")
-  }
-
-  if (!outcome.ok) throw outcome.error
-  return outcome.value
-}
-
-function assertSafePostgresIdentifier(value: unknown): asserts value is string {
-  if (typeof value !== "string" || !SAFE_POSTGRES_IDENTIFIER.test(value)) {
-    throw new Error("PostgreSQL administrative identifier is unsafe.")
-  }
 }

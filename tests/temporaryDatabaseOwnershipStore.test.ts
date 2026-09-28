@@ -116,6 +116,41 @@ describe("PostgresTemporaryDatabaseOwnershipStore", () => {
     },
   )
 
+  it.each(["provisioning", "provisioned", "revoke_failed"] as const)(
+    "beginReconciliation atomically claims %s",
+    async (from) => {
+      const database = new ScriptedDatabase([rows([row("revoking")])])
+      const store = new PostgresTemporaryDatabaseOwnershipStore(database)
+
+      await expect(
+        store.beginReconciliation(resourceId, from, new Date(createdAt)),
+      ).resolves.toEqual(record("revoking"))
+
+      const query = database.queries[0]!
+      expect(query.text).toContain("WHERE resource_id = $1 AND status = $2")
+      expect(query.values).toEqual([
+        resourceId,
+        from,
+        "revoking",
+        new Date(createdAt),
+      ])
+    },
+  )
+
+  it("never permits revoked as a reconciliation source", async () => {
+    const database = new ScriptedDatabase([])
+    const store = new PostgresTemporaryDatabaseOwnershipStore(database)
+
+    await expect(
+      store.beginReconciliation(
+        resourceId,
+        "revoked" as "provisioning",
+        new Date(createdAt),
+      ),
+    ).rejects.toMatchObject({ code: "TRANSITION_REJECTED" })
+    expect(database.queries).toEqual([])
+  })
+
   it("fails closed when the expected current status or row is absent", async () => {
     const store = new PostgresTemporaryDatabaseOwnershipStore(
       new ScriptedDatabase([{ rows: [], rowCount: 0 }]),

@@ -46,7 +46,15 @@ export interface TemporaryDatabaseOwnershipStore {
     resourceId: TemporaryDatabaseResourceId,
     now: Date,
   ): Promise<TemporaryDatabaseRecord>
+  beginReconciliation(
+    resourceId: TemporaryDatabaseResourceId,
+    expectedStatus: TemporaryDatabaseReconciliationSourceStatus,
+    now: Date,
+  ): Promise<TemporaryDatabaseRecord>
 }
+
+export type TemporaryDatabaseReconciliationSourceStatus =
+  "provisioning" | "provisioned" | "revoke_failed"
 
 export interface TenantAdminSession {
   query<Row extends QueryResultRow = QueryResultRow>(
@@ -61,4 +69,54 @@ export interface TenantDatabaseAdmin {
   withSession<T>(
     operation: (session: TenantAdminSession) => Promise<T>,
   ): Promise<T>
+}
+
+export interface TenantPhysicalDatabase {
+  readonly name: string
+  readonly resourceId: TemporaryDatabaseResourceId | null
+  readonly ownerName: string
+  readonly allowsConnections: boolean
+}
+
+export interface TenantRoleMembership {
+  readonly admin: boolean
+  readonly set: boolean
+  readonly inherit: boolean
+  readonly unexpected: boolean
+}
+
+export interface TenantPhysicalRole {
+  readonly name: string
+  readonly resourceId: TemporaryDatabaseResourceId | null
+  readonly canLogin: boolean
+  readonly superuser: boolean
+  readonly createDatabase: boolean
+  readonly createRole: boolean
+  readonly replication: boolean
+  readonly bypassRls: boolean
+  readonly connectionLimit: number
+  readonly membership: TenantRoleMembership
+}
+
+export interface TenantPhysicalSnapshot {
+  readonly provisioningRole: string
+  readonly databases: readonly TenantPhysicalDatabase[]
+  readonly roles: readonly TenantPhysicalRole[]
+}
+
+export interface TenantResourcePresence {
+  readonly database: boolean
+  readonly role: boolean
+}
+
+export interface TemporaryDatabaseTenantCatalog {
+  snapshot(): Promise<TenantPhysicalSnapshot>
+  inspectResource(
+    resourceId: TemporaryDatabaseResourceId,
+  ): Promise<TenantResourcePresence>
+}
+
+export interface TemporaryDatabasePhysicalCleaner {
+  cleanupFull(resourceId: TemporaryDatabaseResourceId): Promise<void>
+  cleanupRoleOnly(resourceId: TemporaryDatabaseResourceId): Promise<void>
 }

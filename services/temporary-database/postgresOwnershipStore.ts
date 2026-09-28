@@ -13,6 +13,7 @@ import {
   TemporaryDatabaseOwnershipError,
   type CreateTemporaryDatabaseOwnership,
   type TemporaryDatabaseOwnershipStore,
+  type TemporaryDatabaseReconciliationSourceStatus,
 } from "./ports"
 
 interface TemporaryDatabaseRow extends QueryResultRow {
@@ -118,6 +119,21 @@ export class PostgresTemporaryDatabaseOwnershipStore implements TemporaryDatabas
     now: Date,
   ): Promise<TemporaryDatabaseRecord> {
     return this.transition(resourceId, "revoking", "revoke_failed", now)
+  }
+
+  beginReconciliation(
+    resourceId: TemporaryDatabaseResourceId,
+    expectedStatus: TemporaryDatabaseReconciliationSourceStatus,
+    now: Date,
+  ): Promise<TemporaryDatabaseRecord> {
+    if (
+      !["provisioning", "provisioned", "revoke_failed"].includes(expectedStatus)
+    ) {
+      return Promise.reject(
+        new TemporaryDatabaseOwnershipError("TRANSITION_REJECTED"),
+      )
+    }
+    return this.transition(resourceId, expectedStatus, "revoking", now)
   }
 
   private async transition(

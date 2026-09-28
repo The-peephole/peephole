@@ -1,15 +1,17 @@
 # Temporary PostgreSQL Previews (M11) — Design
 
-**Status: PARTIALLY IMPLEMENTED (M11-C2A in progress). Not deployed. Not
+**Status: PARTIALLY IMPLEMENTED (M11-C2B in progress). Not deployed. Not
 production-verified.**
 
 M11 (`docs/MVP_ROADMAP.md` stage 11, "temporary database support") remains
 `[ ]`. M11-C1's portable admission and ownership foundation is complete, and
-M11-C2A now implements durable ownership plus isolated PostgreSQL
-provision/revoke primitives and PostgreSQL 18 integration proof. These
-primitives are not wired into runtime execution. There is still no new network
-rule or second PostgreSQL cluster, and `services/production/server.ts` is
-unchanged. `BackendRuntimePlan.platformEnvironment` remains exactly
+M11-C2A implements durable ownership plus isolated PostgreSQL provision/revoke
+primitives and PostgreSQL 18 integration proof. M11-C2B adds the three-set
+tenant catalog and fail-closed reconciliation primitives, including startup
+`reapAll()` and age-bounded maintenance `reap()` semantics. These primitives
+are not wired into runtime execution. There is still no new network rule or
+second PostgreSQL cluster, and `services/production/server.ts` is unchanged.
+`BackendRuntimePlan.platformEnvironment` remains exactly
 `PORT`/`HOST`/`NODE_ENV`, and `PreviewGeneratedSecretName` remains exactly
 `JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`.
 
@@ -64,8 +66,8 @@ stays `[ ]` regardless of how many of these sub-stages complete.
 | M11-B | Design documentation (this document, D-033) | **COMPLETE** |
 | M11-C1 | Portable types / admission / ownership foundation | **COMPLETE** |
 | M11-C2 | PostgreSQL provisioning + durable ownership / reconciliation | **CURRENT** |
-| M11-C2A | Durable ownership + PostgreSQL provisioning foundation | **CURRENT — implementation PR** |
-| M11-C2B | Three-set reconciliation / reaper | NOT STARTED |
+| M11-C2A | Durable ownership + PostgreSQL provisioning foundation | **COMPLETE** |
+| M11-C2B | Three-set reconciliation / reaper | **CURRENT — three-set reconciliation PR** |
 | M11-C3 | Credential delivery + host-only sandbox network integration | NOT STARTED |
 | M11-C4 | Integrated FullStack lifecycle | NOT STARTED |
 | M11-D | Real Linux / real-gVisor verification | NOT STARTED |
@@ -74,10 +76,14 @@ stays `[ ]` regardless of how many of these sub-stages complete.
 M11-C1 added the portable representation, trusted FullStack admission, queue
 ownership identity, and resource-identity foundation. M11-C2A adds the durable
 ownership migration/store, SCRAM verifier, pinned-session provisioning, and
-normal revoke primitives, with real PostgreSQL 18 integration coverage. It is
-not wired into the runtime: database-requiring plans still fail closed in the
-worker with `DATABASE_UNAVAILABLE`. Reconciliation still awaits M11-C2B, and
-M11-C3/M11-C4 remain required before any database-requiring backend can run.
+normal revoke primitives, with real PostgreSQL 18 integration coverage.
+M11-C2B adds ownership-proven, audit-before-mutation reconciliation across the
+durable row, physical database, and physical role sets. It implements startup
+and maintenance policy while failing closed on unowned, malformed, or
+privilege-incompatible physical state. It is not wired into the runtime:
+database-requiring plans still fail closed in the worker with
+`DATABASE_UNAVAILABLE`. M11-C3/M11-C4 remain required before any
+database-requiring backend can run.
 
 **The production host's RAM is a documented future prerequisite, not
 something already done.** M11-A3 found the production host to be a tight

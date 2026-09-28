@@ -179,6 +179,7 @@ describe("TemporaryDatabaseProvisioner", () => {
     expect(harness.events).toEqual([
       "store:mark-revoking",
       "sql:read-session-identity",
+      "sql:show-createrole-self-grant",
       "sql:set-role",
       "sql:drop-database-force",
       "sql:reset-role",
@@ -202,6 +203,7 @@ describe("TemporaryDatabaseProvisioner", () => {
     expect(harness.events).toEqual([
       "store:mark-revoking",
       "sql:read-session-identity",
+      "sql:show-createrole-self-grant",
       "sql:set-role",
       "sql:drop-database-force",
       "sql:reset-role",
@@ -423,6 +425,20 @@ class FakeOwnershipStore implements TemporaryDatabaseOwnershipStore {
       "revoke_failed",
       at,
       "store:mark-revoke-failed",
+    )
+  }
+
+  beginReconciliation(
+    candidate: TemporaryDatabaseResourceId,
+    expectedStatus: "provisioning" | "provisioned" | "revoke_failed",
+    at: Date,
+  ) {
+    return this.transition(
+      candidate,
+      expectedStatus,
+      "revoking",
+      at,
+      "store:begin-reconciliation",
     )
   }
 
