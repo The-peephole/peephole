@@ -1022,6 +1022,66 @@ describe("RepositoryAnalysisView", () => {
     expect(renderBackendRuntimeControls).not.toHaveBeenCalled()
   })
 
+  it("does not offer standalone runtime controls for an exact FullStack-only database candidate", async () => {
+    const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
+      ...supportedAnalysis,
+      backend: {
+        status: "detected",
+        candidates: [
+          {
+            sourceRoot: "backend",
+            framework: "express",
+            runtime: "node",
+            packageName: "backend",
+            packageManager: "npm@10.0.0",
+            entrypoint: "src/server.js",
+            databaseDependencies: ["pg"],
+            environmentRequirements: [
+              {
+                name: "DATABASE_URL",
+                sourceRoot: "backend",
+                sourceTemplate: ".env.example",
+                exposure: "server",
+                requirementKind: "database-requirement",
+                sensitivity: "secret-like",
+                evidence: [],
+                warnings: [],
+              },
+            ],
+            packageLockPresent: true,
+            evidence: ["express and pg dependencies detected"],
+            warnings: [],
+          },
+        ],
+        evidence: ["1 backend candidate detected"],
+        warnings: [],
+        complete: true,
+        truncated: false,
+      },
+    })
+    const renderBackendRuntimeControls = vi.fn(() => (
+      <button type="button">Start backend</button>
+    ))
+    const container = await renderView(loader, roots, {
+      renderBackendRuntimeControls,
+    })
+
+    expect(container.textContent).toContain("Not supported yet")
+    expect(container.textContent).not.toContain(
+      "Supported (express-node-npm-v1)",
+    )
+    expect(container.textContent).not.toContain("Start backend")
+    expect(renderBackendRuntimeControls).not.toHaveBeenCalled()
+
+    const select = container.querySelector<HTMLSelectElement>(
+      'select[name="preview-target"]',
+    )
+    const options = Array.from(select?.options ?? []).map(
+      (option) => option.value,
+    )
+    expect(options).not.toContain("backend")
+  })
+
   it("never offers a backend candidate as a selectable or runnable preview target", async () => {
     const loader = vi.fn<RepositoryAnalysisLoader>().mockResolvedValue({
       ...supportedAnalysis,

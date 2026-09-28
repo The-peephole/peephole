@@ -1,5 +1,6 @@
 import type { PreviewRepositoryRef } from "./preview"
 import type { PreviewGeneratedSecretName } from "./backendRuntimeSecrets"
+import type { BackendRuntimeDatabaseRequirement } from "./backendRuntimeDatabase"
 
 /**
  * `backend-v1` is a fully separate execution contract from
@@ -46,6 +47,8 @@ export interface BackendRuntimePlan {
    * type. An empty array means no generated secrets are required.
    */
   generatedSecretNames: readonly PreviewGeneratedSecretName[]
+  /** Names-only temporary-database capability metadata, never a value. */
+  databaseRequirement: BackendRuntimeDatabaseRequirement | null
 }
 
 export type BackendRuntimeStatus =
@@ -65,6 +68,7 @@ export type BackendRuntimeErrorCode =
   | "UNSUPPORTED_BACKEND"
   | "INSTALL_FAILED"
   | "SECRET_UNAVAILABLE"
+  | "DATABASE_UNAVAILABLE"
   | "RUNTIME_START_FAILED"
   | "RUNTIME_READINESS_TIMEOUT"
   | "RUNTIME_EXITED"
@@ -114,6 +118,8 @@ export interface QueuedBackendRuntime {
   runtimeId: string
   repository: PreviewRepositoryRef
   plan: BackendRuntimePlan
+  /** Trusted FullStack preview identity; never accepted from a client. */
+  orchestrationKey: string | null
 }
 
 /**

@@ -34,6 +34,7 @@ const plan: BackendRuntimePlan = {
     NODE_ENV: "production",
   },
   generatedSecretNames: [],
+  databaseRequirement: null,
 }
 
 function compose(
@@ -122,6 +123,52 @@ describe("createBackendRuntimeHttpHandler", () => {
     expect(serialized).not.toContain("values")
   })
 
+  it("returns only the safe DATABASE_UNAVAILABLE code and message", async () => {
+    const { controlPlane, handle } = composeContext()
+    const created = await handle({
+      method: "POST",
+      path: "/v1/backend-runtimes",
+      headers: {},
+      body: { repository, contractVersion: "backend-v1" },
+      requester,
+    })
+    const id = (created.body as { runtime: { id: string } }).runtime.id
+    await controlPlane.fail(id, "DATABASE_UNAVAILABLE")
+
+    const response = await handle({
+      method: "GET",
+      path: `/v1/backend-runtimes/${id}`,
+      headers: {},
+      requester,
+    })
+
+    expect(response).toMatchObject({
+      status: 200,
+      body: {
+        errorCode: "DATABASE_UNAVAILABLE",
+        errorMessage:
+          "The backend runtime's temporary database is unavailable. Start a new preview.",
+      },
+    })
+    expect(response.body).not.toHaveProperty("host")
+    expect(response.body).not.toHaveProperty("port")
+
+    const serialized = JSON.stringify(response.body)
+    for (const forbidden of [
+      "DATABASE_URL",
+      "postgres://",
+      "password",
+      "credential",
+      "resourceId",
+      "resource_id",
+      "databaseHost",
+      "databasePort",
+      "SCRAM",
+    ]) {
+      expect(serialized.toLowerCase()).not.toContain(forbidden.toLowerCase())
+    }
+  })
+
   it("gets and cancels a runtime by id", async () => {
     const handle = compose()
     const created = await handle({
@@ -163,6 +210,30 @@ describe("createBackendRuntimeHttpHandler", () => {
 
     expect(response.status).toBe(400)
   })
+
+  it.each(["orchestrationKey", "databaseRequirement"])(
+    "rejects client injection of internal field %s",
+    async (field) => {
+      const handle = compose()
+
+      const response = await handle({
+        method: "POST",
+        path: "/v1/backend-runtimes",
+        headers: {},
+        body: {
+          repository,
+          contractVersion: "backend-v1",
+          [field]: field === "orchestrationKey" ? "fullstack-client" : null,
+        },
+        requester,
+      })
+
+      expect(response).toMatchObject({
+        status: 400,
+        body: { error: { code: "INVALID_REQUEST" } },
+      })
+    },
+  )
 
   it("returns 404 for an unknown route", async () => {
     const handle = compose()

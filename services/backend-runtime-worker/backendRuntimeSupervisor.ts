@@ -155,6 +155,17 @@ export class BackendRuntimeSupervisor {
           "Queued repository and backend runtime plan do not match.",
         )
       }
+      if (plan.databaseRequirement !== null) {
+        if (
+          queued.orchestrationKey === null ||
+          queued.orchestrationKey === undefined
+        ) {
+          throw new Error(
+            "A database runtime is missing its trusted orchestration identity.",
+          )
+        }
+        throw databaseUnavailableError()
+      }
       workspace = await this.sandbox.allocate(queued.runtimeId)
       signal.throwIfAborted()
       processHandle = await this.fetchInstallStart(
@@ -525,5 +536,12 @@ function secretUnavailableError(): RuntimePhaseError {
   return new RuntimePhaseError(
     "SECRET_UNAVAILABLE",
     new Error("Generated-secret material is unavailable."),
+  )
+}
+
+function databaseUnavailableError(): RuntimePhaseError {
+  return new RuntimePhaseError(
+    "DATABASE_UNAVAILABLE",
+    new Error("Temporary database provisioning is unavailable."),
   )
 }

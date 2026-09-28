@@ -8,6 +8,7 @@ import { BACKEND_RUNTIME_CONTRACT_VERSION } from "../../types/backendRuntime"
 import type { PreviewRepositoryRef } from "../../types/preview"
 import type { PreviewGeneratedSecretName } from "../../types/backendRuntimeSecrets"
 import type { EnvironmentRequirement } from "../../types/environment"
+import { BACKEND_RUNTIME_DATABASE_ENV_NAME } from "../../types/backendRuntimeDatabase"
 import { isEligiblePreviewGeneratedSecretName } from "../backendSecrets/generatedSecretPolicy"
 import { isSafePreviewSourceRoot } from "../preview/sourceRoot"
 import { isNpmBackendPackageManagerDeclaration } from "./backendPackageManager"
@@ -17,13 +18,15 @@ import { isNpmBackendPackageManagerDeclaration } from "./backendPackageManager"
  * DETECTION-TO-EXECUTION only for a very narrow shape -- see
  * `docs/PREVIEW_RUNTIME.md`. A candidate detected by M7
  * (`core/analyzer/backendDetector.ts`) with a *different* framework, a
- * database dependency, a missing lockfile, an unresolved entrypoint, or any
- * environment requirement outside fixed `PORT`/`HOST`/`NODE_ENV` or the
- * canonical server-only generated-secret policy is never supported here --
- * "Backend detected" and "Execution
- * supported" are always evaluated separately, and this function is the
- * single place that draws that line for both client-side display and
- * server-side authorization. It never trusts anything client-provided:
+ * unsupported database shape, a missing lockfile, an unresolved entrypoint,
+ * or any environment requirement outside fixed `PORT`/`HOST`/`NODE_ENV`, the
+ * canonical server-only generated-secret policy, and the exact names-only M11
+ * `pg` + `DATABASE_URL` capability is never eligible for a runtime plan --
+ * "Backend detected" and "Execution supported" are always evaluated
+ * separately. Server-side plan eligibility and current standalone-client
+ * execution support are separate decisions: the trusted FullStack path may
+ * resolve an exact database plan that the public standalone UI must not
+ * advertise as runnable. This module never trusts anything client-provided:
  * every caller must pass a `BackendCandidate` it independently derived
  * (client) or independently re-derived at the exact commit (server) --
  * this module has no knowledge of *how* the candidate was obtained.
@@ -38,10 +41,20 @@ const ONLY_ALLOWED_ENTRYPOINT_EXTENSIONS = new Set(["js", "mjs", "cjs"])
 export function resolveBackendExecutionSupport(
   candidate: BackendCandidate,
 ): BackendExecutionSupport {
-  const rejection = findUnsupportedReason(candidate)
+  const rejection = findUnsupportedPlanReason(candidate)
 
   if (rejection) {
     return { supported: false, adapterId: null, evidence: [rejection] }
+  }
+
+  if (candidate.databaseDependencies.length > 0) {
+    return {
+      supported: false,
+      adapterId: null,
+      evidence: [
+        "The pg + server-side DATABASE_URL backend shape is recognized, but temporary database execution requires trusted FullStack orchestration; standalone backend-v1 execution is not available.",
+      ],
+    }
   }
 
   return {
@@ -63,9 +76,9 @@ export function resolveBackendRuntimePlan(
   repository: PreviewRepositoryRef,
   candidate: BackendCandidate,
 ): BackendRuntimePlan | null {
-  if (findUnsupportedReason(candidate)) return null
+  if (findUnsupportedPlanReason(candidate)) return null
 
-  // findUnsupportedReason already proved these are non-null/safe.
+  // findUnsupportedPlanReason already proved these are non-null/safe.
   const entrypoint = candidate.entrypoint!
 
   const adapterId: BackendRuntimeAdapterId = "express-node-npm-v1"
@@ -95,10 +108,14 @@ export function resolveBackendRuntimePlan(
       NODE_ENV: "production",
     },
     generatedSecretNames,
+    databaseRequirement:
+      candidate.databaseDependencies.length === 1
+        ? { name: BACKEND_RUNTIME_DATABASE_ENV_NAME }
+        : null,
   }
 }
 
-function findUnsupportedReason(candidate: BackendCandidate): string | null {
+function findUnsupportedPlanReason(candidate: BackendCandidate): string | null {
   if (candidate.framework !== "express") {
     return `${candidate.framework} execution is not supported yet.`
   }
@@ -119,13 +136,29 @@ function findUnsupportedReason(candidate: BackendCandidate): string | null {
     return "A safe Node entrypoint could not be resolved."
   }
 
-  if (candidate.databaseDependencies.length > 0) {
-    return "Database dependencies are not supported until temporary database provisioning exists."
+  const databaseRequirements = candidate.environmentRequirements.filter(
+    (requirement) => requirement.requirementKind === "database-requirement",
+  )
+  const hasDatabaseDependency = candidate.databaseDependencies.length > 0
+  const hasDatabaseRequirement = databaseRequirements.length > 0
+
+  if (hasDatabaseDependency || hasDatabaseRequirement) {
+    const exactDatabaseShape =
+      candidate.databaseDependencies.length === 1 &&
+      candidate.databaseDependencies[0] === "pg" &&
+      databaseRequirements.length === 1 &&
+      databaseRequirements[0]?.name === BACKEND_RUNTIME_DATABASE_ENV_NAME &&
+      databaseRequirements[0]?.exposure === "server"
+
+    if (!exactDatabaseShape) {
+      return "The database dependency and requirement shape is not supported."
+    }
   }
 
   const unsupportedRequirement = candidate.environmentRequirements.find(
     (requirement) =>
-      requirement.requirementKind !== "auto-configurable" &&
+      !isSupportedPlatformRequirement(requirement) &&
+      requirement.requirementKind !== "database-requirement" &&
       !isSupportedGeneratedSecretRequirement(requirement),
   )
   if (unsupportedRequirement) {
@@ -133,6 +166,15 @@ function findUnsupportedReason(candidate: BackendCandidate): string | null {
   }
 
   return null
+}
+
+function isSupportedPlatformRequirement(
+  requirement: EnvironmentRequirement,
+): boolean {
+  return (
+    requirement.requirementKind === "auto-configurable" &&
+    ["PORT", "HOST", "NODE_ENV"].includes(requirement.name)
+  )
 }
 
 function isSupportedGeneratedSecretRequirement(

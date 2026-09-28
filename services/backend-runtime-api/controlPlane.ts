@@ -48,6 +48,8 @@ const SAFE_ERROR_MESSAGES: Record<BackendRuntimeErrorCode, string> = {
   INSTALL_FAILED: "Backend dependencies could not be installed.",
   SECRET_UNAVAILABLE:
     "The backend runtime's secret material is no longer available. Start a new preview.",
+  DATABASE_UNAVAILABLE:
+    "The backend runtime's temporary database is unavailable. Start a new preview.",
   RUNTIME_START_FAILED: "The backend process could not be started.",
   RUNTIME_READINESS_TIMEOUT: "The backend did not become ready in time.",
   RUNTIME_EXITED: "The backend process exited unexpectedly.",
@@ -177,6 +179,16 @@ export class BackendRuntimeControlPlane {
         422,
       )
     }
+    if (
+      resolvedPlan.databaseRequirement !== null &&
+      orchestrationKey === null
+    ) {
+      throw new BackendRuntimeControlError(
+        "UNSUPPORTED_BACKEND",
+        "This backend does not satisfy the backend-v1 contract.",
+        422,
+      )
+    }
     // Preserve standalone backend-v1 behavior. The trusted orchestration
     // boundary adds its own independent validation before accepting a plan.
     const plan = orchestrationKey
@@ -210,6 +222,7 @@ export class BackendRuntimeControlPlane {
         runtimeId: created.id,
         repository: created.repository,
         plan: created.plan,
+        orchestrationKey: created.orchestrationKey,
       })
     } catch {
       const failed = await this.fail(created.id, "RUNTIME_UNAVAILABLE")

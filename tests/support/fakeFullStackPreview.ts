@@ -42,6 +42,7 @@ export const validBackendPlan: BackendRuntimePlan = {
     NODE_ENV: "production",
   },
   generatedSecretNames: [],
+  databaseRequirement: null,
 }
 
 const ACTIVE = new Set([

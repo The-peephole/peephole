@@ -1,6 +1,7 @@
 import { BACKEND_RUNTIME_CONTRACT_VERSION } from "../../types/backendRuntime"
 import type { BackendRuntimePlan } from "../../types/backendRuntime"
 import { PREVIEW_GENERATED_SECRET_NAMES } from "../../types/backendRuntimeSecrets"
+import { BACKEND_RUNTIME_DATABASE_ENV_NAME } from "../../types/backendRuntimeDatabase"
 import { isEligiblePreviewGeneratedSecretName } from "../backendSecrets/generatedSecretPolicy"
 import { validateRepositoryRef } from "./buildPlan"
 import { isSafePreviewSourceRoot } from "./sourceRoot"
@@ -110,8 +111,27 @@ export function validateBackendRuntimePlan(
 
   validatePlatformEnvironment(value.platformEnvironment, value.internalPort)
   validateGeneratedSecretNames(value.generatedSecretNames)
+  validateDatabaseRequirement(value.databaseRequirement)
 
   return value
+}
+
+function validateDatabaseRequirement(
+  value: BackendRuntimePlan["databaseRequirement"],
+): void {
+  if (value === null) return
+
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 1 ||
+    value.name !== BACKEND_RUNTIME_DATABASE_ENV_NAME
+  ) {
+    throw new InvalidBackendRuntimePlanError(
+      "Backend runtime database requirement must be null or the exact names-only DATABASE_URL contract.",
+    )
+  }
 }
 
 function validateGeneratedSecretNames(
