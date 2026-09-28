@@ -89,6 +89,8 @@ export class TemporaryDatabaseProvisioner {
 
       const password = this.generatePassword()
       await this.dependencies.tenantAdmin.withSession(async (session) => {
+        const provisioningRole = await readProvisioningSessionIdentity(session)
+        await assertCreateroleSelfGrantPolicy(session)
         const iterations = await readScramIterations(session)
         const salt = this.saltEntropy(SCRAM_SALT_BYTES)
         if (!(salt instanceof Uint8Array) || salt.length !== SCRAM_SALT_BYTES) {
@@ -101,14 +103,13 @@ export class TemporaryDatabaseProvisioner {
         )
 
         await session.query(createRoleSql(objectName, verifier))
-        const provisioningRole = await readProvisioningRole(session)
         await session.query(
           `GRANT ${objectName} TO ${provisioningRole} WITH SET TRUE, INHERIT FALSE`,
         )
         await session.query(
           `CREATE DATABASE ${objectName} WITH OWNER = ${objectName} TEMPLATE = template0 ENCODING = 'UTF8' ALLOW_CONNECTIONS = false`,
         )
-        await withRole(session, objectName, async () => {
+        await withRole(session, objectName, provisioningRole, async () => {
           await session.query(
             `REVOKE CONNECT, TEMPORARY ON DATABASE ${objectName} FROM PUBLIC`,
           )
@@ -144,7 +145,8 @@ export class TemporaryDatabaseProvisioner {
         this.now(),
       )
       await this.dependencies.tenantAdmin.withSession(async (session) => {
-        await withRole(session, objectName, async () => {
+        const provisioningRole = await readProvisioningSessionIdentity(session)
+        await withRole(session, objectName, provisioningRole, async () => {
           await session.query(`DROP DATABASE ${objectName} WITH (FORCE)`)
         })
         dropRoleAttempted = true
@@ -188,23 +190,42 @@ async function readScramIterations(
   return iterations
 }
 
-async function readProvisioningRole(
+async function readProvisioningSessionIdentity(
   session: TenantAdminSession,
 ): Promise<string> {
-  const result = await session.query<{ provisioning_role: string }>(
-    "SELECT current_user AS provisioning_role",
+  const result = await session.query<{
+    session_user: string
+    current_user: string
+  }>("SELECT session_user AS session_user, current_user AS current_user")
+  const sessionUser = result.rows[0]?.session_user
+  const currentUser = result.rows[0]?.current_user
+  assertSafePostgresIdentifier(sessionUser)
+  assertSafePostgresIdentifier(currentUser)
+  if (sessionUser !== currentUser) {
+    throw new Error("Tenant administrative session identity is unsafe.")
+  }
+  return sessionUser
+}
+
+async function assertCreateroleSelfGrantPolicy(
+  session: TenantAdminSession,
+): Promise<void> {
+  const result = await session.query<{ createrole_self_grant: string }>(
+    "SHOW createrole_self_grant",
   )
-  const role = result.rows[0]?.provisioning_role
-  assertSafePostgresIdentifier(role)
-  return role
+  if (result.rows[0]?.createrole_self_grant !== "") {
+    throw new Error("Tenant role self-grant policy is unsafe.")
+  }
 }
 
 async function withRole<T>(
   session: TenantAdminSession,
   roleName: string,
+  expectedProvisioningRole: string,
   operation: () => Promise<T>,
 ): Promise<T> {
   assertSafePostgresIdentifier(roleName)
+  assertSafePostgresIdentifier(expectedProvisioningRole)
   await session.query(`SET ROLE ${roleName}`)
   let outcome: { ok: true; value: T } | { ok: false; error: unknown }
   try {
@@ -218,6 +239,18 @@ async function withRole<T>(
   } catch {
     session.discard()
     throw new Error("Tenant administrative session could not reset role.")
+  }
+
+  try {
+    const restoredRole = await readProvisioningSessionIdentity(session)
+    if (restoredRole !== expectedProvisioningRole) {
+      throw new Error(
+        "Tenant administrative session identity was not restored.",
+      )
+    }
+  } catch {
+    session.discard()
+    throw new Error("Tenant administrative session identity is unproven.")
   }
 
   if (!outcome.ok) throw outcome.error

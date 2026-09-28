@@ -1,35 +1,30 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync, readFileSync } from "node:fs"
-import { parseEnv } from "node:util"
 import { Pool } from "pg"
 import { readPostgresConfig } from "../services/preview-api/postgres/config"
 
-// Uses a disposable schema, never the application's existing tables or queue.
-const local = existsSync(".env.local")
-  ? parseEnv(readFileSync(".env.local", "utf8"))
-  : {}
-const connectionString =
-  process.env.PEEPHOLE_POSTGRES_TEST_URL ??
-  process.env.PEEPHOLE_DATABASE_URL ??
-  local.PEEPHOLE_DATABASE_URL
-const environment = {
-  ...local,
-  ...process.env,
-  PEEPHOLE_DATABASE_URL: connectionString,
-}
-const schema = `peephole_test_${randomUUID().replaceAll("-", "")}`
+const connectionString = process.env.PEEPHOLE_POSTGRES_TEST_URL
+const clusterGlobalAllowed =
+  process.env.PEEPHOLE_POSTGRES_ALLOW_CLUSTER_GLOBAL === "1"
 
-async function main() {
+async function main(explicitTestUrl: string) {
+  // Control-plane tables remain isolated in this disposable schema. The M11
+  // suite also creates uniquely named cluster-global ROLE/DATABASE objects,
+  // which are allowed only on an explicitly opted-in disposable test cluster.
+  const schema = `peephole_test_${randomUUID().replaceAll("-", "")}`
+  const environment = {
+    ...process.env,
+    PEEPHOLE_DATABASE_URL: explicitTestUrl,
+  }
   const database = new Pool(readPostgresConfig(environment).pool)
   let created = false
   try {
     await database.query(`CREATE SCHEMA "${schema}"`)
     created = true
-    const url = new URL(connectionString!)
+    const url = new URL(explicitTestUrl)
     url.searchParams.set("options", `-c search_path=${schema}`)
     console.log(
-      "Running PostgreSQL integration tests in an isolated disposable schema.",
+      "Running PostgreSQL integration tests on an explicitly opted-in disposable cluster with an isolated control-plane schema.",
     )
     process.exitCode = await new Promise<number>((resolve, reject) => {
       const child = spawn(
@@ -61,9 +56,16 @@ async function main() {
   }
 }
 
-main().catch(() => {
+if (!connectionString || !clusterGlobalAllowed) {
   console.error(
-    "PostgreSQL integration setup or cleanup failed. Check database connectivity and schema permissions.",
+    "PostgreSQL integration tests create disposable cluster-global roles and databases. Set an explicit PEEPHOLE_POSTGRES_TEST_URL and PEEPHOLE_POSTGRES_ALLOW_CLUSTER_GLOBAL=1 for a dedicated test cluster.",
   )
   process.exitCode = 1
-})
+} else {
+  void main(connectionString).catch(() => {
+    console.error(
+      "PostgreSQL integration setup or cleanup failed. Check dedicated test-cluster connectivity and permissions.",
+    )
+    process.exitCode = 1
+  })
+}

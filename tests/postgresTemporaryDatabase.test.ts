@@ -23,7 +23,12 @@ import type { TemporaryDatabaseCredentialMaterial } from "../types/temporaryData
 import type { SqlResult } from "../services/preview-api/postgres/database"
 
 const connectionString = process.env.PEEPHOLE_POSTGRES_TEST_URL
-const describeWithPostgres = connectionString ? describe : describe.skip
+const clusterGlobalAllowed =
+  process.env.PEEPHOLE_POSTGRES_ALLOW_CLUSTER_GLOBAL === "1"
+// This suite creates disposable PostgreSQL ROLE/DATABASE objects, so direct
+// execution requires both a dedicated test URL and explicit cluster opt-in.
+const describeWithPostgres =
+  connectionString && clusterGlobalAllowed ? describe : describe.skip
 
 /**
  * This disposable test uses one PostgreSQL service for both schemas and
@@ -245,6 +250,12 @@ describeWithPostgres("PostgreSQL 18 temporary database provisioning", () => {
       rolbypassrls: false,
     })
 
+    await expect(readProvisionerSessionPolicy(tenantAdmin)).resolves.toEqual({
+      sessionUser: provisioningRole,
+      currentUser: provisioningRole,
+      createroleSelfGrant: "",
+    })
+
     firstMaterial = await provisioner.provision({
       previewId: firstPreviewId,
       backendRuntimeId: firstBackendRuntimeId,
@@ -253,6 +264,7 @@ describeWithPostgres("PostgreSQL 18 temporary database provisioning", () => {
       previewId: secondPreviewId,
       backendRuntimeId: secondBackendRuntimeId,
     })
+    await expectProvisionerSessionIdentity(tenantAdmin, provisioningRole)
 
     const firstAttributes = await superuserPool.query<RoleAttributes>(
       `${ROLE_ATTRIBUTES_SQL} WHERE rolname = $1`,
@@ -409,6 +421,7 @@ describeWithPostgres("PostgreSQL 18 temporary database provisioning", () => {
     expect((await store.getByResourceId(secondResourceId))?.status).toBe(
       "revoked",
     )
+    await expectProvisionerSessionIdentity(tenantAdmin, provisioningRole)
   })
 })
 
@@ -510,6 +523,38 @@ async function connectAs(
     await client.end().catch(() => undefined)
     throw error
   }
+}
+
+async function readProvisionerSessionPolicy(
+  admin: TenantDatabaseAdmin,
+): Promise<{
+  sessionUser: string
+  currentUser: string
+  createroleSelfGrant: string
+}> {
+  return admin.withSession(async (session) => {
+    const identity = await session.query<{
+      session_user: string
+      current_user: string
+    }>("SELECT session_user AS session_user, current_user AS current_user")
+    const policy = await session.query<{ createrole_self_grant: string }>(
+      "SHOW createrole_self_grant",
+    )
+    return {
+      sessionUser: identity.rows[0]!.session_user,
+      currentUser: identity.rows[0]!.current_user,
+      createroleSelfGrant: policy.rows[0]!.createrole_self_grant,
+    }
+  })
+}
+
+async function expectProvisionerSessionIdentity(
+  admin: TenantDatabaseAdmin,
+  expectedRole: string,
+): Promise<void> {
+  const policy = await readProvisionerSessionPolicy(admin)
+  expect(policy.sessionUser).toBe(expectedRole)
+  expect(policy.currentUser).toBe(expectedRole)
 }
 
 function assertSecretsAbsentFromSql(sql: string, secrets: string[]): void {

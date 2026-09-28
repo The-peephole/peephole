@@ -42,15 +42,17 @@ describe("TemporaryDatabaseProvisioner", () => {
 
     expect(harness.events).toEqual([
       "store:create:provisioning",
+      "sql:read-session-identity",
+      "sql:show-createrole-self-grant",
       "sql:show-scram-iterations",
       "sql:create-role",
-      "sql:read-current-user",
       "sql:grant-set",
       "sql:create-database-disabled",
       "sql:set-role",
       "sql:revoke-public",
       "sql:enable-database",
       "sql:reset-role",
+      "sql:read-session-identity",
       "store:mark-provisioned",
     ])
     expect(material).toMatchObject({
@@ -67,6 +69,50 @@ describe("TemporaryDatabaseProvisioner", () => {
     expect(harness.admin.queries).not.toContain("BEGIN")
     expect(harness.admin.discarded).toBe(false)
   })
+
+  it("fails before CREATE ROLE when the initial session identity is not authenticated identity", async () => {
+    const harness = compose({ currentUser: "ambient_role" })
+
+    await expect(
+      harness.provisioner.provision({
+        previewId: "fullstack-preview-1",
+        backendRuntimeId: "backend-runtime-1",
+      }),
+    ).rejects.toBeInstanceOf(TemporaryDatabaseProvisioningError)
+
+    expect(harness.store.record?.status).toBe("provisioning")
+    expect(harness.events).toEqual([
+      "store:create:provisioning",
+      "sql:read-session-identity",
+    ])
+    expect(
+      harness.admin.queries.some((sql) => sql.startsWith("CREATE ROLE")),
+    ).toBe(false)
+  })
+
+  it.each(["inherit", "set", "set, inherit"])(
+    "fails before CREATE ROLE when createrole_self_grant is %s",
+    async (createroleSelfGrant) => {
+      const harness = compose({ createroleSelfGrant })
+
+      await expect(
+        harness.provisioner.provision({
+          previewId: "fullstack-preview-1",
+          backendRuntimeId: "backend-runtime-1",
+        }),
+      ).rejects.toBeInstanceOf(TemporaryDatabaseProvisioningError)
+
+      expect(harness.store.record?.status).toBe("provisioning")
+      expect(harness.events).toEqual([
+        "store:create:provisioning",
+        "sql:read-session-identity",
+        "sql:show-createrole-self-grant",
+      ])
+      expect(
+        harness.admin.queries.some((sql) => sql.startsWith("CREATE ROLE")),
+      ).toBe(false)
+    },
+  )
 
   it.each([
     "CREATE ROLE",
@@ -109,6 +155,22 @@ describe("TemporaryDatabaseProvisioner", () => {
     expect(harness.store.record?.status).toBe("provisioning")
   })
 
+  it("discards a session whose identity is wrong after RESET ROLE", async () => {
+    const harness = compose({ postResetCurrentUser: "ambient_role" })
+
+    await expect(
+      harness.provisioner.provision({
+        previewId: "fullstack-preview-1",
+        backendRuntimeId: "backend-runtime-1",
+      }),
+    ).rejects.toBeInstanceOf(TemporaryDatabaseProvisioningError)
+
+    expect(harness.events).toContain("sql:reset-role")
+    expect(harness.events.at(-1)).toBe("sql:read-session-identity")
+    expect(harness.admin.discarded).toBe(true)
+    expect(harness.store.record?.status).toBe("provisioning")
+  })
+
   it("revokes in the exact role-bounded order", async () => {
     const harness = compose({ initialStatus: "provisioned" })
 
@@ -116,9 +178,11 @@ describe("TemporaryDatabaseProvisioner", () => {
 
     expect(harness.events).toEqual([
       "store:mark-revoking",
+      "sql:read-session-identity",
       "sql:set-role",
       "sql:drop-database-force",
       "sql:reset-role",
+      "sql:read-session-identity",
       "sql:drop-role",
       "store:mark-revoked",
     ])
@@ -137,9 +201,11 @@ describe("TemporaryDatabaseProvisioner", () => {
 
     expect(harness.events).toEqual([
       "store:mark-revoking",
+      "sql:read-session-identity",
       "sql:set-role",
       "sql:drop-database-force",
       "sql:reset-role",
+      "sql:read-session-identity",
       "sql:drop-role",
       "store:mark-revoke-failed",
     ])
@@ -196,11 +262,15 @@ function compose(
   options: {
     failOn?: string
     initialStatus?: TemporaryDatabaseStatus
+    sessionUser?: string
+    currentUser?: string
+    createroleSelfGrant?: string
+    postResetCurrentUser?: string
   } = {},
 ) {
   const events: string[] = []
   const store = new FakeOwnershipStore(events, options.initialStatus)
-  const admin = new FakeTenantAdmin(events, options.failOn)
+  const admin = new FakeTenantAdmin(events, options)
   const provisioner = new TemporaryDatabaseProvisioner({
     ownershipStore: store,
     tenantAdmin: admin,
@@ -215,10 +285,17 @@ function compose(
 class FakeTenantAdmin implements TenantDatabaseAdmin, TenantAdminSession {
   readonly queries: string[] = []
   discarded = false
+  private resetCompleted = false
 
   constructor(
     private readonly events: string[],
-    private readonly failOn?: string,
+    private readonly options: {
+      failOn?: string
+      sessionUser?: string
+      currentUser?: string
+      createroleSelfGrant?: string
+      postResetCurrentUser?: string
+    },
   ) {}
 
   async withSession<T>(
@@ -232,16 +309,32 @@ class FakeTenantAdmin implements TenantDatabaseAdmin, TenantAdminSession {
   ): Promise<SqlResult<Row>> {
     this.queries.push(text)
     this.events.push(`sql:${sqlEvent(text)}`)
-    if (this.failOn && text.includes(this.failOn)) {
+    if (this.options.failOn && text.includes(this.options.failOn)) {
       throw new Error("Injected tenant SQL failure.")
+    }
+    if (text === "RESET ROLE") this.resetCompleted = true
+    if (
+      text ===
+      "SELECT session_user AS session_user, current_user AS current_user"
+    ) {
+      const sessionUser = this.options.sessionUser ?? "peephole_provisioner"
+      const currentUser =
+        this.resetCompleted && this.options.postResetCurrentUser
+          ? this.options.postResetCurrentUser
+          : (this.options.currentUser ?? sessionUser)
+      return result([
+        { session_user: sessionUser, current_user: currentUser },
+      ] as unknown as Row[])
+    }
+    if (text === "SHOW createrole_self_grant") {
+      return result([
+        {
+          createrole_self_grant: this.options.createroleSelfGrant ?? "",
+        },
+      ] as unknown as Row[])
     }
     if (text === "SHOW scram_iterations") {
       return result([{ scram_iterations: "4096" }] as unknown as Row[])
-    }
-    if (text === "SELECT current_user AS provisioning_role") {
-      return result([
-        { provisioning_role: "peephole_provisioner" },
-      ] as unknown as Row[])
     }
     return result([])
   }
@@ -369,9 +462,12 @@ function makeRecord(status: TemporaryDatabaseStatus): TemporaryDatabaseRecord {
 }
 
 function sqlEvent(sql: string): string {
+  if (sql.startsWith("SELECT session_user")) return "read-session-identity"
+  if (sql === "SHOW createrole_self_grant") {
+    return "show-createrole-self-grant"
+  }
   if (sql === "SHOW scram_iterations") return "show-scram-iterations"
   if (sql.startsWith("CREATE ROLE")) return "create-role"
-  if (sql.startsWith("SELECT current_user")) return "read-current-user"
   if (sql.startsWith("GRANT ")) return "grant-set"
   if (sql.startsWith("CREATE DATABASE")) return "create-database-disabled"
   if (sql.startsWith("SET ROLE")) return "set-role"
