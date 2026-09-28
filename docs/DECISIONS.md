@@ -666,8 +666,11 @@ for this stage's persistence, but is unrelated to and must never be confused
 with future *repository* database provisioning). Frontend-to-backend
 routing was implemented and production-verified later, as its own separate
 `fullstack-v1` contract -- see D-031; this `backend-v1` resource itself
-still never gains a URL. Env/secret provisioning and application databases
-remain unimplemented.
+still never gains a URL. Ephemeral *generated* secret provisioning, narrowly
+restricted to `JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`,
+was also implemented and production-verified later -- see D-032; arbitrary
+or user-supplied secret/env provisioning and application databases remain
+unimplemented.
 
 **Known limitations, disclosed rather than worked around:** persistence
 remains in-memory only (`InMemoryBackendRuntimeStore`/
@@ -897,16 +900,20 @@ independently derived the `SESSION_SECRET` requirement from the pinned
 commit. `/api/secret-check` returned `configured: true` with only a SHA-256
 digest, never the raw value. The fixture's deliberate
 `PEEPHOLE_M10_SECRET_LOG_PROBE:<value>` stdout probe produced zero matches in
-the `peephole` systemd journal. Normal `DELETE` cleanup passed. The
-`peephole` service's main PID was then deliberately `SIGKILL`ed
-(`systemctl kill --kill-who=main`); systemd's existing `Restart=on-failure`
-recovered it within seconds. After recovery, the stale generated-secret
+the `peephole` systemd journal. Normal `DELETE` cleanup passed against that
+preview. A fresh M10 FullStack preview was then created and left in the
+`ready` state, and, separately, the `peephole` service's main PID was
+deliberately `SIGKILL`ed (`systemctl kill --kill-who=main` -- not a graceful
+stop, and not a test of the trusted bootstrap's `SIGTERM` forwarding, which
+is verified separately through the real-gVisor harness's normal `stop()`
+path above); systemd's existing `Restart=on-failure` recovered it within
+seconds. After recovery, the stale generated-secret
 tmpfs runtime directory, the orphaned runsc container, and the orphaned
 network/disk state were all reconciled by the existing startup reapers with
-zero residue; the durable FullStack parent record failed closed
-(`ORCHESTRATION_UNAVAILABLE`) rather than silently reconstructing the lost
-process-local backend coordinates or secrets; and the old backend's public
-route returned `404`. The immediate post-crash host smoke reported two
+zero residue; the fresh preview's durable FullStack parent record, `ready`
+before the crash, came back `failed`/`ORCHESTRATION_UNAVAILABLE` after
+restart rather than silently reconstructing the lost process-local backend
+coordinates or secrets; and its old backend public route returned `404`. The immediate post-crash host smoke reported two
 expected worker-loop error log lines dated exactly at the intentional
 `SIGKILL` boundary (no secret-bearing content); once those aged past the
 smoke tool's unchanged default 15-minute journal window, the identical,

@@ -40,11 +40,23 @@ The production runner accepts only:
    `package-lock.json`, `npm ci`, a `build` script, and a deterministic static
    output directory.
 
-The analyzer recognizes more evidence than the worker can execute. Vue/Svelte
-Vite, pnpm/yarn/bun, monorepos, backends, persistent servers, secrets, and
-databases remain non-runnable. Repository homepage metadata and a confirmed
-GitHub deployment are both shown as external links opened in a new tab; there
-is no embedded deployed-site iframe.
+The analyzer recognizes more evidence than the worker can execute. For this
+static Build Preview contract specifically, Vue/Svelte Vite, pnpm/yarn/bun,
+monorepos, and arbitrary backends/persistent servers remain non-runnable.
+Repository homepage metadata and a confirmed GitHub deployment are both shown
+as external links opened in a new tab; there is no embedded deployed-site
+iframe.
+
+Separately from the static Build Preview contract above, a narrow,
+server-side-only `backend-v1`/`fullstack-v1` contract exists and is
+production-verified (M9): exactly one backend shape
+(`express-node-npm-v1`) paired with its frontend, with no extension UI
+exposure. Within that same narrow contract, M10 adds server-*generated*
+secrets restricted to exactly four canonical names
+(`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`),
+production-verified in M10-C4B -- see stages 9-10 below and
+docs/EPHEMERAL_SECRETS.md. Arbitrary backends, arbitrary or user-supplied
+secrets, and temporary databases (stage 11) remain unsupported.
 
 ## Completed Foundation Milestones
 

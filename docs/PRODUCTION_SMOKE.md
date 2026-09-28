@@ -383,14 +383,19 @@ exercised directly against production (SHA
   before and after the run.
 - **Normal cleanup**: `DELETE`-ing the preview through the normal API path
   completed and left zero residue.
-- **Intentional crash recovery**: with authorization, only the Peephole
-  service's systemd `MainPID` was sent `SIGKILL` (not the fixture, not a
-  graceful stop). systemd's existing `Restart=on-failure` (`RestartUSec=5s`)
-  brought the service back automatically; generated-secret, runsc, network
-  namespace, and disk state all reconciled to zero residue on startup; a
-  durable-parent preview attempted during the outage failed closed
-  (`ORCHESTRATION_UNAVAILABLE`, no partial state created); and the old
-  preview's route returned 404 afterward. PASS.
+- **Intentional crash recovery**: with a fresh M10 FullStack preview left in
+  the `ready` state, and with authorization, only the Peephole service's
+  systemd `MainPID` was sent `SIGKILL` (not the fixture, not a graceful
+  stop -- this does not exercise the trusted bootstrap's `SIGTERM` forwarding
+  path; that is verified separately, through the real-gVisor harness's normal
+  `stop()` path, see docs/EPHEMERAL_SECRETS.md). systemd's existing
+  `Restart=on-failure` (`RestartUSec=5s`) brought the service back
+  automatically; generated-secret, runsc, network namespace, and disk state
+  all reconciled to zero residue on startup; the durable FullStack parent
+  that had been `ready` came back `failed`/`ORCHESTRATION_UNAVAILABLE` after
+  restart/reconciliation, with process-local backend coordinates and secrets
+  never reconstructed; and its old backend route returned 404 afterward.
+  PASS.
 - **Production host smoke -- first run (BLOCKED, expected)**: run immediately
   after the `SIGKILL`/recovery test above, still inside
   `npm run smoke:production:host`'s unmodified default 15-minute log lookback

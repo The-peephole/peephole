@@ -14,11 +14,17 @@ real production FullStack preview was created against the pinned M10 fixture
 (`The-peephole/peephole-fixture-fullstack@e10b08153e49d94a05931820c5325892754db246`),
 independently derived `SESSION_SECRET` server-side from the pinned commit,
 proved `/api/secret-check` returns only a SHA-256 digest, produced zero
-journal hits for the fixture's deliberate raw-value stdout probe, and survived
-an intentional `peephole` main-process `SIGKILL` with full systemd recovery,
-generated-secret/runsc/network/disk reconciliation, fail-closed durable-parent
-behavior, and old-route revocation -- see D-032 for the full record. D-032 is
-Accepted and `docs/MVP_ROADMAP.md` stage 10 is checked complete.
+journal hits for the fixture's deliberate raw-value stdout probe, and normal
+`DELETE` cleanup passed. Separately, with a fresh preview from the same
+fixture left `ready`, an intentional `peephole` main-process `SIGKILL` (not a
+graceful stop, not a `SIGTERM`-forwarding test -- that is verified through
+the harness's normal `stop()` path above) was followed by full systemd
+recovery, generated-secret/runsc/network/disk reconciliation to zero residue,
+the `ready` durable-parent record coming back
+`failed`/`ORCHESTRATION_UNAVAILABLE` without reconstructing lost
+coordinates/secrets, and old-route revocation -- see D-032 for the full
+record. D-032 is Accepted and `docs/MVP_ROADMAP.md` stage 10 is checked
+complete.
 
 This never relaxes `SECRET_ENV_REQUIRED`/`BACKEND_REQUIRED` for the static
 `static-v1`/`static-v2` contract, never starts M11 (temporary database
@@ -666,12 +672,14 @@ SHA-256 digest only, and a full journal scan for the fixture's deliberate
 `PEEPHOLE_M10_SECRET_LOG_PROBE:<value>` marker found zero occurrences both
 before and after the run. Normal `DELETE` cleanup was verified, and,
 separately, the Peephole service's systemd `MainPID` was intentionally
-`SIGKILL`ed to exercise crash recovery: systemd's existing
-`Restart=on-failure` brought the service back automatically, generated
-secrets/runsc sandboxes/network namespaces/disk state fully reconciled to
-zero residue, a durable-parent preview attempted during the outage failed
-closed (`ORCHESTRATION_UNAVAILABLE`, no partial state), the old preview's
-route returned 404 afterward, and the final production host smoke
+`SIGKILL`ed, with the M10 FullStack preview above still `ready`, to exercise
+crash recovery: systemd's existing `Restart=on-failure` brought the service
+back automatically, generated secrets/runsc sandboxes/network namespaces/disk
+state fully reconciled to zero residue, the durable FullStack parent that had
+been `ready` came back `failed`/`ORCHESTRATION_UNAVAILABLE` after
+restart/reconciliation without process-local backend coordinates or secrets
+ever being reconstructed, its old backend route returned 404 afterward, and
+the final production host smoke
 (`npm run smoke:production:host`) passed completely -- after an initial
 run inside the smoke tool's unmodified default 15-minute lookback window
 correctly reported `BLOCKED` on two expected worker-error lines produced by
@@ -706,11 +714,16 @@ unchanged. This is covered by new portable regression tests
 the signal choice and the bounded-wait behavior; the real-host secret test
 above is the first scenario that actually depends on a caught, forwarded
 signal reaching a child process. M10-C4B exercised this fix against real
-runsc twice: once as part of the real-gVisor suite's normal `stop()` path,
-and once when the intentional production `MainPID` `SIGKILL` forced every
-running backend runtime (including one started through the trusted secret
-bootstrap) through the same forwarding path during systemd recovery, with
-no leftover sandboxes, network namespaces, or disk state afterward.
+runsc through the real-gVisor suite's normal `RuntimeProcessHandle.stop()`
+path, confirming the trusted bootstrap's `SIGTERM` forwarding actually reaches
+the sandboxed child under real runsc PID 1 semantics. The separate,
+intentional production `MainPID` `SIGKILL` test (below) is a different
+scenario -- it kills the Peephole service process itself, which cannot call
+`stop()` on anything, so it is not a graceful-stop/forwarding test; it
+verifies systemd restart, startup orphan reconciliation, and
+generated-secret/runsc/network/disk residue cleanup instead, and every
+orphaned runtime it reconciles goes through the existing forceful
+(`SIGKILL`-based) reaper paths, not the `SIGTERM` forwarding path above.
 
 ### Bounds (env-name and value safety)
 
@@ -872,9 +885,11 @@ described in the M10-C4B status paragraph above:
   actually reaches the sandboxed child under real runsc PID 1 semantics (a
   fixed, non-secret sentinel file written by the child on receipt), exercised
   through the real `RuntimeProcessHandle.stop()` — see the M10-C4A status
-  paragraph above for the `SIGKILL`→`SIGTERM` production fix this required,
-  and the M10-C4B status paragraph for its production exercise via the
-  intentional `MainPID` `SIGKILL`/systemd-recovery test.
+  paragraph above for the `SIGKILL`→`SIGTERM` production fix this required.
+  This is verified only through the harness's normal `stop()` path; the
+  separate intentional `MainPID` `SIGKILL`/systemd-recovery test (see the
+  M10-C4B status paragraph above) is not a graceful-stop/forwarding test and
+  is not evidence for this item.
 - [verified, passed] Backend egress remains unconditionally blocked for the
   generated-secret variant specifically (a narrow no-default-route check),
   alongside the unchanged, unmodified pre-existing ingress-only suite in the

@@ -53,8 +53,11 @@ target -- portable tests still use it only for structure-detection evidence
 (`tests/realBackendRuntime.test.ts`, section 5) does execute it as the
 pinned `backend-v1`/`fullstack-v1` fixture, and that execution was
 production-verified in M9 (see section 5 and the M9 record near the end of
-this document). Secrets and databases (roadmap stages 10-11) still have no
-test at any layer -- those contracts are not implemented.
+this document). Ephemeral generated secrets (roadmap stage 10) are implemented
+and covered at both the portable and real-gVisor-gated layers, production
+-verified in M10-C4B (see section 5's M10 generated-secret subsection and
+docs/EPHEMERAL_SECRETS.md); temporary databases (roadmap stage 11) still have
+no test at any layer -- that contract is not implemented.
 
 ## 3. Portable Tests
 
@@ -677,13 +680,18 @@ exposing `/api/secret-check`. On 2026-09-28, against production SHA
   deliberate `PEEPHOLE_M10_SECRET_LOG_PROBE:<value>` marker, both before and
   after the run, finding zero occurrences;
 - normal `DELETE` cleanup of the preview, verified complete;
-- an intentional `SIGKILL` of only the Peephole service's systemd `MainPID`,
-  exercising real crash recovery: systemd's existing `Restart=on-failure`
-  brought the service back automatically; generated secrets, runsc sandboxes,
-  network namespaces, and disk state all reconciled to zero residue on
-  startup; a durable-parent preview attempted during the outage failed closed
-  (`ORCHESTRATION_UNAVAILABLE`, no partial state); and the old preview's route
-  returned 404 afterward;
+- with a fresh M10 FullStack preview left in the `ready` state, an
+  intentional `SIGKILL` of only the Peephole service's systemd `MainPID`
+  (not a graceful stop -- this does not exercise the trusted bootstrap's
+  `SIGTERM` forwarding path, which is verified separately through the
+  real-gVisor harness's normal `stop()` path; see
+  docs/EPHEMERAL_SECRETS.md), exercising real crash recovery: systemd's
+  existing `Restart=on-failure` brought the service back automatically;
+  generated secrets, runsc sandboxes, network namespaces, and disk state all
+  reconciled to zero residue on startup; the durable FullStack parent that
+  had been `ready` came back `failed`/`ORCHESTRATION_UNAVAILABLE` after
+  restart/reconciliation, with process-local backend coordinates and secrets
+  never reconstructed; and its old backend route returned 404 afterward;
 - production host smoke (`npm run smoke:production:host`), run twice. The
   **first** run, executed immediately after the `SIGKILL`/recovery test and
   still inside the smoke tool's unmodified default 15-minute log lookback

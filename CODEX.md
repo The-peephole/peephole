@@ -52,9 +52,9 @@ Production execution is deliberately narrower than analysis:
   output directory.
 
 Vue/Svelte Vite, other package managers, shared-root workspace orchestration,
-persistent servers beyond `backend-v1`'s one narrow adapter, secrets, and
-temporary databases are not current runner capabilities. A repository's
-declared homepage and current GitHub Deployment status are both
+persistent servers beyond `backend-v1`'s one narrow adapter, and temporary
+databases are not current runner capabilities for this static build path. A
+repository's declared homepage and current GitHub Deployment status are both
 external-link evidence, opened in a new tab; there is no embedded
 deployed-site iframe or arbitrary remote proxy.
 
@@ -66,6 +66,16 @@ Express + npm + a committed lockfile + no database dependency + only
 `PORT`/`HOST`/`NODE_ENV` environment needs) and never produces a public URL
 or a frontend/backend connection. Do not read its existence as "arbitrary
 Node backends are supported" or "full-stack preview is supported."
+
+Within that same narrow `backend-v1`/`fullstack-v1` contract, M10 (see D-032
+and docs/EPHEMERAL_SECRETS.md, Accepted/production-verified as of 2026-09-28)
+adds ephemeral, Peephole-*generated* secrets restricted to exactly four
+canonical names (`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`),
+delivered outside the OCI `process.env`/`config.json` path via a
+tmpfs-backed bind mount and trusted bootstrap. Arbitrary or user-supplied
+secrets, arbitrary environment-variable management, and temporary database
+provisioning remain unsupported. Do not read M10's existence as "arbitrary
+secrets are supported."
 
 ## Architecture to Preserve
 
