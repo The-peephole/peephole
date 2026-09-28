@@ -107,10 +107,11 @@ secrets, and temporary databases (stage 11) remain unsupported.
 - [x] production host smoke passes with both wired into
       `services/production/server.ts`
 
-This remains narrowly scoped: one supported backend adapter, no arbitrary
-Node backend, no generated secret, and no provisioned database. Stage 8 was
-implemented before this milestone but only production-verified here; see
-"Next Development Sequence" below for exact stage numbering.
+At the M9 milestone, this was still narrowly scoped: one supported backend
+adapter, no arbitrary Node backend, no generated secret, and no provisioned
+database. Stage 8 was implemented before this milestone but only
+production-verified here; see "Next Development Sequence" below for exact
+stage numbering.
 
 ## Next Development Sequence
 
