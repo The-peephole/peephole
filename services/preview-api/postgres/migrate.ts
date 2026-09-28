@@ -15,6 +15,7 @@ const MIGRATIONS = [
     "./migrations/004_fullstack_awaiting_activation.sql",
     import.meta.url,
   ),
+  new URL("./migrations/005_temporary_databases.sql", import.meta.url),
 ]
 
 export async function applyPostgresMigrations(

@@ -40,6 +40,7 @@ async function main() {
           "--no-file-parallelism",
           "tests/postgresIntegration.test.ts",
           "tests/postgresFullStackPreview.test.ts",
+          "tests/postgresTemporaryDatabase.test.ts",
         ],
         {
           stdio: "inherit",
