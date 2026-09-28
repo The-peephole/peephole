@@ -20,12 +20,13 @@ import { isNpmBackendPackageManagerDeclaration } from "./backendPackageManager"
  * (`core/analyzer/backendDetector.ts`) with a *different* framework, a
  * unsupported database shape, a missing lockfile, an unresolved entrypoint,
  * or any environment requirement outside fixed `PORT`/`HOST`/`NODE_ENV`, the
- * canonical server-only generated-secret policy, or the exact names-only M11
- * `pg` + `DATABASE_URL` capability is never supported here --
- * "Backend detected" and "Execution
- * supported" are always evaluated separately, and this function is the
- * single place that draws that line for both client-side display and
- * server-side authorization. It never trusts anything client-provided:
+ * canonical server-only generated-secret policy, and the exact names-only M11
+ * `pg` + `DATABASE_URL` capability is never eligible for a runtime plan --
+ * "Backend detected" and "Execution supported" are always evaluated
+ * separately. Server-side plan eligibility and current standalone-client
+ * execution support are separate decisions: the trusted FullStack path may
+ * resolve an exact database plan that the public standalone UI must not
+ * advertise as runnable. This module never trusts anything client-provided:
  * every caller must pass a `BackendCandidate` it independently derived
  * (client) or independently re-derived at the exact commit (server) --
  * this module has no knowledge of *how* the candidate was obtained.
@@ -40,19 +41,27 @@ const ONLY_ALLOWED_ENTRYPOINT_EXTENSIONS = new Set(["js", "mjs", "cjs"])
 export function resolveBackendExecutionSupport(
   candidate: BackendCandidate,
 ): BackendExecutionSupport {
-  const rejection = findUnsupportedReason(candidate)
+  const rejection = findUnsupportedPlanReason(candidate)
 
   if (rejection) {
     return { supported: false, adapterId: null, evidence: [rejection] }
+  }
+
+  if (candidate.databaseDependencies.length > 0) {
+    return {
+      supported: false,
+      adapterId: null,
+      evidence: [
+        "The pg + server-side DATABASE_URL backend shape is recognized, but temporary database execution requires trusted FullStack orchestration; standalone backend-v1 execution is not available.",
+      ],
+    }
   }
 
   return {
     supported: true,
     adapterId: "express-node-npm-v1",
     evidence: [
-      candidate.databaseDependencies.length === 1
-        ? "express and pg dependencies, package-lock.json, a safe Node entrypoint, and the exact server-side DATABASE_URL capability requirement were found; temporary database availability is determined later by trusted orchestration"
-        : "express dependency, package-lock.json, a safe Node entrypoint, and only platform-owned or canonical generated-secret environment requirements were found",
+      "express dependency, package-lock.json, a safe Node entrypoint, and only platform-owned or canonical generated-secret environment requirements were found",
     ],
   }
 }
@@ -67,9 +76,9 @@ export function resolveBackendRuntimePlan(
   repository: PreviewRepositoryRef,
   candidate: BackendCandidate,
 ): BackendRuntimePlan | null {
-  if (findUnsupportedReason(candidate)) return null
+  if (findUnsupportedPlanReason(candidate)) return null
 
-  // findUnsupportedReason already proved these are non-null/safe.
+  // findUnsupportedPlanReason already proved these are non-null/safe.
   const entrypoint = candidate.entrypoint!
 
   const adapterId: BackendRuntimeAdapterId = "express-node-npm-v1"
@@ -106,7 +115,7 @@ export function resolveBackendRuntimePlan(
   }
 }
 
-function findUnsupportedReason(candidate: BackendCandidate): string | null {
+function findUnsupportedPlanReason(candidate: BackendCandidate): string | null {
   if (candidate.framework !== "express") {
     return `${candidate.framework} execution is not supported yet.`
   }

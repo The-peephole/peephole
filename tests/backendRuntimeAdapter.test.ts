@@ -477,24 +477,31 @@ describe("resolveBackendExecutionSupport", () => {
     expect(support.evidence.join(" ")).toContain("fastify")
   })
 
-  it("describes an eligible database candidate without claiming provisioning", () => {
-    const support = resolveBackendExecutionSupport(
-      candidate({
-        databaseDependencies: ["pg"],
-        environmentRequirements: [
-          requirement({
-            name: "DATABASE_URL",
-            requirementKind: "database-requirement",
-          }),
-        ],
-      }),
-    )
+  it("resolves an exact database plan without advertising standalone execution support", () => {
+    const databaseCandidate = candidate({
+      databaseDependencies: ["pg"],
+      environmentRequirements: [
+        requirement({
+          name: "DATABASE_URL",
+          requirementKind: "database-requirement",
+        }),
+      ],
+    })
 
-    expect(support.supported).toBe(true)
-    expect(support.evidence.join(" ")).toContain(
-      "temporary database availability",
+    expect(
+      resolveBackendRuntimePlan(repository, databaseCandidate)
+        ?.databaseRequirement,
+    ).toEqual({ name: "DATABASE_URL" })
+
+    const support = resolveBackendExecutionSupport(databaseCandidate)
+
+    expect(support).toMatchObject({ supported: false, adapterId: null })
+    expect(support.evidence.join(" ")).toMatch(
+      /recognized.*trusted FullStack orchestration/i,
     )
-    expect(support.evidence.join(" ")).not.toContain("provisioned")
+    expect(support.evidence.join(" ")).toContain(
+      "standalone backend-v1 execution is not available",
+    )
   })
 
   it("reports supported: false for an unsupported database-dependent backend", () => {
