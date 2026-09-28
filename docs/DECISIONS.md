@@ -753,10 +753,17 @@ database support) remain out of scope and have not started.
 
 ## D-032 - Ephemeral secrets (M10): generated-only first slice, delivered outside the OCI `process.env`/`config.json` path
 
-**Status:** Proposed -- M10-A/M10-B foundations, M10-C1/M10-C2 internal
-contracts, and M10-C3 production-code activation are implemented, but the
-feature is not real-host verified, deployed, or accepted. M10 remains unchecked
-in docs/MVP_ROADMAP.md.
+**Status:** Accepted (as of 2026-09-28). M10-A/M10-B foundations,
+M10-C1/M10-C2 internal contracts, M10-C3 production-code activation,
+M10-C4A's real-gVisor verification harness, and M10-C4B's real-host/
+production verification are all complete. The generated-only first slice --
+exactly `JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`, never
+user-supplied credentials, arbitrary environment names, external credentials,
+database variables/provisioning, or relaxed backend egress -- is implemented,
+real-gVisor-verified, and production-verified against deployed revision
+`ef466d09ce91857b5bb8dfa35b77cc9207086468`. M10 is checked complete in
+docs/MVP_ROADMAP.md. See the M10-C4A/M10-C4B status paragraphs below for the
+verification record.
 
 An audit of the actual M9 data flow found that `BackendRuntimePlan.platformEnvironment`
 (`types/backendRuntime.ts`) is serialized verbatim into the OCI spec's
@@ -858,8 +865,54 @@ maintenance. No secret value is created during startup; generation remains at
 the non-empty runtime START boundary.
 
 FullStack durable/public schemas, HTTP request/response contracts, PostgreSQL,
-fingerprints, `platformEnvironment`, and backend egress are unchanged. Real
-gVisor/production-host verification has not run, production deployment has not
-occurred, and real-host tmpfs/bootstrap/runsc behavior, bootstrap PID 1 signal
-semantics, and `runsc --root` persistence inspection remain pending for M10-C4.
-D-032 remains Proposed, M10 remains incomplete, and M11 has not started.
+fingerprints, `platformEnvironment`, and backend egress remain unchanged by
+M10-C3, M10-C4A, or M10-C4B.
+
+**M10-C4A real-gVisor verification harness status (complete):** an
+environment-gated (`PEEPHOLE_REAL_GVISOR_TESTS=1`) real-host test harness was
+added to `tests/realBackendRuntime.test.ts`, proving generated-secret child-
+environment injection, `config.json`/argv/runsc-state non-leakage of the raw
+value, real trusted-bootstrap PID 1 `SIGTERM` forwarding, tmpfs cleanup,
+bounded orphan reaping, and the existing egress-denial suite, all without the
+harness ever printing the raw value. Building it surfaced and fixed two
+narrowly-scoped production defects: `GVisorBackendRuntimeProcess.stop()`
+previously sent only the uncatchable `SIGKILL`, so the trusted bootstrap's
+`SIGTERM` forwarding could never actually run -- `stop()` now sends `SIGTERM`
+with a bounded grace period before the existing forceful `runsc delete`
+backstop (portable regression tests added); and the harness's own raw-value
+scanner initially conflated "definitely not a leak" with "inspection failed"
+when it met a real runsc-owned `null-netns` kernel-namespace mount -- fixed
+with an explicit `NullNetnsClassification` (absent/exact-nsfs-mount/present-
+non-nsfs/symlink/unknown) so an inspection failure can never be reported as
+clean (`tests/support/realRunscStateInspection.ts`).
+
+**M10-C4B production verification status (complete, 2026-09-28):** the
+reviewed real-gVisor suite ran on the production host and passed 4/4,
+including the M10 generated-secret scenario. A real production FullStack
+preview was then created against the pinned first-party fixture
+`The-peephole/peephole-fixture-fullstack@e10b08153e49d94a05931820c5325892754db246`
+(repositoryId `1371618449`) through the normal authenticated control plane --
+the client request never contained a secret name or value; the server
+independently derived the `SESSION_SECRET` requirement from the pinned
+commit. `/api/secret-check` returned `configured: true` with only a SHA-256
+digest, never the raw value. The fixture's deliberate
+`PEEPHOLE_M10_SECRET_LOG_PROBE:<value>` stdout probe produced zero matches in
+the `peephole` systemd journal. Normal `DELETE` cleanup passed. The
+`peephole` service's main PID was then deliberately `SIGKILL`ed
+(`systemctl kill --kill-who=main`); systemd's existing `Restart=on-failure`
+recovered it within seconds. After recovery, the stale generated-secret
+tmpfs runtime directory, the orphaned runsc container, and the orphaned
+network/disk state were all reconciled by the existing startup reapers with
+zero residue; the durable FullStack parent record failed closed
+(`ORCHESTRATION_UNAVAILABLE`) rather than silently reconstructing the lost
+process-local backend coordinates or secrets; and the old backend's public
+route returned `404`. The immediate post-crash host smoke reported two
+expected worker-loop error log lines dated exactly at the intentional
+`SIGKILL` boundary (no secret-bearing content); once those aged past the
+smoke tool's unchanged default 15-minute journal window, the identical,
+unmodified `npm run smoke:production:host` passed every gate, including zero
+service errors. No raw secret value was printed, persisted, or logged at any
+point in this verification.
+
+D-032 is Accepted as of 2026-09-28. M10 is complete for the four canonical
+generated-secret names. M11 (temporary database support) has not started.

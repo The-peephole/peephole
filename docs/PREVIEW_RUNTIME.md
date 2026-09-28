@@ -23,7 +23,7 @@ Supported first:
 | Next.js SSR / Node server | Unsupported | Persistent server runner deferred |
 | Shared-root npm/pnpm/yarn workspace | Analysis only / unsupported | Workspace orchestration remains deferred |
 | One narrow backend shape (`express-node-npm-v1`) paired with its frontend | Production-verified server-side (`fullstack-v1`), no extension UI yet | See section 13a; not offered as a Build Preview option in the extension |
-| Any other backend, DB, Docker, secrets | Unsupported | Arbitrary Node backends, generated secrets, and provisioned databases remain unimplemented (roadmap stages 10-11) |
+| Any other backend, DB, Docker, arbitrary/user-supplied secrets | Unsupported | Arbitrary Node backends and provisioned databases remain unimplemented (roadmap stage 11); server-generated secrets are implemented, but only for exactly four canonical names alongside the one narrow backend shape above -- see section 13b |
 | Library repository with no demo app | Analysis only | There may be nothing visual to run |
 
 `react/react` is an example of the last category: it is primarily a library repository and should not be assumed to have a default preview application.
@@ -349,23 +349,22 @@ wired into production startup during M9. A live disk-quota watcher during
 the *running* phase is not implemented; the sandbox's fixed-size ext4
 workspace remains the non-bypassable backstop, matching install/build.
 
-## 13b. Ephemeral Environment / Secrets (M10): Planned, Not Implemented
+## 13b. Ephemeral Environment / Secrets (M10): Implemented, Production-Verified
 
-M10 is design-only as of this writing -- see D-032 and
-docs/EPHEMERAL_SECRETS.md for the full architecture, threat model, and test
-plan. Nothing described there exists in the codebase yet; `WXT_BACKEND_RUNTIME_ENABLED`-gated
-UI does not exist for it, no new HTTP surface exists, and
-`BackendRuntimePlan.platformEnvironment` is unchanged (still exactly
-`PORT`/`HOST`/`NODE_ENV`). In short: the recommended first slice generates
-only the existing narrow `preview-generated-candidate` allowlist
-(`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`) server-side,
-holds it only in a process-local ephemeral broker, and delivers it to the
-sandbox through a new tmpfs-backed bind mount and trusted bootstrap
+M10 is implemented and production-verified as of 2026-09-28 (M10-C4B) -- see
+D-032 (Accepted) and docs/EPHEMERAL_SECRETS.md for the full architecture,
+threat model, and test plan/evidence. There is still no `WXT_BACKEND_RUNTIME_ENABLED`-gated
+extension UI for it and no new HTTP surface; `BackendRuntimePlan.platformEnvironment`
+is unchanged (still exactly `PORT`/`HOST`/`NODE_ENV`). In short: the
+implemented first slice generates only the narrow `preview-generated-candidate`
+allowlist (`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`)
+server-side, holds it only in a process-local ephemeral broker, and delivers
+it to the sandbox through a tmpfs-backed bind mount and trusted bootstrap
 entrypoint rather than through the OCI `process.env`/`config.json` path
 audited above -- because `config.json` lives on persistent (non-tmpfs)
 host disk today. User-supplied secrets, `database-requirement` variables,
 and any relaxation of the ingress-only network policy above remain
-explicitly out of scope for this first slice.
+explicitly out of scope for this slice and are not implemented.
 
 ## 14. Minimum API Contract
 
@@ -418,8 +417,10 @@ Known limitations and follow-up work:
   automated post-deployment smoke orchestration remain operational work;
 - the dedicated malicious dependency-script suite still needs its recorded
   production-like AWS run;
-- generated-secret injection and temporary database provisioning (roadmap
-  stages 10-11) remain unimplemented.
+- temporary database provisioning (roadmap stage 11) remains unimplemented;
+  ephemeral generated-secret injection (roadmap stage 10) is implemented and
+  production-verified, but only for the four canonical names -- see
+  section 13b.
 
 The official current Vite + React pin is
 `The-peephole/peephole-fixture-vite-react@4a2c3b78e15d90865ed565c3d38c4045b5a5235f`

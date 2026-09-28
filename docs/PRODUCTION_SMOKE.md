@@ -238,14 +238,19 @@ documented ownership-aware recovery path.
 6. Treat either non-zero exit as a failed release smoke. Do not use this tool to
    repair the host or bypass authentication.
 
-## M10 generated-secret verification (C4B; prepared, not executed)
+## M10 generated-secret verification (C4B; complete, 2026-09-28)
 
 M10-C4A (see docs/EPHEMERAL_SECRETS.md and docs/TEST_PLAN.md's "M10
 generated-secret real-host harness" section) built an environment-gated real
-gVisor test harness and documented this procedure for the actual EC2
-verification, but did **not** run any of it. Nothing below has been executed;
-this is preparation only, so a future session doing the real-host run does not
-have to redesign the sequence.
+gVisor test harness and documented the procedure below for the actual EC2
+verification, without running any of it. **M10-C4B then executed this entire
+procedure against production** (SHA
+`ef466d09ce91857b5bb8dfa35b77cc9207086468`) on 2026-09-28, plus the
+production FullStack E2E and intentional crash-recovery test it enabled.
+Steps 1-4 below are kept as-written as the historical/preparation runbook;
+the "M10-C4B production verification record" subsection after them records
+what actually happened when it was run, including the one gate that did not
+pass cleanly on its first attempt.
 
 ### 1. Verify the deployed base rootfs has the trusted bootstrap
 
@@ -315,11 +320,12 @@ sandboxed backend's stdout/stderr -- proving nothing leaks into the `peephole`
 journal requires a real admitted, server-composed runtime, not a direct
 `GVisorBackendRuntimeProcess` test.
 
-**Fixture gap:** the currently pinned
-`peephole-fixture-fullstack@eae411a288b212201933cebb206126dd5bb0d93e` does not
+**Fixture gap (resolved in M10-C4B):** the pre-existing pinned
+`peephole-fixture-fullstack@eae411a288b212201933cebb206126dd5bb0d93e` did not
 declare any generated-secret requirement and must not be described as
-exercising M10. C4B needs either an update to that fixture or a new
-first-party pinned fixture declaring:
+exercising M10. M10-C4B resolved this with a new, separate first-party pinned
+fixture, `The-peephole/peephole-fixture-fullstack` (repository id
+`1371618449`) at commit `e10b08153e49d94a05931820c5325892754db246`, declaring:
 
 ```text
 SESSION_SECRET=
@@ -343,9 +349,70 @@ journalctl --unit peephole --since "<window covering the test run>" \
 Because Peephole's runtime supervision intentionally never forwards a
 sandboxed backend's stdout/stderr into the `peephole` journal, this count must
 be `0`. A non-zero count is a real log-leak finding, not a fixture problem.
+M10-C4B ran this check against the fixture above, before and after the real
+production FullStack run, and both counts were `0` (see the record below).
 
-This slice (M10-C4A) does not add or modify any fixture repository -- that
-decision and its implementation belong to C4B.
+### M10-C4B production verification record (2026-09-28)
+
+This is a one-off, manually-performed verification record, not a claim that
+the automated commands above now cover these gates. Each item below was
+exercised directly against production (SHA
+`ef466d09ce91857b5bb8dfa35b77cc9207086468`), separately from
+`npm run smoke:production`/`smoke:production:host`, using the pinned fixture
+`The-peephole/peephole-fixture-fullstack@e10b08153e49d94a05931820c5325892754db246`:
+
+- **Real gVisor generated-secret harness**: steps 1-3 above run against
+  production, 4/4 passed -- base-rootfs bootstrap presence, capability
+  preflight, and the full `tests/realBackendRuntime.test.ts` generated-secret
+  scenarios (child-environment injection, `config.json`/argv/OCI
+  `process.env` non-leakage, tmpfs permissions and post-`stop()` removal, real
+  PID 1 `SIGTERM` forwarding, egress regression, and orphan reaping).
+- **Real gVisor `runsc --root` state scan**: the bounded, symlink-refusing
+  scan for the raw secret value in the dedicated per-test `runsc --root`
+  state directory found it absent, both while the container was active and
+  after it was deleted -- settling docs/EPHEMERAL_SECRETS.md's open question
+  on this point.
+- **Production FullStack M10 E2E**: a real, authenticated `fullstack-v1`
+  preview built from the pinned fixture reached `ready` with the server
+  deriving and injecting `SESSION_SECRET` with no client input; `/api/hello`
+  and `/api/secret-check` both returned 200, the latter with
+  `configured: true` and a SHA-256 digest only (never the raw value). PASS.
+- **Journal log-leak check (step 4 above)**: a full scan of the production
+  `peephole` systemd journal for the fixture's deliberate
+  `PEEPHOLE_M10_SECRET_LOG_PROBE:<value>` marker found `0` occurrences both
+  before and after the run.
+- **Normal cleanup**: `DELETE`-ing the preview through the normal API path
+  completed and left zero residue.
+- **Intentional crash recovery**: with authorization, only the Peephole
+  service's systemd `MainPID` was sent `SIGKILL` (not the fixture, not a
+  graceful stop). systemd's existing `Restart=on-failure` (`RestartUSec=5s`)
+  brought the service back automatically; generated-secret, runsc, network
+  namespace, and disk state all reconciled to zero residue on startup; a
+  durable-parent preview attempted during the outage failed closed
+  (`ORCHESTRATION_UNAVAILABLE`, no partial state created); and the old
+  preview's route returned 404 afterward. PASS.
+- **Production host smoke -- first run (BLOCKED, expected)**: run immediately
+  after the `SIGKILL`/recovery test above, still inside
+  `npm run smoke:production:host`'s unmodified default 15-minute log lookback
+  window (`PEEPHOLE_SMOKE_LOG_SINCE` was not overridden). The "service
+  errors" gate correctly matched exactly two `worker loop error` journal
+  lines, both timestamped at the intentional `MainPID` `SIGKILL` boundary
+  itself, and no other or new errors. Per the accepted acceptance procedure,
+  this result was recorded as **BLOCKED** and not promoted to a pass, since
+  the crash-recovery evidence being valid does not by itself make an
+  intentionally-induced error line acceptable smoke output.
+- **Quiescence wait**: production was left otherwise untouched (no further
+  crash test, no new preview, no smoke-tool setting changed) until both error
+  timestamps had aged out of the smoke tool's unchanged 15-minute window by a
+  further >=1 minute safety margin -- roughly 18 minutes total.
+- **Production host smoke -- second run (PASS)**: the exact same, unmodified
+  `npm run smoke:production:host` command, run again after the wait above,
+  produced a full, clean **PRODUCTION SMOKE PASS**, with zero active
+  jobs/queue rows and zero owned residue.
+
+None of the above changed this document's own automated commands or their
+security model. D-032 is Accepted and M10 is complete for the four canonical
+generated-secret names as of 2026-09-28.
 
 ## M9 production verification record (2026-09-21)
 
