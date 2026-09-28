@@ -1,14 +1,17 @@
 # Temporary PostgreSQL Previews (M11) — Design
 
-**Status: DESIGN ONLY. Not implemented. Not deployed. Not production-verified.**
+**Status: PARTIALLY IMPLEMENTED (M11-C2A in progress). Not deployed. Not
+production-verified.**
 
 M11 (`docs/MVP_ROADMAP.md` stage 11, "temporary database support") remains
-`[ ]` / NOT STARTED. Nothing described in this document exists in the
-codebase yet: no new types, no new services, no new migration, no new
-network rule, no second PostgreSQL cluster. `services/production/server.ts`
-is unchanged. `BackendRuntimePlan.platformEnvironment` is unchanged (still
-exactly `PORT`/`HOST`/`NODE_ENV`). `PreviewGeneratedSecretName` is unchanged
-(still exactly `JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`).
+`[ ]`. M11-C1's portable admission and ownership foundation is complete, and
+M11-C2A now implements durable ownership plus isolated PostgreSQL
+provision/revoke primitives and PostgreSQL 18 integration proof. These
+primitives are not wired into runtime execution. There is still no new network
+rule or second PostgreSQL cluster, and `services/production/server.ts` is
+unchanged. `BackendRuntimePlan.platformEnvironment` remains exactly
+`PORT`/`HOST`/`NODE_ENV`, and `PreviewGeneratedSecretName` remains exactly
+`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`.
 
 This document is the output of a four-phase, code-and-production-grounded
 architecture investigation (M11-A through M11-A4) conducted before any
@@ -46,10 +49,8 @@ M10:
   evidence gathered in M11-A3 rather than an assumption.
 
 The verdict at the end of M11-A4 was `READY_FOR_M11_DESIGN_DOCS`. This
-document is that deliverable. It does not itself implement anything, and
-this PR alone does not authorize starting implementation. After this
-design-document PR is reviewed and merged, the planned next stage is
-M11-C1.
+document was that deliverable and remains the authoritative design while its
+staged implementation proceeds.
 
 ### M11 stage sequence
 
@@ -61,18 +62,22 @@ stays `[ ]` regardless of how many of these sub-stages complete.
 |---|---|---|
 | M11-A | Architecture investigation / read-only production audit / final architecture lock | **COMPLETE** |
 | M11-B | Design documentation (this document, D-033) | **COMPLETE** |
-| M11-C1 | Portable types / admission / ownership foundation | **CURRENT — implementation PR** |
-| M11-C2 | PostgreSQL provisioning + durable ownership / reconciliation | NOT STARTED |
+| M11-C1 | Portable types / admission / ownership foundation | **COMPLETE** |
+| M11-C2 | PostgreSQL provisioning + durable ownership / reconciliation | **CURRENT** |
+| M11-C2A | Durable ownership + PostgreSQL provisioning foundation | **CURRENT — implementation PR** |
+| M11-C2B | Three-set reconciliation / reaper | NOT STARTED |
 | M11-C3 | Credential delivery + host-only sandbox network integration | NOT STARTED |
 | M11-C4 | Integrated FullStack lifecycle | NOT STARTED |
 | M11-D | Real Linux / real-gVisor verification | NOT STARTED |
 | M11-E | Production infrastructure activation + production acceptance | NOT STARTED |
 
-M11-C1 adds the portable representation, trusted FullStack admission, queue
-ownership identity, and resource-identity foundation only. It does not
-provision PostgreSQL or deliver `DATABASE_URL`; database-requiring plans fail
-closed in the worker with `DATABASE_UNAVAILABLE`. M11-C2, M11-C3, and M11-C4
-remain required before any database-requiring backend can run.
+M11-C1 added the portable representation, trusted FullStack admission, queue
+ownership identity, and resource-identity foundation. M11-C2A adds the durable
+ownership migration/store, SCRAM verifier, pinned-session provisioning, and
+normal revoke primitives, with real PostgreSQL 18 integration coverage. It is
+not wired into the runtime: database-requiring plans still fail closed in the
+worker with `DATABASE_UNAVAILABLE`. Reconciliation still awaits M11-C2B, and
+M11-C3/M11-C4 remain required before any database-requiring backend can run.
 
 **The production host's RAM is a documented future prerequisite, not
 something already done.** M11-A3 found the production host to be a tight

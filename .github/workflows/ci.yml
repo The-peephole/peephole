@@ -58,7 +58,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -71,7 +71,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      PEEPHOLE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      PEEPHOLE_POSTGRES_TEST_URL: postgres://postgres:postgres@localhost:5432/postgres
+      PEEPHOLE_POSTGRES_ALLOW_CLUSTER_GLOBAL: "1"
     steps:
       - uses: actions/checkout@v4
 
