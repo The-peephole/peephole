@@ -113,6 +113,7 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
       let networkNamespace: Promise<NetworkNamespaceHandle> | null = null
       let ingressOnlyNetworkNamespace: Promise<IngressOnlyNetworkNamespaceHandle> | null =
         null
+      let ingressOnlyNetworkNamespaceCapability = false
       let destroyPromise: Promise<void> | null = null
 
       const destroy = async (): Promise<void> => {
@@ -210,16 +211,34 @@ export class GVisorSandboxProvisioner implements SandboxProvisioner {
           )
           return (await networkNamespace).path
         },
-        ensureIngressOnlyNetworkNamespace: async () => {
-          // A distinct allocation id from the disk allocation's: the two
-          // namespaces are independent leases (install's egress-NAT
-          // namespace may still be active when this one is created) and
-          // `NetworkAllocationRegistry` rejects a second concurrent
-          // activation of the same id.
-          ingressOnlyNetworkNamespace ??=
-            this.networkProvisioner.createIngressOnly(
-              randomBytes(16).toString("hex"),
-            )
+        ensureIngressOnlyNetworkNamespace: async (options) => {
+          const temporaryDatabaseAccess =
+            options?.temporaryDatabaseAccess ?? false
+          if (ingressOnlyNetworkNamespace) {
+            // A workspace's ingress-only namespace is created once and never
+            // silently upgraded/downgraded -- a caller that already obtained
+            // a non-database namespace must never later gain host
+            // PostgreSQL reachability (or vice versa) just by asking again.
+            if (
+              ingressOnlyNetworkNamespaceCapability !== temporaryDatabaseAccess
+            ) {
+              throw new Error(
+                "Ingress-only network namespace database capability mismatch.",
+              )
+            }
+          } else {
+            ingressOnlyNetworkNamespaceCapability = temporaryDatabaseAccess
+            // A distinct allocation id from the disk allocation's: the two
+            // namespaces are independent leases (install's egress-NAT
+            // namespace may still be active when this one is created) and
+            // `NetworkAllocationRegistry` rejects a second concurrent
+            // activation of the same id.
+            ingressOnlyNetworkNamespace =
+              this.networkProvisioner.createIngressOnly(
+                randomBytes(16).toString("hex"),
+                { temporaryDatabaseAccess },
+              )
+          }
           const handle = await ingressOnlyNetworkNamespace
           return { path: handle.path, peerIp: handle.peerIp }
         },

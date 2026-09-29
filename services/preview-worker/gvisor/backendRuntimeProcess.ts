@@ -6,8 +6,10 @@ import path from "node:path"
 import type { SandboxResourceLimits } from "../../../core/runner/runnerLimits"
 import { DEFAULT_SANDBOX_RESOURCE_LIMITS } from "../../../core/runner/runnerLimits"
 import { isSafePreviewSourceRoot } from "../../../core/preview/sourceRoot"
+import { BACKEND_RUNTIME_DATABASE_ENV_NAME } from "../../../types/backendRuntimeDatabase"
 import type { BackendRuntimePlan } from "../../../types/backendRuntime"
 import type { GeneratedSecretMaterial } from "../../../types/backendRuntimeSecrets"
+import type { TemporaryDatabaseRuntimeCredentialMaterial } from "../../../types/temporaryDatabase"
 import type {
   BackendRuntimeProcessStarter,
   RuntimeProcessHandle,
@@ -15,7 +17,14 @@ import type {
 import type { LocalPreviewWorkspace } from "../local/localWorkspace"
 import { resolveDnsConfig } from "./dnsConfig"
 import { asGVisorWorkspace } from "./gvisorWorkspace"
-import type { GeneratedSecretFilesystem } from "./generatedSecretFilesystem"
+import {
+  DATABASE_CREDENTIAL_FILE_NAME,
+  type DatabaseCredentialFilesystem,
+} from "./databaseCredentialFilesystem"
+import {
+  GENERATED_SECRET_FILE_NAME,
+  type GeneratedSecretFilesystem,
+} from "./generatedSecretFilesystem"
 import { buildOciRuntimeSpec } from "./ociConfig"
 import { NodeProcessRunner } from "./nodeProcessRunner"
 import type { ProcessRunner, ProcessRunResult } from "./processRunner"
@@ -66,6 +75,10 @@ export interface GVisorBackendRuntimeProcessOptions {
   /** Required only when `start()` receives generated material. Production
    * M10-B callers pass null and do not activate this path yet. */
   generatedSecretFilesystem?: GeneratedSecretFilesystem
+  /** Required only when `start()` receives temporary-database credential
+   * material (M11-C3). Not yet activated by any production composition --
+   * see `BackendRuntimeProcessStarter.start()`'s own doc comment. */
+  databaseCredentialFilesystem?: DatabaseCredentialFilesystem
   /** Bounded window `stop()` gives the sandboxed process to exit on its own
    * after a polite `SIGTERM` before the unconditional `runsc delete --force`
    * backstop below proceeds regardless. Only a well-behaved process (or the
@@ -108,6 +121,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
   private readonly maxRuntimeMs: number
   private readonly maxProbeIntervalMs: number
   private readonly generatedSecretFilesystem?: GeneratedSecretFilesystem
+  private readonly databaseCredentialFilesystem?: DatabaseCredentialFilesystem
   private readonly stopGraceMs: number
 
   constructor(options: GVisorBackendRuntimeProcessOptions = {}) {
@@ -120,13 +134,34 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     this.maxRuntimeMs = options.maxRuntimeMs ?? 15 * 60_000
     this.maxProbeIntervalMs = options.maxProbeIntervalMs ?? 1_000
     this.generatedSecretFilesystem = options.generatedSecretFilesystem
+    this.databaseCredentialFilesystem = options.databaseCredentialFilesystem
     this.stopGraceMs = options.stopGraceMs ?? 5_000
+
+    // Both filesystem roots are independently injectable (test/config seams),
+    // so neither one can know the other's actual configured root on its own.
+    // This constructor is the lowest trusted boundary that owns both
+    // instances -- fail closed here, before any credential is ever created,
+    // if the two configured roots are the same or nested either direction
+    // (M11-C3 review correction; see docs/TEMPORARY_DATABASES.md section 15).
+    if (
+      this.generatedSecretFilesystem &&
+      this.databaseCredentialFilesystem &&
+      pathsOverlap(
+        path.resolve(this.generatedSecretFilesystem.rootDir),
+        path.resolve(this.databaseCredentialFilesystem.rootDir),
+      )
+    ) {
+      throw new Error(
+        "Generated-secret and database credential filesystem roots must be disjoint.",
+      )
+    }
   }
 
   async start(
     workspace: LocalPreviewWorkspace,
     plan: BackendRuntimePlan,
     secrets: GeneratedSecretMaterial | null = null,
+    databaseCredential: TemporaryDatabaseRuntimeCredentialMaterial | null = null,
   ): Promise<RuntimeProcessHandle> {
     if (!isSafePreviewSourceRoot(plan.sourceRoot)) {
       throw new Error("Backend runtime plan sourceRoot is unsafe.")
@@ -140,9 +175,8 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       throw new Error('Backend runtime plan start command must be "node".')
     }
     assertSecretMaterialMatchesPlan(workspace.id, plan, secrets)
+    assertDatabaseCredentialMatchesPlan(workspace.id, plan, databaseCredential)
     const sandbox = asGVisorWorkspace(workspace)
-    const { path: namespacePath, peerIp } =
-      await sandbox.ensureIngressOnlyNetworkNamespace()
 
     const dnsConfig = this.resolveDnsConfig()
     const containerId = `${sandbox.id}-backend-${randomBytes(4).toString("hex")}`
@@ -165,6 +199,55 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       return secretCleanupPromise
     }
 
+    let databaseCredentialMountSource: string | undefined
+    let databaseCredentialCreated = false
+    let databaseCredentialCleanupPromise: Promise<void> | null = null
+    const cleanupDatabaseCredential = (): Promise<void> => {
+      if (
+        !databaseCredentialCreated ||
+        !databaseCredential ||
+        !this.databaseCredentialFilesystem
+      ) {
+        return Promise.resolve()
+      }
+      databaseCredentialCleanupPromise ??= this.databaseCredentialFilesystem
+        .remove(databaseCredential.runtimeId)
+        .then(() => {
+          databaseCredentialCreated = false
+        })
+        .catch((error: unknown) => {
+          databaseCredentialCleanupPromise = null
+          throw error
+        })
+      return databaseCredentialCleanupPromise
+    }
+
+    // Both credential cleanups are always attempted, independently -- one
+    // failing must never silently skip the other (docs/TEMPORARY_DATABASES.md
+    // section 15 / M11-C3 lifecycle requirements).
+    const cleanupCredentials = async (): Promise<void> => {
+      const results = await Promise.allSettled([
+        cleanupSecrets(),
+        cleanupDatabaseCredential(),
+      ])
+      const errors = results
+        .filter(
+          (settled): settled is PromiseRejectedResult =>
+            settled.status === "rejected",
+        )
+        .map((settled) => settled.reason as unknown)
+      if (errors.length === 1) throw errors[0]
+      if (errors.length > 1) {
+        throw new AggregateError(
+          errors,
+          "Backend runtime credential cleanup failed.",
+        )
+      }
+    }
+
+    let namespacePath: string | undefined
+    let peerIp: string | undefined
+
     try {
       if (secrets) {
         if (!this.generatedSecretFilesystem) {
@@ -182,19 +265,57 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
             "Generated-secret root overlaps persistent runtime storage.",
           )
         }
-        secretMountSource = await this.generatedSecretFilesystem.create(secrets)
+        const runtimeDir = await this.generatedSecretFilesystem.create(secrets)
         secretCreated = true
-        const expectedMountSource = path.join(
+        const expectedRuntimeDir = path.join(
           path.resolve(this.generatedSecretFilesystem.rootDir),
           secrets.runtimeId,
         )
-        if (path.resolve(secretMountSource) !== expectedMountSource) {
+        if (path.resolve(runtimeDir) !== expectedRuntimeDir) {
           throw new Error("Generated-secret mount source is invalid.")
         }
+        secretMountSource = path.join(runtimeDir, GENERATED_SECRET_FILE_NAME)
       }
 
+      if (databaseCredential) {
+        if (!this.databaseCredentialFilesystem) {
+          throw new Error(
+            "Database credential filesystem is unavailable for this runtime.",
+          )
+        }
+        if (
+          pathsOverlap(
+            path.resolve(this.databaseCredentialFilesystem.rootDir),
+            path.resolve(sandbox.bundleDir),
+          )
+        ) {
+          throw new Error(
+            "Database credential root overlaps persistent runtime storage.",
+          )
+        }
+        const credentialFile =
+          await this.databaseCredentialFilesystem.create(databaseCredential)
+        databaseCredentialCreated = true
+        const expectedCredentialFile = path.join(
+          path.resolve(this.databaseCredentialFilesystem.rootDir),
+          databaseCredential.runtimeId,
+          DATABASE_CREDENTIAL_FILE_NAME,
+        )
+        if (path.resolve(credentialFile) !== expectedCredentialFile) {
+          throw new Error("Database credential mount source is invalid.")
+        }
+        databaseCredentialMountSource = credentialFile
+      }
+
+      const namespace = await sandbox.ensureIngressOnlyNetworkNamespace({
+        temporaryDatabaseAccess: databaseCredential !== null,
+      })
+      namespacePath = namespace.path
+      peerIp = namespace.peerIp
+
+      const usesBootstrap = Boolean(secrets) || Boolean(databaseCredential)
       const spec = buildOciRuntimeSpec({
-        command: secrets
+        command: usesBootstrap
           ? [SANDBOX_NODE_BINARY, SANDBOX_SECRET_BOOTSTRAP, ...plan.start.args]
           : [SANDBOX_NODE_BINARY, ...plan.start.args],
         cwd:
@@ -212,6 +333,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         dnsConfigSource: dnsConfig.source,
         workspaceSource: sandbox.rootDir,
         generatedSecretsSource: secretMountSource,
+        databaseCredentialSource: databaseCredentialMountSource,
       })
 
       // `runsc run --bundle <dir>` always reads `<dir>/config.json` specifically
@@ -226,15 +348,19 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       sandbox.registerContainer(containerId)
     } catch (error) {
       try {
-        await cleanupSecrets()
+        await cleanupCredentials()
       } catch (cleanupError) {
         throw new AggregateError(
           [error, cleanupError],
-          "Backend runtime start failed and secret cleanup was incomplete.",
+          "Backend runtime start failed and credential cleanup was incomplete.",
           { cause: cleanupError },
         )
       }
       throw error
+    }
+
+    if (namespacePath === undefined || peerIp === undefined) {
+      throw new Error("Backend runtime network namespace was not established.")
     }
 
     // Deliberately not awaited: `runsc run` blocks until the sandboxed
@@ -278,7 +404,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         try {
           await deleteContainer()
         } finally {
-          await cleanupSecrets()
+          await cleanupCredentials()
         }
       })()
       return cleanupAfterExitPromise
@@ -321,9 +447,11 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
           deleteError = new Error("Backend runtime container cleanup failed.")
         } finally {
           try {
-            await cleanupSecrets()
+            await cleanupCredentials()
           } catch {
-            deleteError = new Error("Backend runtime secret cleanup failed.")
+            deleteError = new Error(
+              "Backend runtime credential cleanup failed.",
+            )
           }
         }
         if (killError && deleteError) {
@@ -431,6 +559,31 @@ function assertSecretMaterialMatchesPlan(
   ) {
     throw new Error(
       "Generated-secret material does not match the backend runtime plan.",
+    )
+  }
+}
+
+function assertDatabaseCredentialMatchesPlan(
+  runtimeId: string,
+  plan: BackendRuntimePlan,
+  databaseCredential: TemporaryDatabaseRuntimeCredentialMaterial | null,
+): void {
+  if (plan.databaseRequirement === null) {
+    if (databaseCredential) {
+      throw new Error(
+        "Database credential material does not match the backend runtime plan.",
+      )
+    }
+    return
+  }
+
+  if (
+    !databaseCredential ||
+    databaseCredential.runtimeId !== runtimeId ||
+    plan.databaseRequirement.name !== BACKEND_RUNTIME_DATABASE_ENV_NAME
+  ) {
+    throw new Error(
+      "Database credential material does not match the backend runtime plan.",
     )
   }
 }

@@ -30,8 +30,8 @@ still retained as a soft limit, but it is no longer the security boundary.
 | `/proc` | virtual procfs | gVisor-managed |
 | Compressed GitHub archive | process memory plus host-only bundle staging | 50 MiB limit and admission reservation |
 | Published artifact copy | artifact storage | at most 100 MiB per accepted output, outside workspace quota |
-| Generated-secret injection (M10, production-enabled, four canonical names only) | dedicated `/run/peephole/secrets/<runtime-id>` host tmpfs root | per-runtime directory `0700`, fixed file `0600`, read-only bind at `/run/secrets`; preflight capability check rejects non-tmpfs backing |
-| Temporary-database credential injection (M11, **design only, not implemented** -- see `docs/TEMPORARY_DATABASES.md`) | proposed dedicated `/run/peephole/db-credentials/<runtime-id>` host tmpfs root, structurally separate from the M10 root above | proposed: single fixed file (`database-url`), read-only bind at `/run/secrets/database-url`; no `NAME=value` parsing; not implemented |
+| Generated-secret injection (M10, production-enabled, four canonical names only) | dedicated `/run/peephole/secrets/<runtime-id>` host tmpfs root | per-runtime directory `0700`, fixed file `0600`, read-only bind at `/run/secrets/env` (narrowed from a directory bind onto `/run/secrets` itself to an individual file bind onto a fixed placeholder baked into the base rootfs, M11-C3, so it can coexist with the row below); preflight capability check rejects non-tmpfs backing |
+| Temporary-database credential injection (M11-C3 primitives implemented, not wired into runtime execution -- see `docs/TEMPORARY_DATABASES.md`) | dedicated `/run/peephole/db-credentials/<runtime-id>` host tmpfs root, structurally separate from the M10 root above | single fixed file (`database-url`), read-only bind at `/run/secrets/database-url`; no `NAME=value` parsing |
 
 The ext4 mount root is owned by uid/gid 65534 with mode `0700`. World-writable
 `0777` is no longer required: the production host process is privileged for
@@ -240,6 +240,27 @@ hard-cap test logs blocks, free/available blocks, inode counts, fill-file
 logical/allocated bytes, and image logical/allocated bytes for each AWS run.
 
 ## AWS deployment checks
+
+**M11-C3 base rootfs prerequisite.** The generated-secret and
+temporary-database-credential rows in the table above (`/run/secrets/env`,
+`/run/secrets/database-url`) now depend on two fixed, empty placeholder files
+baked into the base rootfs image by `scripts/gvisor/build-base-rootfs.sh` --
+a directory bind onto `/run/secrets` itself is no longer used. A base rootfs
+built before this change does not have these placeholders and must be
+rebuilt before any deployment relies on this mount shape:
+
+```bash
+sudo ./scripts/gvisor/build-base-rootfs.sh
+sudo find /var/lib/peephole/base-rootfs/run/secrets -maxdepth 1 -printf '%m %s %p\n'
+# expect exactly two entries, mode 644, size 0:
+#   /var/lib/peephole/base-rootfs/run/secrets/env
+#   /var/lib/peephole/base-rootfs/run/secrets/database-url
+```
+
+This is a prerequisite check, not evidence it has been run: no rootfs has
+been rebuilt or deployed as part of the M11-C3 PR itself, and this step
+belongs to M11-D/M11-E production-activation preparation (see
+`docs/TEMPORARY_DATABASES.md` section 15), not to M11-C3.
 
 Run these on the intended worker host and retain the output with the deployment
 record:

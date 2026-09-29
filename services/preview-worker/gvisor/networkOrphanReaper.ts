@@ -1,3 +1,7 @@
+import {
+  TENANT_DATABASE_HOST,
+  TENANT_DATABASE_PORT,
+} from "../../../core/backendDatabase/databaseUrl"
 import type { ProcessRunner, ProcessRunResult } from "./processRunner"
 import { NodeProcessRunner } from "./nodeProcessRunner"
 import { NetworkAllocationRegistry } from "./networkAllocationRegistry"
@@ -437,12 +441,27 @@ export class NetworkOrphanReaper {
           (entry as { dst?: unknown }).dst === "default",
       ) as Array<{ gateway?: unknown; dev?: unknown }>
       const subnetDestination = `${lease.hostIp.split(".").slice(0, 3).join(".")}.${String(Number(lease.hostIp.split(".").at(-1)) - 1)}/${String(lease.prefixLength)}`
+      const databaseRouteDestination = `${TENANT_DATABASE_HOST}/32`
+      const isExpectedDatabaseRoute = (route: {
+        dst?: unknown
+        gateway?: unknown
+        dev?: unknown
+      }): boolean =>
+        lease.temporaryDatabaseAccess &&
+        route.dst === databaseRouteDestination &&
+        route.gateway === lease.hostIp &&
+        route.dev === lease.peerVeth
       if (
-        defaults.length > 1 ||
-        defaults.some(
-          (route) =>
-            route.gateway !== lease.hostIp || route.dev !== lease.peerVeth,
-        ) ||
+        // An ingress-only namespace must never carry a default route at
+        // all, regardless of where it points -- unlike egress-nat, which
+        // always carries exactly one, matching the lease's own hostIp/peerVeth.
+        (lease.policy === "ingress-only" && defaults.length > 0) ||
+        (lease.policy !== "ingress-only" &&
+          (defaults.length > 1 ||
+            defaults.some(
+              (route) =>
+                route.gateway !== lease.hostIp || route.dev !== lease.peerVeth,
+            ))) ||
         routes.some((entry) => {
           if (entry === null || typeof entry !== "object") return true
           const route = entry as {
@@ -451,6 +470,7 @@ export class NetworkOrphanReaper {
             dev?: unknown
           }
           if (route.dst === "default") return false
+          if (isExpectedDatabaseRoute(route)) return false
           return (
             route.dst !== subnetDestination ||
             route.dev !== lease.peerVeth ||
@@ -593,6 +613,23 @@ export function expectedRules(lease: NetworkLease): {
       "-j",
       "ACCEPT",
     ])
+    if (lease.temporaryDatabaseAccess) {
+      // The one narrow permission this capability grants -- see
+      // networkNamespace.ts's `configureIngressOnlyFirewall`, which this
+      // must mirror exactly.
+      inputRules.push([
+        "-A",
+        lease.inputChain,
+        "-d",
+        `${TENANT_DATABASE_HOST}/32`,
+        "-p",
+        "tcp",
+        "--dport",
+        String(TENANT_DATABASE_PORT),
+        "-j",
+        "ACCEPT",
+      ])
+    }
     inputRules.push(["-A", lease.inputChain, "-j", "DROP"])
     // Nothing should ever be forwarded into this namespace from elsewhere.
     returnRules.push(["-A", lease.returnChain, "-j", "DROP"])

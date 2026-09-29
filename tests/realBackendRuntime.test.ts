@@ -681,17 +681,27 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
           "secret-check-server.js",
         ])
         expect(config.process.args.includes(rawValue)).toBe(false)
+        // M11-C3 narrows the M10 mount from a directory bind onto
+        // `/run/secrets` itself to an individual file bind onto the fixed
+        // `/run/secrets/env` placeholder baked into the base rootfs -- see
+        // ociConfig.ts and build-base-rootfs.sh. The sandbox-visible file
+        // and its content are unchanged.
         const secretMounts = config.mounts.filter(
-          (mount) => mount.destination === "/run/secrets",
+          (mount) => mount.destination === "/run/secrets/env",
         )
         expect(secretMounts).toEqual([
           {
-            destination: "/run/secrets",
+            destination: "/run/secrets/env",
             type: "bind",
-            source: path.join(secretTestRoot, runtimeId),
+            source: path.join(secretTestRoot, runtimeId, "env"),
             options: ["bind", "ro", "nosuid", "nodev", "noexec"],
           },
         ])
+        expect(
+          config.mounts.filter(
+            (mount) => mount.destination === "/run/secrets/database-url",
+          ),
+        ).toEqual([])
 
         // --- 7. tmpfs material lifetime, while running. ---
         const runtimeSecretDir = path.join(secretTestRoot, runtimeId)

@@ -393,6 +393,12 @@ longer needed."
    unchanged** — still exactly `PORT`/`HOST`/`NODE_ENV`, so
    `validatePlatformEnvironment`'s "exactly 3 keys" invariant needs no
    change at all.
+   **(M11-C3 update:** this mount is now onto `/run/secrets/env` specifically
+   — an individual file bind onto a fixed placeholder baked into the base
+   rootfs, source the runtime's `env` file rather than its containing
+   directory — so it can coexist with M11's own `/run/secrets/database-url`
+   mount without one nesting inside the other. Sandbox-visible behavior is
+   unchanged; see `docs/TEMPORARY_DATABASES.md` section 15.)
 3. **`process.args`:** change from `[SANDBOX_NODE_BINARY, ...plan.start.args]`
    to `[SANDBOX_NODE_BINARY, "/opt/peephole/secret-bootstrap.js",
    ...plan.start.args]` — a fixed, Peephole-authored file baked into the
@@ -634,7 +640,9 @@ this-test-owned state. It proves: the sandboxed child actually receives the
 value (via a SHA-256 digest only, never the raw value, over `/secret-check`);
 `config.json`'s serialized bytes and `process.args` never contain the raw
 value; `process.env` in the OCI spec stays exactly platform-only; the one
-expected `/run/secrets` read-only bind mount is present; the host tmpfs
+expected `/run/secrets/env` read-only bind mount is present (an individual
+file bind as of M11-C3, narrowed from a directory bind onto `/run/secrets`
+itself); the host tmpfs
 directory and file have the expected `0700`/`0600` sandbox-owned permissions
 while running and are gone after `stop()`; a bounded, symlink-refusing,
 device/socket-skipping scan of the dedicated runsc state root finds the raw

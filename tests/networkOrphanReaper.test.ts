@@ -66,12 +66,18 @@ class FakeNetworkHost implements ProcessRunner {
     this.namespaceAddresses.set(lease.namespace, [
       address(lease.peerVeth, lease.peerIp),
     ])
-    this.namespaceRoutes.set(
-      lease.namespace,
+    const routes: unknown[] =
       options.withDefaultRoute === false
         ? []
-        : [{ dst: "default", gateway: lease.hostIp, dev: lease.peerVeth }],
-    )
+        : [{ dst: "default", gateway: lease.hostIp, dev: lease.peerVeth }]
+    if (lease.temporaryDatabaseAccess) {
+      routes.push({
+        dst: "192.168.253.1/32",
+        gateway: lease.hostIp,
+        dev: lease.peerVeth,
+      })
+    }
+    this.namespaceRoutes.set(lease.namespace, routes)
     const rules = expectedRules(lease)
     this.ipv4 = state === "partial" ? rules.ipv4.slice(0, 5) : rules.ipv4
     if (state === "full") {
@@ -280,7 +286,10 @@ describe("NetworkOrphanReaper", () => {
       string,
       unknown
     >
+    // A marker from before `policy` existed could never have
+    // `temporaryDatabaseAccess` either -- that field was added later still.
     delete marker.policy
+    delete marker.temporaryDatabaseAccess
     await writeFile(markerPath, JSON.stringify(marker))
     host.install(lease, "full")
 
@@ -601,6 +610,184 @@ describe("NetworkOrphanReaper ingress-only policy", () => {
   })
 })
 
+describe("NetworkOrphanReaper temporaryDatabaseAccess", () => {
+  let root: string
+  let manager: NetworkLeaseManager
+  let host: FakeNetworkHost
+  let reaper: NetworkOrphanReaper
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), "peephole-network-reaper-"))
+    manager = managerFor(root, false)
+    host = new FakeNetworkHost()
+    reaper = new NetworkOrphanReaper({
+      leaseManager: manager,
+      processRunner: host,
+    })
+  })
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  it("accepts and cleans the exact expected DB route/rule addition", async () => {
+    const lease = await allocateDatabaseIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+
+    await reaper.reapAll()
+
+    expect(await manager.listOwnedLeases()).toEqual([])
+    expect(host.namespaces).toEqual(new Set())
+    expect(host.ipv4).toEqual([])
+  })
+
+  it("fails closed if the DB route/rule exists on a lease whose marker does not authorize it", async () => {
+    const lease = await allocateIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    host.namespaceRoutes.set(lease.namespace, [
+      { dst: "192.168.253.1/32", gateway: lease.hostIp, dev: lease.peerVeth },
+    ])
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected default route/)
+  })
+
+  it("fails closed on a wrong destination IP", async () => {
+    const lease = await allocateDatabaseIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    host.namespaceRoutes.set(lease.namespace, [
+      { dst: "192.168.253.2/32", gateway: lease.hostIp, dev: lease.peerVeth },
+    ])
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected default route/)
+  })
+
+  it("fails closed on a broader CIDR than /32", async () => {
+    const lease = await allocateDatabaseIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    host.namespaceRoutes.set(lease.namespace, [
+      { dst: "192.168.253.0/24", gateway: lease.hostIp, dev: lease.peerVeth },
+    ])
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected default route/)
+  })
+
+  it("fails closed on an unexpected default route even when database access is enabled", async () => {
+    const lease = await allocateDatabaseIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    host.namespaceRoutes.set(lease.namespace, [
+      { dst: "default", gateway: lease.hostIp, dev: lease.peerVeth },
+      {
+        dst: "192.168.253.1/32",
+        gateway: lease.hostIp,
+        dev: lease.peerVeth,
+      },
+    ])
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected default route/)
+  })
+
+  it("fails closed on a wrong port for the INPUT accept rule", async () => {
+    const lease = await allocateDatabaseIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    removeRule(host.ipv4, [
+      "-A",
+      lease.inputChain,
+      "-d",
+      "192.168.253.1/32",
+      "-p",
+      "tcp",
+      "--dport",
+      "5433",
+      "-j",
+      "ACCEPT",
+    ])
+    host.ipv4.push([
+      "-A",
+      lease.inputChain,
+      "-d",
+      "192.168.253.1/32",
+      "-p",
+      "tcp",
+      "--dport",
+      "5432",
+      "-j",
+      "ACCEPT",
+    ])
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected IPv4 rule/)
+  })
+
+  it("fails closed on UDP instead of TCP for the INPUT accept rule", async () => {
+    const lease = await allocateDatabaseIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    removeRule(host.ipv4, [
+      "-A",
+      lease.inputChain,
+      "-d",
+      "192.168.253.1/32",
+      "-p",
+      "tcp",
+      "--dport",
+      "5433",
+      "-j",
+      "ACCEPT",
+    ])
+    host.ipv4.push([
+      "-A",
+      lease.inputChain,
+      "-d",
+      "192.168.253.1/32",
+      "-p",
+      "udp",
+      "--dport",
+      "5433",
+      "-j",
+      "ACCEPT",
+    ])
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected IPv4 rule/)
+  })
+
+  it("fails closed if an unexpected extra rule accompanies the DB accept rule", async () => {
+    const lease = await allocateDatabaseIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    host.ipv4.push(["-A", lease.inputChain, "-j", "ACCEPT"])
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected IPv4 rule/)
+  })
+
+  it("never expects or removes a NAT rule for a DB-enabled ingress-only lease", async () => {
+    const lease = await allocateDatabaseIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    expect(host.nat).toEqual([])
+
+    await reaper.reapAll()
+
+    expect(await manager.listOwnedLeases()).toEqual([])
+  })
+
+  it("fails closed if a DB-enabled ingress-only lease somehow acquired a NAT rule", async () => {
+    const lease = await allocateDatabaseIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    host.nat.push([
+      "-A",
+      "POSTROUTING",
+      "-s",
+      `${lease.peerIp}/32`,
+      "-o",
+      "eth0",
+      "-m",
+      "comment",
+      "--comment",
+      lease.iptablesComment,
+      "-j",
+      "MASQUERADE",
+    ])
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected NAT rule/)
+  })
+})
+
 describe("expectedRules for the ingress-only policy", () => {
   it("produces a DROP-only egress chain, no DNS rules, and no NAT", () => {
     const lease = ingressOnlyLeaseFixture()
@@ -661,6 +848,53 @@ describe("expectedRules for the ingress-only policy", () => {
       ["-A", "FORWARD", "-o", lease.hostVeth, "-j", lease.returnChain],
       ["-A", "INPUT", "-i", lease.hostVeth, "-j", lease.inputChain],
     ])
+  })
+
+  it("adds exactly one tenant-database ACCEPT rule, before DROP, only when temporaryDatabaseAccess is set", () => {
+    const lease = ingressOnlyLeaseFixture(true)
+
+    const rules = expectedRules(lease)
+
+    expect(
+      rules.ipv4.filter(
+        (rule) => rule[1] === lease.inputChain && rule[0] === "-A",
+      ),
+    ).toEqual([
+      [
+        "-A",
+        lease.inputChain,
+        "-m",
+        "conntrack",
+        "--ctstate",
+        "ESTABLISHED,RELATED",
+        "-j",
+        "ACCEPT",
+      ],
+      [
+        "-A",
+        lease.inputChain,
+        "-d",
+        "192.168.253.1/32",
+        "-p",
+        "tcp",
+        "--dport",
+        "5433",
+        "-j",
+        "ACCEPT",
+      ],
+      ["-A", lease.inputChain, "-j", "DROP"],
+    ])
+    expect(rules.nat).toBeNull()
+  })
+
+  it("omits the tenant-database rule when temporaryDatabaseAccess is false", () => {
+    const lease = ingressOnlyLeaseFixture(false)
+
+    const rules = expectedRules(lease)
+
+    expect(rules.ipv4.some((rule) => rule.includes("192.168.253.1/32"))).toBe(
+      false,
+    )
   })
 })
 
@@ -733,7 +967,19 @@ function allocateIngressOnly(manager: NetworkLeaseManager) {
   })
 }
 
-function ingressOnlyLeaseFixture(): NetworkLease {
+function allocateDatabaseIngressOnly(manager: NetworkLeaseManager) {
+  return manager.allocate({
+    allocationId: "d".repeat(32),
+    uplink: "eth0",
+    policy: "ingress-only",
+    dnsServers: [],
+    temporaryDatabaseAccess: true,
+  })
+}
+
+function ingressOnlyLeaseFixture(
+  temporaryDatabaseAccess = false,
+): NetworkLease {
   const allocationId = "c".repeat(32)
   const index = 7
   return {
@@ -743,6 +989,7 @@ function ingressOnlyLeaseFixture(): NetworkLease {
     allocationId,
     uplink: "eth0",
     policy: "ingress-only",
+    temporaryDatabaseAccess,
     dnsServers: [],
     creatorPid: process.pid,
     creatorProcessStartTime: null,

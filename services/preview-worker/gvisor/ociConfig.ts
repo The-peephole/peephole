@@ -1,4 +1,6 @@
 import type { SandboxResourceLimits } from "../../../core/runner/runnerLimits"
+import { SANDBOX_DATABASE_CREDENTIAL_FILE } from "./databaseCredentialFilesystem"
+import { SANDBOX_GENERATED_SECRET_FILE } from "./generatedSecretFilesystem"
 
 export interface OciConfigOptions {
   command: string[]
@@ -27,9 +29,16 @@ export interface OciConfigOptions {
   dnsConfigSource: string
   /** Exact host mountpoint of the allocation's loop-backed ext4 image. */
   workspaceSource: string
-  /** Exact host tmpfs directory for one runtime's generated material. The
-   * path may contain runtime identity only; values never enter this spec. */
+  /** Exact host path of one runtime's generated-secret FILE (never the
+   * containing directory -- see the base rootfs's fixed `/run/secrets/env`
+   * placeholder file, below). The path may contain runtime identity only;
+   * values never enter this spec. */
   generatedSecretsSource?: string
+  /** Exact host path of one runtime's `database-url` credential FILE. A
+   * structurally separate mount from `generatedSecretsSource` above -- see
+   * docs/TEMPORARY_DATABASES.md section 15 and the M11-C3 mount-composition
+   * note on `SANDBOX_DATABASE_CREDENTIAL_FILE`. */
+  databaseCredentialSource?: string
 }
 
 export interface OciRuntimeSpec {
@@ -164,12 +173,34 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
         source: options.dnsConfigSource,
         options: ["bind", "ro"],
       },
+      // Each credential is bind-mounted as an individual FILE onto its own
+      // fixed placeholder already baked into the base rootfs image (see
+      // build-base-rootfs.sh) -- never a directory bind onto `/run/secrets`
+      // itself. `/run/secrets` stays a plain base-image directory holding
+      // both placeholders, so these two mounts are independent siblings,
+      // never nested on top of one another; M10 and M11 credentials can
+      // therefore coexist regardless of which one (or both, or neither) is
+      // present for a given run. A destination created only by a *previous*
+      // mount entry in this same list would sit inside an already
+      // read-only bind and could not be created by runsc at all -- baking
+      // both fixed mountpoints into the immutable image sidesteps that
+      // entirely.
       ...(options.generatedSecretsSource
         ? [
             {
-              destination: "/run/secrets",
+              destination: SANDBOX_GENERATED_SECRET_FILE,
               type: "bind",
               source: options.generatedSecretsSource,
+              options: ["bind", "ro", "nosuid", "nodev", "noexec"],
+            },
+          ]
+        : []),
+      ...(options.databaseCredentialSource
+        ? [
+            {
+              destination: SANDBOX_DATABASE_CREDENTIAL_FILE,
+              type: "bind",
+              source: options.databaseCredentialSource,
               options: ["bind", "ro", "nosuid", "nodev", "noexec"],
             },
           ]
