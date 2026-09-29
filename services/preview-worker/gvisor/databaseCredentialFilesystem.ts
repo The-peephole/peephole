@@ -12,10 +12,7 @@ import {
 } from "node:fs/promises"
 import path from "node:path"
 
-import {
-  TENANT_DATABASE_HOST,
-  TENANT_DATABASE_PORT,
-} from "../../../core/backendDatabase/databaseUrl"
+import { assertTemporaryDatabaseUrlMatchesResource } from "../../../core/backendDatabase/databaseUrl"
 import type { TemporaryDatabaseRuntimeCredentialMaterial } from "../../../types/temporaryDatabase"
 import {
   assertTmpfsFilesystem,
@@ -205,9 +202,14 @@ export class TmpfsDatabaseCredentialFilesystem implements DatabaseCredentialFile
 
 /** The file's entire content is the canonical URL plus exactly one trailing
  * newline -- never a `NAME=value` line, never additional metadata. Validates
- * the value parses as a `postgresql:` URL pointed at the fixed tenant
- * endpoint before it is ever written to disk, as a defense-in-depth check on
- * top of the trusted builder's own invariants. */
+ * the value parses as a `postgresql:` URL whose every field -- role,
+ * database, host, port, and the absence of a query string or fragment --
+ * matches the object name derived from this material's own `resourceId`,
+ * before it is ever written to disk. This is the trusted write boundary: it
+ * proves the URL is the exact canonical shape `buildTemporaryDatabaseUrl()`
+ * would have produced for this resource, not merely some `postgresql://`
+ * value that happens to target the fixed tenant host/port (see
+ * docs/TEMPORARY_DATABASES.md section 15). */
 export function serializeDatabaseCredentialMaterial(
   material: TemporaryDatabaseRuntimeCredentialMaterial,
 ): string {
@@ -227,15 +229,7 @@ export function serializeDatabaseCredentialMaterial(
   } catch {
     throw new Error("Database credential material is not a valid URL.")
   }
-  if (
-    parsed.protocol !== "postgresql:" ||
-    parsed.hostname !== TENANT_DATABASE_HOST ||
-    parsed.port !== String(TENANT_DATABASE_PORT)
-  ) {
-    throw new Error(
-      "Database credential material does not match the tenant endpoint.",
-    )
-  }
+  assertTemporaryDatabaseUrlMatchesResource(material.resourceId, parsed)
   return `${url}\n`
 }
 

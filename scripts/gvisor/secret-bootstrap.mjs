@@ -74,17 +74,21 @@ export function parseSecretMaterial(contents) {
 /** The database credential file's entire content is the raw URL, never a
  * `NAME=value` line -- this never shares NAME_PATTERN/VALUE_PATTERN parsing
  * with parseSecretMaterial above. At most one trailing newline is stripped;
- * anything else (empty, oversized, embedded newline) fails closed. */
+ * anything else (empty, embedded newline) fails closed. `MAX_DATABASE_URL_BYTES`
+ * bounds the URL VALUE itself (post trailing-newline-strip), matching the
+ * writer's own bound in databaseCredentialFilesystem.ts -- so a value that is
+ * exactly at the limit produces a framed file one byte larger (the trailing
+ * `\n`) that is still accepted here, rather than being rejected on the framed
+ * byte count. */
 export function parseDatabaseCredentialMaterial(contents) {
   if (typeof contents !== "string") {
     throw new Error("Malformed database credential material.")
   }
-  const byteLength = Buffer.byteLength(contents, "utf8")
-  if (byteLength === 0 || byteLength > MAX_DATABASE_URL_BYTES) {
-    throw new Error("Malformed database credential material.")
-  }
   const trimmed = contents.endsWith("\n") ? contents.slice(0, -1) : contents
   if (trimmed.length === 0 || trimmed.includes("\n")) {
+    throw new Error("Malformed database credential material.")
+  }
+  if (Buffer.byteLength(trimmed, "utf8") > MAX_DATABASE_URL_BYTES) {
     throw new Error("Malformed database credential material.")
   }
   return trimmed

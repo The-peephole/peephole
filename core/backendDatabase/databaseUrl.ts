@@ -2,6 +2,7 @@ import {
   deriveTemporaryDatabaseObjectName,
   validateTemporaryDatabaseResourceId,
 } from "./resourceIdentity"
+import type { TemporaryDatabaseResourceId } from "./resourceIdentity"
 import { createOpaqueSecretValue } from "../backendSecrets/generatedSecretValue"
 import type { OpaqueSecretValue } from "../../types/backendRuntimeSecrets"
 import type { TemporaryDatabaseCredentialMaterial } from "../../types/temporaryDatabase"
@@ -50,4 +51,41 @@ export function buildTemporaryDatabaseUrl(
   url.pathname = `/${objectName}`
 
   return createOpaqueSecretValue(url.toString())
+}
+
+/**
+ * Fails closed unless `url` is *exactly* the canonical shape
+ * `buildTemporaryDatabaseUrl()` would have produced for this `resourceId` --
+ * not merely some `postgresql://` URL that happens to target the fixed
+ * tenant host/port. Every field is checked: username and pathname must equal
+ * the resource-derived object name, host/port must be the fixed tenant
+ * endpoint, there must be no query string or fragment, and the password must
+ * be non-empty. This is the identity binding the trusted database-credential
+ * write boundary (`databaseCredentialFilesystem.ts`) enforces before a
+ * credential file is ever written to disk -- see
+ * docs/TEMPORARY_DATABASES.md section 15.
+ *
+ * Never includes the URL (or any of its fields) in the thrown error.
+ */
+export function assertTemporaryDatabaseUrlMatchesResource(
+  resourceId: TemporaryDatabaseResourceId,
+  url: URL,
+): void {
+  const objectName = deriveTemporaryDatabaseObjectName(
+    validateTemporaryDatabaseResourceId(resourceId),
+  )
+  if (
+    url.protocol !== "postgresql:" ||
+    url.username !== objectName ||
+    url.password === "" ||
+    url.hostname !== TENANT_DATABASE_HOST ||
+    url.port !== String(TENANT_DATABASE_PORT) ||
+    url.pathname !== `/${objectName}` ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    throw new Error(
+      "Temporary database credential URL does not match its resource identity.",
+    )
+  }
 }

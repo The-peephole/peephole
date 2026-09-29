@@ -1032,6 +1032,44 @@ role name), the server-generated password, the fixed configured host
 (`192.168.253.1`), and the fixed configured port (`5433`). No repository
 string, template value, or client input contributes any component of it.
 
+The trusted database-credential write boundary
+(`serializeDatabaseCredentialMaterial` in `databaseCredentialFilesystem.ts`)
+does not merely check that a credential URL targets the fixed tenant
+host/port — it calls
+`assertTemporaryDatabaseUrlMatchesResource(resourceId, url)`
+(`core/backendDatabase/databaseUrl.ts`) to prove the URL is *exactly* the
+canonical shape `buildTemporaryDatabaseUrl()` would itself have produced for
+that material's own `resourceId`: username and pathname equal to the
+resource-derived object name, no query string, no fragment, non-empty
+password. A `postgresql://` URL that merely happens to point at
+`192.168.253.1:5433` but carries a different (or absent) role/database
+identity is rejected before it is ever written to disk (M11-C3 review
+correction).
+
+**Base rootfs deployment prerequisite (M11-C3 review correction):** merging
+M11-C3 does **not**, by itself, make the production base rootfs ready to
+serve this mount shape. The two fixed placeholder files
+(`/run/secrets/env`, `/run/secrets/database-url`) this section depends on are
+baked into the image by `scripts/gvisor/build-base-rootfs.sh`; the
+production base rootfs at whatever `baseRootfsImage` path is currently
+deployed predates this change unless it has been separately rebuilt from
+that script *after* this PR. Before any production deployment activates this
+mount shape (M11-D/M11-E, not this PR):
+
+- rebuild the base rootfs from the current `build-base-rootfs.sh`;
+- verify both `/run/secrets/env` and `/run/secrets/database-url` exist in
+  the rebuilt image, mode `0644`, empty, root-owned (see that script's own
+  comment on why world-readable-but-empty is required);
+- re-run the real-gVisor M10/M11 mount tests (§19's "Real Linux/gVisor"
+  suite) against the rebuilt image;
+- only then does the AWS deployment checklist in
+  `docs/SANDBOX_DISK_SECURITY.md` reflect the currently-served rootfs.
+
+This verification is part of M11-D/production-activation preparation, not
+part of M11-C3. It has not been performed by this PR, no rootfs was rebuilt
+or deployed, and no production system was touched. M11-D and M11-E remain
+**NOT STARTED**.
+
 ---
 
 ## 16. Boot / service ordering (future)
@@ -1237,6 +1275,14 @@ Against a disposable, real PostgreSQL 18 cluster (the same
   database on the same cluster.
 
 ### Real Linux/gVisor
+
+Requires a base rootfs rebuilt from the current
+`scripts/gvisor/build-base-rootfs.sh` (see §15's "Base rootfs deployment
+prerequisite" note) — an image predating M11-C3 does not carry the
+`/run/secrets/database-url` placeholder these tests bind-mount onto, and the
+existing `/run/secrets/env` placeholder replaces what used to be a directory
+target. Not run as part of this PR; `NOT_RUN` unless actually executed
+against a rebuilt image on real Linux/gVisor.
 
 Extending the existing `PEEPHOLE_REAL_GVISOR_TESTS=1`-gated suite pattern:
 

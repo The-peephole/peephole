@@ -241,6 +241,27 @@ logical/allocated bytes, and image logical/allocated bytes for each AWS run.
 
 ## AWS deployment checks
 
+**M11-C3 base rootfs prerequisite.** The generated-secret and
+temporary-database-credential rows in the table above (`/run/secrets/env`,
+`/run/secrets/database-url`) now depend on two fixed, empty placeholder files
+baked into the base rootfs image by `scripts/gvisor/build-base-rootfs.sh` --
+a directory bind onto `/run/secrets` itself is no longer used. A base rootfs
+built before this change does not have these placeholders and must be
+rebuilt before any deployment relies on this mount shape:
+
+```bash
+sudo ./scripts/gvisor/build-base-rootfs.sh
+sudo find /var/lib/peephole/base-rootfs/run/secrets -maxdepth 1 -printf '%m %s %p\n'
+# expect exactly two entries, mode 644, size 0:
+#   /var/lib/peephole/base-rootfs/run/secrets/env
+#   /var/lib/peephole/base-rootfs/run/secrets/database-url
+```
+
+This is a prerequisite check, not evidence it has been run: no rootfs has
+been rebuilt or deployed as part of the M11-C3 PR itself, and this step
+belongs to M11-D/M11-E production-activation preparation (see
+`docs/TEMPORARY_DATABASES.md` section 15), not to M11-C3.
+
 Run these on the intended worker host and retain the output with the deployment
 record:
 

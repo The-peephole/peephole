@@ -136,6 +136,25 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     this.generatedSecretFilesystem = options.generatedSecretFilesystem
     this.databaseCredentialFilesystem = options.databaseCredentialFilesystem
     this.stopGraceMs = options.stopGraceMs ?? 5_000
+
+    // Both filesystem roots are independently injectable (test/config seams),
+    // so neither one can know the other's actual configured root on its own.
+    // This constructor is the lowest trusted boundary that owns both
+    // instances -- fail closed here, before any credential is ever created,
+    // if the two configured roots are the same or nested either direction
+    // (M11-C3 review correction; see docs/TEMPORARY_DATABASES.md section 15).
+    if (
+      this.generatedSecretFilesystem &&
+      this.databaseCredentialFilesystem &&
+      pathsOverlap(
+        path.resolve(this.generatedSecretFilesystem.rootDir),
+        path.resolve(this.databaseCredentialFilesystem.rootDir),
+      )
+    ) {
+      throw new Error(
+        "Generated-secret and database credential filesystem roots must be disjoint.",
+      )
+    }
   }
 
   async start(

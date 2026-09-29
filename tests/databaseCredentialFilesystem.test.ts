@@ -17,7 +17,10 @@ import {
   TENANT_DATABASE_HOST,
   TENANT_DATABASE_PORT,
 } from "../core/backendDatabase/databaseUrl"
-import { mintTemporaryDatabaseResourceId } from "../core/backendDatabase/resourceIdentity"
+import {
+  deriveTemporaryDatabaseObjectName,
+  mintTemporaryDatabaseResourceId,
+} from "../core/backendDatabase/resourceIdentity"
 import { createOpaqueSecretValue } from "../core/backendSecrets/generatedSecretValue"
 import {
   DATABASE_CREDENTIAL_FILE_NAME,
@@ -32,16 +35,44 @@ const MARKER = "DbCredMarker_7Hn9-Q"
 const RESOURCE_ID = mintTemporaryDatabaseResourceId(() =>
   new Uint8Array(14).fill(3),
 )
+// The credential URL's username/database must exactly equal this object
+// name for `RESOURCE_ID` -- see assertTemporaryDatabaseUrlMatchesResource in
+// core/backendDatabase/databaseUrl.ts. A literal like "pv_x" that does not
+// derive from RESOURCE_ID is exactly the M11-C3 review's identified gap and
+// must never appear as a passing fixture here again.
+const OBJECT_NAME = deriveTemporaryDatabaseObjectName(RESOURCE_ID)
 
 function material(
   runtimeId = RUNTIME_ID,
-  url = `postgresql://pv_x:${MARKER}@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/pv_x`,
+  url = `postgresql://${OBJECT_NAME}:${MARKER}@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/${OBJECT_NAME}`,
 ): TemporaryDatabaseRuntimeCredentialMaterial {
   return {
     runtimeId,
     resourceId: RESOURCE_ID,
     databaseUrl: createOpaqueSecretValue(url),
   }
+}
+
+/** Builds a canonical, resource-matching URL whose total byte length is
+ * exactly `totalBytes`, by sizing the password -- lets the boundary tests
+ * below prove the writer's real 4096-byte limit without weakening
+ * `assertTemporaryDatabaseUrlMatchesResource`'s own canonical-shape check. */
+function canonicalUrlOfByteLength(totalBytes: number): string {
+  const fixedBytes =
+    "postgresql://".length +
+    OBJECT_NAME.length +
+    ":".length +
+    "@".length +
+    TENANT_DATABASE_HOST.length +
+    ":".length +
+    String(TENANT_DATABASE_PORT).length +
+    "/".length +
+    OBJECT_NAME.length
+  const passwordLength = totalBytes - fixedBytes
+  if (passwordLength < 1) {
+    throw new Error("Requested byte length is too small for a canonical URL.")
+  }
+  return `postgresql://${OBJECT_NAME}:${"a".repeat(passwordLength)}@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/${OBJECT_NAME}`
 }
 
 describe("TmpfsDatabaseCredentialFilesystem", () => {
@@ -215,18 +246,37 @@ describe("TmpfsDatabaseCredentialFilesystem", () => {
   })
 
   it("rejects an oversized value", () => {
-    const oversized = `postgresql://pv_x:${"a".repeat(5_000)}@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/pv_x`
+    const oversized = `postgresql://${OBJECT_NAME}:${"a".repeat(5_000)}@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/${OBJECT_NAME}`
     expect(() =>
       serializeDatabaseCredentialMaterial(material(RUNTIME_ID, oversized)),
+    ).toThrow(/invalid value/)
+  })
+
+  it("accepts a canonical value at exactly the 4096-byte writer limit", () => {
+    const atLimit = canonicalUrlOfByteLength(4096)
+    expect(Buffer.byteLength(atLimit, "utf8")).toBe(4096)
+    expect(
+      serializeDatabaseCredentialMaterial(material(RUNTIME_ID, atLimit)),
+    ).toBe(`${atLimit}\n`)
+  })
+
+  it("rejects a canonical value one byte over the 4096-byte writer limit", () => {
+    const overLimit = canonicalUrlOfByteLength(4097)
+    expect(Buffer.byteLength(overLimit, "utf8")).toBe(4097)
+    expect(() =>
+      serializeDatabaseCredentialMaterial(material(RUNTIME_ID, overLimit)),
     ).toThrow(/invalid value/)
   })
 
   it("rejects a value that does not target the fixed tenant endpoint", () => {
     expect(() =>
       serializeDatabaseCredentialMaterial(
-        material(RUNTIME_ID, "postgresql://pv_x:pw@evil.example:5432/pv_x"),
+        material(
+          RUNTIME_ID,
+          `postgresql://${OBJECT_NAME}:pw@evil.example:5432/${OBJECT_NAME}`,
+        ),
       ),
-    ).toThrow(/tenant endpoint/)
+    ).toThrow(/resource identity/)
   })
 
   it("rejects a non-URL value", () => {
@@ -235,9 +285,23 @@ describe("TmpfsDatabaseCredentialFilesystem", () => {
     ).toThrow(/not a valid URL/)
   })
 
+  it("rejects a well-formed tenant-endpoint URL whose role/database does not derive from this material's resourceId", () => {
+    // Same fixed host/port as a legitimate credential, but the username and
+    // database were not derived from RESOURCE_ID -- this is exactly the gap
+    // the M11-C3 review flagged: an otherwise-plausible URL must still be
+    // bound to its own resourceId, not merely to the tenant endpoint.
+    const someoneElsesObjectName = deriveTemporaryDatabaseObjectName(
+      mintTemporaryDatabaseResourceId(() => new Uint8Array(14).fill(9)),
+    )
+    const mismatched = `postgresql://${someoneElsesObjectName}:${MARKER}@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/${someoneElsesObjectName}`
+    expect(() =>
+      serializeDatabaseCredentialMaterial(material(RUNTIME_ID, mismatched)),
+    ).toThrow(/resource identity/)
+  })
+
   it("never uses generic NAME=value serialization -- the file has no '=' grammar", async () => {
     const store = filesystem()
-    const url = `postgresql://pv_x:${MARKER}@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/pv_x`
+    const url = `postgresql://${OBJECT_NAME}:${MARKER}@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/${OBJECT_NAME}`
     const credentialFile = await store.create(material(RUNTIME_ID, url))
     const contents = await readFile(credentialFile, "utf8")
 

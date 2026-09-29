@@ -18,7 +18,10 @@ import {
   TENANT_DATABASE_HOST,
   TENANT_DATABASE_PORT,
 } from "../core/backendDatabase/databaseUrl"
-import { mintTemporaryDatabaseResourceId } from "../core/backendDatabase/resourceIdentity"
+import {
+  deriveTemporaryDatabaseObjectName,
+  mintTemporaryDatabaseResourceId,
+} from "../core/backendDatabase/resourceIdentity"
 import { createOpaqueSecretValue } from "../core/backendSecrets/generatedSecretValue"
 import type { GVisorPreviewWorkspace } from "../services/preview-worker/gvisor/gvisorWorkspace"
 import type {
@@ -30,7 +33,17 @@ import type { GeneratedSecretMaterial } from "../types/backendRuntimeSecrets"
 import type { TemporaryDatabaseRuntimeCredentialMaterial } from "../types/temporaryDatabase"
 
 const SECRET_MARKER = "M10BMarker_7Hn9-Q"
-const DATABASE_URL_MARKER = `postgresql://pv_x:M11CMarker_7Hn9-Q@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/pv_x`
+// The credential's resourceId (below, in databaseCredential()) is fixed via
+// a deterministic entropy source -- derive the URL's username/database from
+// it here too, rather than an unrelated literal, so the credential the
+// runtime is asked to deliver is one `serializeDatabaseCredentialMaterial`
+// (M11-C3 review correction) would actually accept.
+const DATABASE_RESOURCE_ID = mintTemporaryDatabaseResourceId(() =>
+  new Uint8Array(14).fill(5),
+)
+const DATABASE_OBJECT_NAME =
+  deriveTemporaryDatabaseObjectName(DATABASE_RESOURCE_ID)
+const DATABASE_URL_MARKER = `postgresql://${DATABASE_OBJECT_NAME}:M11CMarker_7Hn9-Q@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/${DATABASE_OBJECT_NAME}`
 
 const plan: BackendRuntimePlan = {
   contractVersion: "backend-v1",
@@ -76,9 +89,7 @@ function databaseCredential(
 ): TemporaryDatabaseRuntimeCredentialMaterial {
   return {
     runtimeId,
-    resourceId: mintTemporaryDatabaseResourceId(() =>
-      new Uint8Array(14).fill(5),
-    ),
+    resourceId: DATABASE_RESOURCE_ID,
     databaseUrl: createOpaqueSecretValue(url),
   }
 }
@@ -1137,6 +1148,104 @@ describe("GVisorBackendRuntimeProcess", () => {
       // two independent, always-both-attempted credential cleanup failures.
       expect(outer.errors[1]).toBeInstanceOf(AggregateError)
       expect((outer.errors[1] as AggregateError).errors).toHaveLength(2)
+    })
+  })
+
+  describe("credential filesystem root separation (M11-C3 review correction)", () => {
+    // Both roots are independently injectable test/config seams -- neither
+    // filesystem instance can know the other's actual configured root on its
+    // own. The constructor is the lowest trusted boundary that owns both, so
+    // it must fail closed here, before any credential is ever created, if
+    // the two configured roots overlap. `create`/`remove` are never invoked
+    // by these tests; only the constructor's own root check runs.
+    function fakeGeneratedSecretFilesystem(rootDir: string) {
+      return {
+        rootDir,
+        create: async () => rootDir,
+        remove: async () => undefined,
+      }
+    }
+    function fakeDatabaseCredentialFilesystem(rootDir: string) {
+      return {
+        rootDir,
+        create: async () => path.join(rootDir, DATABASE_CREDENTIAL_FILE_NAME),
+        remove: async () => undefined,
+      }
+    }
+
+    it("rejects identical roots", () => {
+      expect(
+        () =>
+          new GVisorBackendRuntimeProcess({
+            generatedSecretFilesystem: fakeGeneratedSecretFilesystem(
+              "/run/peephole/shared",
+            ),
+            databaseCredentialFilesystem: fakeDatabaseCredentialFilesystem(
+              "/run/peephole/shared",
+            ),
+          }),
+      ).toThrow(/must be disjoint/)
+    })
+
+    it("rejects the database credential root nested inside the generated-secret root", () => {
+      expect(
+        () =>
+          new GVisorBackendRuntimeProcess({
+            generatedSecretFilesystem: fakeGeneratedSecretFilesystem(
+              "/run/peephole/secrets",
+            ),
+            databaseCredentialFilesystem: fakeDatabaseCredentialFilesystem(
+              "/run/peephole/secrets/nested",
+            ),
+          }),
+      ).toThrow(/must be disjoint/)
+    })
+
+    it("rejects the generated-secret root nested inside the database credential root", () => {
+      expect(
+        () =>
+          new GVisorBackendRuntimeProcess({
+            generatedSecretFilesystem: fakeGeneratedSecretFilesystem(
+              "/run/peephole/db-credentials/nested",
+            ),
+            databaseCredentialFilesystem: fakeDatabaseCredentialFilesystem(
+              "/run/peephole/db-credentials",
+            ),
+          }),
+      ).toThrow(/must be disjoint/)
+    })
+
+    it("accepts disjoint roots", () => {
+      expect(
+        () =>
+          new GVisorBackendRuntimeProcess({
+            generatedSecretFilesystem: fakeGeneratedSecretFilesystem(
+              "/run/peephole/secrets",
+            ),
+            databaseCredentialFilesystem: fakeDatabaseCredentialFilesystem(
+              "/run/peephole/db-credentials",
+            ),
+          }),
+      ).not.toThrow()
+    })
+
+    it("does not require both filesystems to be configured", () => {
+      expect(
+        () =>
+          new GVisorBackendRuntimeProcess({
+            databaseCredentialFilesystem: fakeDatabaseCredentialFilesystem(
+              "/run/peephole/db-credentials",
+            ),
+          }),
+      ).not.toThrow()
+      expect(
+        () =>
+          new GVisorBackendRuntimeProcess({
+            generatedSecretFilesystem: fakeGeneratedSecretFilesystem(
+              "/run/peephole/secrets",
+            ),
+          }),
+      ).not.toThrow()
     })
   })
 })

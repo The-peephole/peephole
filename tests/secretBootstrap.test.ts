@@ -189,6 +189,51 @@ describe("trusted secret bootstrap", () => {
     )
   })
 
+  it("bounds the URL VALUE itself, not the framed file -- a value at exactly the 4096-byte limit survives its own trailing newline", () => {
+    // The writer (databaseCredentialFilesystem.ts's serializeDatabaseCredentialMaterial)
+    // accepts a URL value up to 4096 bytes and then appends exactly one "\n",
+    // producing a 4097-byte FILE for a value at the limit. This is the
+    // M11-C3 review correction: the parser must measure the normalized
+    // (post trailing-newline-strip) value, never the raw framed byte count,
+    // or a valid at-the-limit value the writer just wrote becomes
+    // unparseable here.
+    const atLimit = "v".repeat(4096)
+    const overLimit = "v".repeat(4097)
+    expect(Buffer.byteLength(atLimit, "utf8")).toBe(4096)
+
+    expect(parseDatabaseCredentialMaterial(atLimit)).toBe(atLimit)
+    expect(parseDatabaseCredentialMaterial(`${atLimit}\n`)).toBe(atLimit)
+
+    expect(() => parseDatabaseCredentialMaterial(overLimit)).toThrow(
+      "Malformed database credential material.",
+    )
+    expect(() => parseDatabaseCredentialMaterial(`${overLimit}\n`)).toThrow(
+      "Malformed database credential material.",
+    )
+  })
+
+  it("end-to-end: a database credential file framed at the writer's own 4096-byte value limit reaches the child", async () => {
+    const atLimit = "v".repeat(4096)
+    await writeFile(databaseCredentialFile, `${atLimit}\n`, { mode: 0o600 })
+    const child = new FakeChild()
+    let receivedEnvironment: NodeJS.ProcessEnv | undefined
+    const resultPromise = runSecretBootstrap({
+      secretFile: missingSecretFile,
+      databaseCredentialFile,
+      nodeBinary: process.execPath,
+      childArgs: ["server.js"],
+      baseEnvironment: { PORT: "3000" },
+      spawnChild: (_command, _args, options) => {
+        receivedEnvironment = options.env
+        queueMicrotask(() => child.emit("close", 0, null))
+        return child as unknown as ChildProcess
+      },
+    })
+
+    await expect(resultPromise).resolves.toEqual({ exitCode: 0, signal: null })
+    expect(receivedEnvironment?.DATABASE_URL).toBe(atLimit)
+  })
+
   it("rejects the database credential propagating through the generated-secret parser", () => {
     expect(() =>
       parseSecretMaterial(`DATABASE_URL=${DATABASE_URL_MARKER}\n`),
