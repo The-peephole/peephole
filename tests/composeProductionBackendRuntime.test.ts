@@ -10,6 +10,8 @@ import { LiveBackendRuntimeRegistry } from "../services/backend-runtime-worker/l
 import { InMemoryBackendRuntimeSecretBroker } from "../services/backend-runtime-worker/secretBroker"
 import { composeProductionBackendRuntime } from "../services/preview-worker/gvisor/composeProductionBackendRuntime"
 import type { GeneratedSecretFilesystem } from "../services/preview-worker/gvisor/generatedSecretFilesystem"
+import type { DatabaseCredentialFilesystem } from "../services/preview-worker/gvisor/databaseCredentialFilesystem"
+import type { TemporaryDatabaseLifecycleProvisioner } from "../services/backend-runtime-worker/backendRuntimeSupervisor"
 
 function fakeControlPlane(): BackendRuntimeControlPlane {
   return new BackendRuntimeControlPlane(
@@ -147,6 +149,71 @@ describe("composeProductionBackendRuntime", () => {
     }
     void callWithoutSecretBroker
     void callWithoutSecretFilesystem
+  })
+
+  it("fails closed when only one temporary-database dependency is configured", () => {
+    const temporaryDatabaseProvisioner = {
+      provision: vi.fn(),
+      revoke: vi.fn(),
+    } as unknown as TemporaryDatabaseLifecycleProvisioner
+    const databaseCredentialFilesystem = {
+      rootDir: "/run/peephole/test-db-credentials",
+      create: vi.fn(),
+      remove: vi.fn(),
+    } as unknown as DatabaseCredentialFilesystem
+    const base = {
+      baseRootfsImage: "/tmp/fake-rootfs",
+      liveRuntimeRegistry: new LiveBackendRuntimeRegistry(),
+      ...generatedSecretDependencies(),
+    }
+
+    expect(() =>
+      composeProductionBackendRuntime(fakeControlPlane(), {
+        ...base,
+        temporaryDatabaseProvisioner,
+      }),
+    ).toThrow("must be configured together")
+    expect(() =>
+      composeProductionBackendRuntime(fakeControlPlane(), {
+        ...base,
+        databaseCredentialFilesystem,
+      }),
+    ).toThrow("must be configured together")
+  })
+
+  it("passes paired temporary-database dependencies through without activating them", () => {
+    const temporaryDatabaseProvisioner = {
+      provision: vi.fn(),
+      revoke: vi.fn(),
+    } as unknown as TemporaryDatabaseLifecycleProvisioner
+    const databaseCredentialFilesystem = {
+      rootDir: "/run/peephole/test-db-credentials",
+      create: vi.fn(),
+      remove: vi.fn(),
+    } as unknown as DatabaseCredentialFilesystem
+    const supervisor = composeProductionBackendRuntime(fakeControlPlane(), {
+      baseRootfsImage: "/tmp/fake-rootfs",
+      liveRuntimeRegistry: new LiveBackendRuntimeRegistry(),
+      ...generatedSecretDependencies(),
+      temporaryDatabaseProvisioner,
+      databaseCredentialFilesystem,
+    })
+
+    expect(
+      (
+        supervisor as unknown as {
+          options: { temporaryDatabaseProvisioner: unknown }
+        }
+      ).options.temporaryDatabaseProvisioner,
+    ).toBe(temporaryDatabaseProvisioner)
+    expect(
+      (
+        supervisor as unknown as {
+          runtimeProcessStarter: { databaseCredentialFilesystem: unknown }
+        }
+      ).runtimeProcessStarter.databaseCredentialFilesystem,
+    ).toBe(databaseCredentialFilesystem)
+    expect(temporaryDatabaseProvisioner.provision).not.toHaveBeenCalled()
   })
 })
 

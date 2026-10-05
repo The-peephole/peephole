@@ -1,4 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { Client, Pool, type QueryResultRow } from "pg"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
@@ -19,6 +22,17 @@ import type {
   TenantDatabaseAdmin,
 } from "../services/temporary-database/ports"
 import { TemporaryDatabaseProvisioner } from "../services/temporary-database/temporaryDatabaseProvisioner"
+import { BackendRuntimeControlPlane } from "../services/backend-runtime-api/controlPlane"
+import {
+  InMemoryBackendRuntimeQueue,
+  InMemoryBackendRuntimeStore,
+} from "../services/backend-runtime-api/inMemoryAdapters"
+import { BackendRuntimeSupervisor } from "../services/backend-runtime-worker/backendRuntimeSupervisor"
+import { LiveBackendRuntimeRegistry } from "../services/backend-runtime-worker/liveRuntimeRegistry"
+import { ArchiveByteStore } from "../services/preview-worker/local/archiveByteStore"
+import { ExtractionState } from "../services/preview-worker/local/extractionState"
+import type { BackendRuntimeProcessStarter } from "../services/backend-runtime-worker/ports"
+import type { BackendRuntimePlan } from "../types/backendRuntime"
 import type { TemporaryDatabaseCredentialMaterial } from "../types/temporaryDatabase"
 import type { SqlResult } from "../services/preview-api/postgres/database"
 
@@ -422,6 +436,181 @@ describeWithPostgres("PostgreSQL 18 temporary database provisioning", () => {
       "revoked",
     )
     await expectProvisionerSessionIdentity(tenantAdmin, provisioningRole)
+  })
+
+  it("integrates trusted backend lifecycle identity, runtime credential delivery, and real FORCE teardown", async () => {
+    const previewId = createFullStackPreviewId()
+    const backendRuntimeId = `runtime-${randomUUID()}`
+    const resourceId = mintTemporaryDatabaseResourceId()
+    const objectName = deriveTemporaryDatabaseObjectName(resourceId)
+    previewIds.push(previewId)
+    physicalObjectNames.push(objectName)
+    await insertFullStackParent(controlDatabase, previewId, backendRuntimeId)
+
+    const integratedProvisioner = new TemporaryDatabaseProvisioner({
+      ownershipStore: store,
+      tenantAdmin: capturingAdmin,
+      createResourceId: () => resourceId,
+    })
+    const repository = {
+      repositoryId: 1,
+      owner: "peephole-integration",
+      name: "temporary-database",
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
+    }
+    const plan: BackendRuntimePlan = {
+      contractVersion: "backend-v1",
+      repository,
+      sourceRoot: "backend",
+      adapterId: "express-node-npm-v1",
+      packageManager: "npm",
+      install: { command: "npm", args: ["ci", "--no-audit", "--no-fund"] },
+      start: { command: "node", args: ["src/server.js"] },
+      internalPort: 3000,
+      platformEnvironment: {
+        PORT: "3000",
+        HOST: "0.0.0.0",
+        NODE_ENV: "production",
+      },
+      generatedSecretNames: [],
+      databaseRequirement: { name: "DATABASE_URL" },
+    }
+    const backendStore = new InMemoryBackendRuntimeStore()
+    const backendQueue = new InMemoryBackendRuntimeQueue()
+    const controlPlane = new BackendRuntimeControlPlane(
+      { resolve: async () => plan },
+      backendStore,
+      backendQueue,
+      { createId: () => backendRuntimeId },
+    )
+    const byteStore = new ArchiveByteStore()
+    const roots: string[] = []
+    let deliveredDatabase:
+      Parameters<BackendRuntimeProcessStarter["start"]>[3] | undefined
+    let resolveExit!: (value: { exitCode: number | null }) => void
+    const exit = new Promise<{ exitCode: number | null }>((resolve) => {
+      resolveExit = resolve
+    })
+    const supervisor = new BackendRuntimeSupervisor(
+      controlPlane,
+      {
+        fetch: async () => {
+          byteStore.put(repository.commitSha, new Uint8Array())
+          return {
+            compressedBytes: 10,
+            entries: [{ path: "package.json", bytes: 10, isSymlink: false }],
+          }
+        },
+      },
+      byteStore,
+      new ExtractionState(async (_data, options) => {
+        const sourceRoot = path.join(options.destinationDir, "backend")
+        await mkdir(path.join(sourceRoot, "src"), { recursive: true })
+        await writeFile(path.join(sourceRoot, "package-lock.json"), "{}")
+        await writeFile(path.join(sourceRoot, "src", "server.js"), "")
+      }),
+      {
+        allocate: async (id) => {
+          const rootDir = await mkdtemp(
+            path.join(os.tmpdir(), "peephole-c4-postgres-"),
+          )
+          roots.push(rootDir)
+          return {
+            id,
+            rootDir,
+            remainingMs: () => 60_000,
+            destroy: async () => rm(rootDir, { recursive: true, force: true }),
+          }
+        },
+      },
+      { run: async () => undefined },
+      {
+        start: async (_workspace, _plan, _secrets, databaseCredential) => {
+          deliveredDatabase = databaseCredential
+          return {
+            dialTarget: { host: "10.90.0.2", port: 3000 },
+            waitUntilReady: async () => undefined,
+            waitForExit: () => exit,
+            stop: async () => resolveExit({ exitCode: 0 }),
+          }
+        },
+      },
+      new LiveBackendRuntimeRegistry(),
+      {
+        temporaryDatabaseProvisioner: integratedProvisioner,
+        cancellationPollMs: 10,
+        monitorPollMs: 10,
+      },
+    )
+
+    await controlPlane.createForOrchestration(
+      { repository, contractVersion: "backend-v1" },
+      `integration-${previewId}`,
+      previewId,
+    )
+    const leased = await backendQueue.lease("worker-1")
+    expect(leased?.job.runtimeId).toBe(backendRuntimeId)
+    const run = supervisor.run(leased!.job)
+    await expect
+      .poll(
+        async () =>
+          (
+            await controlPlane.getForOrchestration(
+              backendRuntimeId,
+              `integration-${previewId}`,
+            )
+          ).status,
+      )
+      .toBe("running")
+
+    expect(deliveredDatabase).toMatchObject({
+      runtimeId: backendRuntimeId,
+      resourceId,
+    })
+    expect(await store.getByResourceId(resourceId)).toMatchObject({
+      previewId,
+      backendRuntimeId,
+      status: "provisioned",
+    })
+    const provisionedPhysical = await superuserPool.query<{
+      database_exists: boolean
+      role_exists: boolean
+    }>(
+      `SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1) AS database_exists,
+              EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1) AS role_exists`,
+      [objectName],
+    )
+    expect(provisionedPhysical.rows[0]).toEqual({
+      database_exists: true,
+      role_exists: true,
+    })
+
+    await controlPlane.cancelForOrchestration(
+      backendRuntimeId,
+      `integration-${previewId}`,
+    )
+    await run
+
+    expect((await store.getByResourceId(resourceId))?.status).toBe("revoked")
+    const revokedPhysical = await superuserPool.query<{
+      database_exists: boolean
+      role_exists: boolean
+    }>(
+      `SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1) AS database_exists,
+              EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1) AS role_exists`,
+      [objectName],
+    )
+    expect(revokedPhysical.rows[0]).toEqual({
+      database_exists: false,
+      role_exists: false,
+    })
+    expect(
+      await controlPlane.getForOrchestration(
+        backendRuntimeId,
+        `integration-${previewId}`,
+      ),
+    ).toMatchObject({ status: "stopped", errorCode: null })
+    expect(roots).toHaveLength(1)
   })
 })
 

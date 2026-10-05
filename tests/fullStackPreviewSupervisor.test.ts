@@ -268,6 +268,66 @@ describe("FullStackPreviewSupervisor", () => {
     expect(harness.fullStackQueue.cancelled).toEqual([])
   })
 
+  it("does not mark a stopping parent stopped until the backend cleanup result is stopped", async () => {
+    const harness = createHarness()
+    await harness.createParent()
+    const events: string[] = []
+    const originalBackendMarkStopped = harness.backend.markStopped.bind(
+      harness.backend,
+    )
+    vi.spyOn(harness.backend, "markStopped").mockImplementation(async (id) => {
+      // The backend supervisor publishes this only after database revoke;
+      // model that boundary explicitly in the parent-order assertion.
+      events.push("database-revoked")
+      await originalBackendMarkStopped(id)
+    })
+    const originalParentMarkPhase = harness.fullStack.markPhase.bind(
+      harness.fullStack,
+    )
+    vi.spyOn(harness.fullStack, "markPhase").mockImplementation(
+      async (id, status) => {
+        if (status === "stopped") events.push("parent-stopped")
+        return originalParentMarkPhase(id, status)
+      },
+    )
+    const composed = productionSupervisor(harness, async () => {
+      await harness.fullStack.cancel(previewId, requester)
+    })
+
+    await composed.supervisor.run(harness.queued)
+
+    expect(events).toEqual(["database-revoked", "parent-stopped"])
+  })
+
+  it("fails a stopping parent when backend database teardown fails", async () => {
+    const harness = createHarness()
+    await harness.createParent()
+    const composed = productionSupervisor(harness, async ({ unregister }) => {
+      await harness.fullStack.cancel(previewId, requester)
+      unregister()
+      await harness.backend.failWorkerRuntime(
+        "backend-runtime-1",
+        "DATABASE_UNAVAILABLE",
+      )
+    })
+
+    await composed.supervisor.run(harness.queued)
+
+    expect(await harness.fullStackStore.get(previewId)).toMatchObject({
+      status: "failed",
+      errorCode: "BACKEND_FAILED",
+    })
+    expect(
+      await harness.backend.getForOrchestration(
+        "backend-runtime-1",
+        requester.subject,
+      ),
+    ).toMatchObject({
+      status: "failed",
+      errorCode: "DATABASE_UNAVAILABLE",
+    })
+  })
+
   it("cleans up the backend when a ready parent expires", async () => {
     const harness = createHarness()
     await harness.createParent()
@@ -532,6 +592,10 @@ describe("FullStackPreviewSupervisor", () => {
   it("maps frontend and backend child failures to safe parent errors", async () => {
     const frontendHarness = createHarness()
     await frontendHarness.createParent()
+    const createBackend = vi.spyOn(
+      frontendHarness.backend,
+      "createForOrchestration",
+    )
     const frontendSupervisor = new FullStackPreviewSupervisor(
       frontendHarness.fullStack,
       frontendHarness.frontend,
@@ -554,6 +618,7 @@ describe("FullStackPreviewSupervisor", () => {
       status: "failed",
       errorCode: "FRONTEND_FAILED",
     })
+    expect(createBackend).not.toHaveBeenCalled()
 
     const backendHarness = createHarness()
     await backendHarness.createParent()

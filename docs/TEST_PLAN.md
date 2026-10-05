@@ -844,16 +844,20 @@ Add coverage in the same order as product development:
     printing a secret to stdout never reaches Peephole's own logs -- all
     passed, both portable and real-gVisor-gated)
 11. temporary database tenancy, credentials, lifecycle, and cleanup --
-    proceeding in stages (M11), not wired into the product path yet;
+    proceeding in stages (M11), integrated through an internal injectable
+    runtime path but not activated in production;
     architecture designed and locked (D-033, still Proposed, not Accepted).
     M11-C1 (portable admission/ownership), M11-C2 (PostgreSQL
     provisioning/reconciliation, real PostgreSQL 18 integration-tested), and
-    M11-C3 (credential delivery + host-only network primitives) all have
-    portable test coverage -- see docs/TEMPORARY_DATABASES.md section 19.
-    M11-C4 (integrated lifecycle wiring) and M11-D (real-gVisor
-    verification) remain not started; a database-requiring backend plan
-    still fails closed with `DATABASE_UNAVAILABLE` before sandbox
-    allocation
+    M11-C3 (credential delivery + host-only network primitives) are complete,
+    and M11-C4's integrated FullStack lifecycle is current with portable and
+    PostgreSQL-18-gated coverage -- see docs/TEMPORARY_DATABASES.md section
+    19. The current production server deliberately supplies no tenant
+    provisioner/credential-filesystem pair, so a production database plan
+    still fails closed with `DATABASE_UNAVAILABLE` before sandbox allocation.
+    M11-D real-gVisor verification and M11-E activation remain not started;
+    no tenant cluster, `pphdb0`, provisioning credential, or production DB
+    reaper wiring exists yet
 
 The full-stack fixture becomes eligible for these tests only as each required
 contract is actually implemented.

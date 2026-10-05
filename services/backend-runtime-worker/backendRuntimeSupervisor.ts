@@ -8,8 +8,14 @@ import {
 } from "../../core/runner/archivePolicy"
 import { DEFAULT_RUNNER_TIMEOUTS } from "../../core/runner/runnerLimits"
 import { validateBackendRuntimePlan } from "../../core/preview/backendRuntimePlanValidator"
+import { buildTemporaryDatabaseUrl } from "../../core/backendDatabase/databaseUrl"
+import type { TemporaryDatabaseResourceId } from "../../core/backendDatabase/resourceIdentity"
 import type { BackendRuntimeErrorCode } from "../../types/backendRuntime"
 import type { QueuedBackendRuntime } from "../../types/backendRuntime"
+import type {
+  TemporaryDatabaseCredentialMaterial,
+  TemporaryDatabaseRuntimeCredentialMaterial,
+} from "../../types/temporaryDatabase"
 import type { PreviewRepositoryRef } from "../../types/preview"
 import type { BackendRuntimeControlPlane } from "../backend-runtime-api/controlPlane"
 import { minimalNpmEnv } from "../preview-worker/local/npmDependencyInstaller"
@@ -43,6 +49,18 @@ export interface BackendRuntimeSupervisorOptions {
   /** Optional until production deliberately activates generated secrets.
    * A non-empty plan fails closed when this dependency is absent. */
   secretBroker?: BackendRuntimeSecretBroker
+  /** Optional until production deliberately activates tenant PostgreSQL.
+   * A database-requiring plan fails closed before sandbox allocation when
+   * this dependency is absent. */
+  temporaryDatabaseProvisioner?: TemporaryDatabaseLifecycleProvisioner
+}
+
+export interface TemporaryDatabaseLifecycleProvisioner {
+  provision(input: {
+    previewId: string
+    backendRuntimeId: string
+  }): Promise<TemporaryDatabaseCredentialMaterial>
+  revoke(resourceId: TemporaryDatabaseResourceId): Promise<void>
 }
 
 export interface BackendRuntimeRunOptions {
@@ -117,6 +135,9 @@ export class BackendRuntimeSupervisor {
     let workspace:
       Awaited<ReturnType<SandboxProvisioner["allocate"]>> | undefined
     let processHandle: RuntimeProcessHandle | undefined
+    let databaseResourceId: TemporaryDatabaseResourceId | undefined
+    let runFailure: BackendRuntimeErrorCode | undefined
+    let lifecycleStopRequested = false
     const controller = new AbortController()
     const signal = options.signal
       ? AbortSignal.any([options.signal, controller.signal])
@@ -130,6 +151,7 @@ export class BackendRuntimeSupervisor {
         if (
           !(await this.controlPlane.isWorkerRuntimeActive(queued.runtimeId))
         ) {
+          lifecycleStopRequested = true
           controller.abort()
         }
       } catch {
@@ -164,29 +186,38 @@ export class BackendRuntimeSupervisor {
             "A database runtime is missing its trusted orchestration identity.",
           )
         }
-        throw databaseUnavailableError()
+        if (!this.options.temporaryDatabaseProvisioner) {
+          throw databaseUnavailableError()
+        }
       }
       workspace = await this.sandbox.allocate(queued.runtimeId)
       signal.throwIfAborted()
       processHandle = await this.fetchInstallStart(
-        queued.runtimeId,
+        queued,
         plan,
         asLocalWorkspace(workspace),
         signal,
+        (resourceId) => {
+          databaseResourceId = resourceId
+        },
       )
       signal.throwIfAborted()
       await this.monitorWhileRunning(queued.runtimeId, processHandle, signal)
     } catch (error) {
+      if (error instanceof RuntimeLifecycleStopError) {
+        lifecycleStopRequested = true
+      }
       // If a status is already terminal (e.g. the user cancelled), this is a
       // no-op regardless of which code is passed -- see
       // `BackendRuntimeControlPlane.failWorkerRuntime`'s ACTIVE_STATUSES
       // guard -- so `signal.aborted` only ever matters for the genuine
       // "control plane became unreachable mid-flight" case, mirroring
       // `PreviewJobWorker.run`'s identical `signal.aborted` fallback.
-      await this.controlPlane.failWorkerRuntime(
-        queued.runtimeId,
-        signal.aborted ? "RUNTIME_UNAVAILABLE" : phaseErrorCode(error),
-      )
+      if (!lifecycleStopRequested) {
+        runFailure = signal.aborted
+          ? "RUNTIME_UNAVAILABLE"
+          : phaseErrorCode(error)
+      }
     } finally {
       // Unregister first, synchronously, with no `await` before it -- the
       // very first thing teardown does, before even `checking`'s own
@@ -209,25 +240,51 @@ export class BackendRuntimeSupervisor {
       stopped = true
       clearTimeout(poll)
       await checking
+      const cleanupErrors: unknown[] = []
       try {
         await processHandle?.stop()
-      } finally {
+      } catch (error) {
+        cleanupErrors.push(error)
+      }
+      try {
+        await workspace?.destroy()
+      } catch (error) {
+        cleanupErrors.push(error)
+      }
+      if (databaseResourceId) {
         try {
-          await workspace?.destroy()
-        } finally {
-          await this.controlPlane.markStopped(queued.runtimeId)
-          await this.options.cleanup?.(queued.runtimeId)
+          await this.options.temporaryDatabaseProvisioner?.revoke(
+            databaseResourceId,
+          )
+        } catch (error) {
+          cleanupErrors.push(error)
+          runFailure = "DATABASE_UNAVAILABLE"
         }
+      }
+      try {
+        await this.options.cleanup?.(queued.runtimeId)
+      } catch (error) {
+        cleanupErrors.push(error)
+      }
+      if (cleanupErrors.length > 0 && !runFailure) {
+        runFailure = "RUNTIME_UNAVAILABLE"
+      }
+      if (runFailure) {
+        await this.controlPlane.failWorkerRuntime(queued.runtimeId, runFailure)
+      } else {
+        await this.controlPlane.markStopped(queued.runtimeId)
       }
     }
   }
 
   private async fetchInstallStart(
-    runtimeId: string,
+    queued: QueuedBackendRuntime,
     plan: ReturnType<typeof validateBackendRuntimePlan>,
     workspace: LocalPreviewWorkspace,
     signal: AbortSignal,
+    onDatabaseProvisioned: (resourceId: TemporaryDatabaseResourceId) => void,
   ): Promise<RuntimeProcessHandle> {
+    const runtimeId = queued.runtimeId
     signal.throwIfAborted()
     // startWorkerRuntime already moved queued -> fetching.
     const archive = await runPhase("FETCH_FAILED", () =>
@@ -253,13 +310,21 @@ export class BackendRuntimeSupervisor {
     )
     await this.controlPlane.markPhase(runtimeId, "starting")
     const secrets = this.issueAndTakeGeneratedSecrets(runtimeId, plan)
-    // Always null: a database-requiring plan already fails closed with
-    // DATABASE_UNAVAILABLE, above run()'s own databaseRequirement check,
-    // strictly before sandbox allocation is ever reached -- this supervisor
-    // never obtains or passes real temporary-database material (M11-C1/C3;
-    // wiring real material through is M11-C4).
+    await this.assertWorkerExecutionActive(runtimeId)
+    const databaseCredential = await this.provisionTemporaryDatabase(
+      queued,
+      plan,
+      onDatabaseProvisioned,
+    )
+    await this.assertWorkerExecutionActive(runtimeId)
+    signal.throwIfAborted()
     const handle = await runPhase("RUNTIME_START_FAILED", () =>
-      this.runtimeProcessStarter.start(workspace, plan, secrets, null),
+      this.runtimeProcessStarter.start(
+        workspace,
+        plan,
+        secrets,
+        databaseCredential,
+      ),
     )
 
     try {
@@ -274,6 +339,7 @@ export class BackendRuntimeSupervisor {
       )
     }
 
+    await this.assertWorkerExecutionActive(runtimeId)
     signal.throwIfAborted()
     // Register the live route before the control plane ever reports this
     // runtime as "running" -- a caller observing "running" status must
@@ -285,6 +351,39 @@ export class BackendRuntimeSupervisor {
     this.liveRuntimeRegistry.register(runtimeId, handle.dialTarget)
     await this.controlPlane.markPhase(runtimeId, "running")
     return handle
+  }
+
+  private async assertWorkerExecutionActive(runtimeId: string): Promise<void> {
+    if (!(await this.controlPlane.isWorkerRuntimeActive(runtimeId))) {
+      throw new RuntimeLifecycleStopError()
+    }
+  }
+
+  private async provisionTemporaryDatabase(
+    queued: QueuedBackendRuntime,
+    plan: ReturnType<typeof validateBackendRuntimePlan>,
+    onProvisioned: (resourceId: TemporaryDatabaseResourceId) => void,
+  ): Promise<TemporaryDatabaseRuntimeCredentialMaterial | null> {
+    if (plan.databaseRequirement === null) return null
+    if (!queued.orchestrationKey) throw databaseUnavailableError()
+    const provisioner = this.options.temporaryDatabaseProvisioner
+    if (!provisioner) throw databaseUnavailableError()
+
+    const material = await runPhase("DATABASE_UNAVAILABLE", () =>
+      provisioner.provision({
+        previewId: queued.orchestrationKey as string,
+        backendRuntimeId: queued.runtimeId,
+      }),
+    )
+    onProvisioned(material.resourceId)
+    const databaseUrl = runPhaseSync("DATABASE_UNAVAILABLE", () =>
+      buildTemporaryDatabaseUrl(material),
+    )
+    return Object.freeze({
+      runtimeId: queued.runtimeId,
+      resourceId: material.resourceId,
+      databaseUrl,
+    })
   }
 
   private issueAndTakeGeneratedSecrets(
@@ -508,6 +607,13 @@ class RuntimePhaseError extends Error {
         : "Backend runtime supervisor phase failed.",
     )
     this.name = "RuntimePhaseError"
+  }
+}
+
+class RuntimeLifecycleStopError extends Error {
+  constructor() {
+    super("Backend runtime lifecycle stop requested.")
+    this.name = "RuntimeLifecycleStopError"
   }
 }
 

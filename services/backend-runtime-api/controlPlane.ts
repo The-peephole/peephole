@@ -279,8 +279,14 @@ export class BackendRuntimeControlPlane {
 
     const updated = await this.store.update(runtimeId, (runtime) => {
       if (TERMINAL_STATUSES.has(runtime.status)) return runtime
+      const databaseOwnsStartingResources =
+        runtime.orchestrationKey !== null &&
+        runtime.plan.databaseRequirement !== null &&
+        runtime.status === "starting"
       const target: BackendRuntimeStatus =
-        runtime.status === "running" || runtime.status === "stopping"
+        runtime.status === "running" ||
+        runtime.status === "stopping" ||
+        databaseOwnsStartingResources
           ? "stopping"
           : "cancelled"
       return transition(runtime, target, this.now())
@@ -337,9 +343,17 @@ export class BackendRuntimeControlPlane {
 
   async isWorkerRuntimeActive(runtimeId: string): Promise<boolean> {
     const runtime = await this.store.get(runtimeId)
+    if (!runtime) return false
+    const refreshed = await this.refreshExpiry(runtime)
+    // `stopping` retains worker cleanup ownership but is no longer active
+    // execution: the supervisor must abort fetch/start/run work and enter its
+    // ordered teardown path.
     return (
-      runtime !== null &&
-      ACTIVE_STATUSES.has((await this.refreshExpiry(runtime)).status)
+      refreshed.status === "queued" ||
+      refreshed.status === "fetching" ||
+      refreshed.status === "installing" ||
+      refreshed.status === "starting" ||
+      refreshed.status === "running"
     )
   }
 
@@ -409,11 +423,20 @@ export class BackendRuntimeControlPlane {
     if (TERMINAL_STATUSES.has(runtime.status)) {
       return runtime
     }
-    return this.store.update(runtime.id, (current) =>
-      TERMINAL_STATUSES.has(current.status)
-        ? current
-        : transition(current, "expired", this.now()),
-    )
+    return this.store.update(runtime.id, (current) => {
+      if (TERMINAL_STATUSES.has(current.status)) return current
+      const databaseOwnsResources =
+        current.orchestrationKey !== null &&
+        current.plan.databaseRequirement !== null &&
+        (current.status === "starting" ||
+          current.status === "running" ||
+          current.status === "stopping")
+      return transition(
+        current,
+        databaseOwnsResources ? "stopping" : "expired",
+        this.now(),
+      )
+    })
   }
 }
 
