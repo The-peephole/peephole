@@ -2,7 +2,10 @@ import { PREVIEW_CONTRACT_VERSION } from "../../types/analysis"
 import { BACKEND_RUNTIME_CONTRACT_VERSION } from "../../types/backendRuntime"
 import type { QueuedFullStackPreview } from "../../types/fullstackPreview"
 import type { PreviewJobStatus } from "../../types/preview"
-import type { BackendRuntimeStatus } from "../../types/backendRuntime"
+import type {
+  BackendRuntime,
+  BackendRuntimeStatus,
+} from "../../types/backendRuntime"
 import type { BackendRuntimeControlPlane } from "../backend-runtime-api/controlPlane"
 import { BackendRuntimeControlError } from "../backend-runtime-api/errors"
 import type { FullStackPreviewControlPlane } from "../fullstack-preview-api/controlPlane"
@@ -351,19 +354,30 @@ export class FullStackPreviewSupervisor {
       }
 
       if (parent.status === "ready") {
-        let running: boolean
+        let runtime: BackendRuntime
         try {
-          const runtime = await this.backend.getForOrchestration(
+          runtime = await this.backend.getForOrchestration(
             runtimeId,
             requesterSubject,
           )
-          running =
-            runtime.status === "running" &&
-            this.liveRuntimeResolver?.resolve(runtimeId) !== undefined
         } catch {
-          running = false
+          await this.fullStack.failWorkerFullStackPreview(
+            previewId,
+            "ORCHESTRATION_UNAVAILABLE",
+          )
+          await this.stopBackendAndWait(runtimeId, requesterSubject, signal)
+          return
         }
-        if (running) {
+        const routeExists =
+          this.liveRuntimeResolver?.resolve(runtimeId) !== undefined
+        if (runtime.status === "running" && routeExists) {
+          await this.wait(this.pollIntervalMs, signal)
+          continue
+        }
+        // Route withdrawal is the first step of backend teardown. It is not
+        // proof that credential/network/database cleanup has completed, so
+        // keep waiting while the child still owns its lifecycle.
+        if (ACTIVE_BACKEND.has(runtime.status)) {
           await this.wait(this.pollIntervalMs, signal)
           continue
         }
@@ -376,11 +390,22 @@ export class FullStackPreviewSupervisor {
       }
 
       if (parent.status === "stopping") {
-        await this.stopBackendAndWait(runtimeId, requesterSubject, signal)
+        const backendResult = await this.stopBackendAndWait(
+          runtimeId,
+          requesterSubject,
+          signal,
+        )
         const current =
           await this.fullStack.getWorkerFullStackPreview(previewId)
         if (current?.status === "stopping") {
-          await this.fullStack.markPhase(previewId, "stopped")
+          if (!backendResult || isCleanBackendStop(backendResult.status)) {
+            await this.fullStack.markPhase(previewId, "stopped")
+          } else {
+            await this.fullStack.failWorkerFullStackPreview(
+              previewId,
+              "BACKEND_FAILED",
+            )
+          }
         }
         return
       }
@@ -399,29 +424,26 @@ export class FullStackPreviewSupervisor {
     runtimeId: string | null | undefined,
     requesterSubject: string,
     signal: AbortSignal,
-  ): Promise<void> {
-    if (!runtimeId) return
+  ): Promise<BackendRuntime | null> {
+    if (!runtimeId) return null
     await this.cancelBackend(runtimeId, requesterSubject)
-    if (!this.liveRuntimeResolver) return
+    if (!this.liveRuntimeResolver) {
+      return this.backend.getForOrchestration(runtimeId, requesterSubject)
+    }
     for (;;) {
       signal.throwIfAborted()
-      let active: boolean
-      try {
-        const runtime = await this.backend.getForOrchestration(
-          runtimeId,
-          requesterSubject,
-        )
-        active = ACTIVE_BACKEND.has(runtime.status)
-      } catch {
-        active = false
-      }
+      const runtime = await this.backend.getForOrchestration(
+        runtimeId,
+        requesterSubject,
+      )
+      const active = ACTIVE_BACKEND.has(runtime.status)
       let routeExists: boolean
       try {
         routeExists = this.liveRuntimeResolver?.resolve(runtimeId) !== undefined
       } catch {
         routeExists = false
       }
-      if (!active && !routeExists) return
+      if (!active && !routeExists) return runtime
       await this.wait(this.pollIntervalMs, signal)
     }
   }
@@ -491,6 +513,10 @@ export class FullStackPreviewSupervisor {
       // Cleanup is best-effort; persisted child ids remain for reconciliation.
     }
   }
+}
+
+function isCleanBackendStop(status: BackendRuntimeStatus): boolean {
+  return status === "stopped" || status === "cancelled" || status === "expired"
 }
 
 export function frontendIdempotencyKey(previewId: string): string {

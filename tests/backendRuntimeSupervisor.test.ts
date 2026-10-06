@@ -4,6 +4,7 @@ import path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { BackendRuntimeSupervisor } from "../services/backend-runtime-worker/backendRuntimeSupervisor"
+import { BackendRuntimeWorkerLoop } from "../services/backend-runtime-worker/backendRuntimeWorkerLoop"
 import type {
   BackendRuntimeDialTarget,
   BackendRuntimeProcessStarter,
@@ -20,6 +21,11 @@ import {
   InMemoryBackendRuntimeStore,
 } from "../services/backend-runtime-api/inMemoryAdapters"
 import { BackendRuntimeReadinessTimeoutError } from "../services/preview-worker/gvisor/backendRuntimeProcess"
+import { createOpaqueSecretValue } from "../core/backendSecrets/generatedSecretValue"
+import {
+  deriveTemporaryDatabaseObjectName,
+  validateTemporaryDatabaseResourceId,
+} from "../core/backendDatabase/resourceIdentity"
 import { ArchiveByteStore } from "../services/preview-worker/local/archiveByteStore"
 import type { CommandRunner } from "../services/preview-worker/local/commandRunner"
 import { ExtractionState } from "../services/preview-worker/local/extractionState"
@@ -29,6 +35,7 @@ import type {
   SourceArchiveFetcher,
 } from "../services/preview-worker/ports"
 import type { BackendRuntimePlan } from "../types/backendRuntime"
+import type { TemporaryDatabaseLifecycleProvisioner } from "../services/backend-runtime-worker/backendRuntimeSupervisor"
 
 const repository = {
   repositoryId: 1,
@@ -63,6 +70,46 @@ const secretPlan: BackendRuntimePlan = {
 const databasePlan: BackendRuntimePlan = {
   ...plan,
   databaseRequirement: { name: "DATABASE_URL" },
+}
+
+const secretDatabasePlan: BackendRuntimePlan = {
+  ...databasePlan,
+  generatedSecretNames: ["SESSION_SECRET"],
+}
+
+const databaseResourceId = validateTemporaryDatabaseResourceId(
+  `r${"1".repeat(28)}`,
+)
+
+class FakeTemporaryDatabaseProvisioner implements TemporaryDatabaseLifecycleProvisioner {
+  provisionError: Error | null = null
+  revokeError: Error | null = null
+  provisionGate: Promise<void> | null = null
+  calls: Array<{ previewId: string; backendRuntimeId: string }> = []
+  revoked: string[] = []
+  events: string[] = []
+  onRevoke?: () => void | Promise<void>
+
+  async provision(input: { previewId: string; backendRuntimeId: string }) {
+    this.calls.push(input)
+    this.events.push("provision")
+    if (this.provisionGate) await this.provisionGate
+    if (this.provisionError) throw this.provisionError
+    const objectName = deriveTemporaryDatabaseObjectName(databaseResourceId)
+    return {
+      resourceId: databaseResourceId,
+      databaseName: objectName,
+      roleName: objectName,
+      password: createOpaqueSecretValue("database-password-marker"),
+    }
+  }
+
+  async revoke(resourceId: typeof databaseResourceId) {
+    this.events.push("revoke")
+    this.revoked.push(resourceId)
+    await this.onRevoke?.()
+    if (this.revokeError) throw this.revokeError
+  }
 }
 
 const requester = { subject: "user-1", ip: "203.0.113.10" }
@@ -177,11 +224,13 @@ class FakeRuntimeProcessStarter implements BackendRuntimeProcessStarter {
   nextReadyGate: Promise<void> | null = null
   lastHandle: FakeRuntimeProcessHandle | null = null
   lastSecrets: Parameters<BackendRuntimeProcessStarter["start"]>[2] | undefined
+  lastDatabase: Parameters<BackendRuntimeProcessStarter["start"]>[3] | undefined
 
   async start(
     ...args: Parameters<BackendRuntimeProcessStarter["start"]>
   ): Promise<RuntimeProcessHandle> {
     this.lastSecrets = args[2]
+    this.lastDatabase = args[3]
     if (this.startError) throw this.startError
     this.lastHandle = new FakeRuntimeProcessHandle()
     this.lastHandle.readyError = this.nextReadyError
@@ -195,6 +244,7 @@ function compose(
   entrypoint: "file" | "missing" | "symlink" | "directory" = "file",
   secretBroker?: BackendRuntimeSecretBroker,
   resolvedPlan: BackendRuntimePlan = plan,
+  temporaryDatabaseProvisioner?: TemporaryDatabaseLifecycleProvisioner,
 ) {
   const store = new InMemoryBackendRuntimeStore()
   const queue = new InMemoryBackendRuntimeQueue()
@@ -250,6 +300,7 @@ function compose(
       monitorPollMs: 20,
       readinessTimeoutMs: 200,
       secretBroker,
+      temporaryDatabaseProvisioner,
     },
   )
   return {
@@ -261,6 +312,7 @@ function compose(
     installRunner,
     starter,
     liveRuntimeRegistry,
+    temporaryDatabaseProvisioner,
     supervisor,
     setNow: (value: Date) => {
       now = value
@@ -364,6 +416,542 @@ describe("BackendRuntimeSupervisor", () => {
     expect(fetch).not.toHaveBeenCalled()
     expect(installRunner.calls).toEqual([])
     expect(starter.lastHandle).toBeNull()
+  })
+
+  it("keeps non-database runtimes on the zero-cost path when a provisioner is available", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const { controlPlane, queue, sandbox, starter, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      undefined,
+      plan,
+      provisioner,
+    )
+    const { runtimeId, job } = await createAndLease(controlPlane, queue)
+    const run = supervisor.run(job)
+    await vi.waitFor(async () => {
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "running",
+      )
+    })
+    createdRoots.push(...sandbox.roots)
+
+    expect(provisioner.calls).toEqual([])
+    expect(starter.lastDatabase).toBeNull()
+    await controlPlane.cancel(runtimeId, requester)
+    await run
+    expect(provisioner.revoked).toEqual([])
+  })
+
+  it("does not provision when backend installation fails", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const { controlPlane, queue, sandbox, installRunner, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      undefined,
+      databasePlan,
+      provisioner,
+    )
+    installRunner.installError = new Error("npm ci failed")
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+
+    await supervisor.run(job)
+    createdRoots.push(...sandbox.roots)
+
+    expect(provisioner.calls).toEqual([])
+    expect(provisioner.revoked).toEqual([])
+    expect(await controlPlane.get(runtimeId, requester)).toMatchObject({
+      status: "failed",
+      errorCode: "INSTALL_FAILED",
+    })
+  })
+
+  it("provisions from the trusted queue identities and passes the canonical URL to the starter", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const { controlPlane, queue, sandbox, starter, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      undefined,
+      databasePlan,
+      provisioner,
+    )
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    const run = supervisor.run(job)
+    await vi.waitFor(async () => {
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "running",
+      )
+    })
+    createdRoots.push(...sandbox.roots)
+
+    expect(provisioner.calls).toEqual([
+      {
+        previewId: job.orchestrationKey,
+        backendRuntimeId: runtimeId,
+      },
+    ])
+    expect(starter.lastDatabase).toMatchObject({
+      runtimeId,
+      resourceId: databaseResourceId,
+    })
+    expect(starter.lastDatabase?.databaseUrl.reveal()).toBe(
+      `postgresql://pv_${databaseResourceId}:database-password-marker@192.168.253.1:5433/pv_${databaseResourceId}`,
+    )
+
+    await controlPlane.cancelForOrchestration(runtimeId, requester.subject)
+    await run
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+  })
+
+  it("orders route, process credential, workspace network, database, then terminal cleanup", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const events: string[] = []
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      starter,
+      liveRuntimeRegistry,
+      supervisor,
+    } = compose(10 * 60_000, "file", undefined, databasePlan, provisioner)
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    const run = supervisor.run(job)
+    await vi.waitFor(async () => {
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "running",
+      )
+    })
+    createdRoots.push(...sandbox.roots)
+    starter.lastHandle!.stopOverride = async () => {
+      events.push("process-and-credentials")
+    }
+    sandbox.onDestroy = () => {
+      expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+      events.push("workspace-and-network")
+    }
+    provisioner.onRevoke = async () => {
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "stopping",
+      )
+      events.push("database")
+    }
+
+    await controlPlane.cancelForOrchestration(runtimeId, requester.subject)
+    await run
+    events.push(
+      (await controlPlane.get(runtimeId, requester)).status === "stopped"
+        ? "backend-stopped"
+        : "unexpected-terminal",
+    )
+
+    expect(events).toEqual([
+      "process-and-credentials",
+      "workspace-and-network",
+      "database",
+      "backend-stopped",
+    ])
+  })
+
+  it("delivers generated secrets and database material together exactly once", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const broker = new InMemoryBackendRuntimeSecretBroker()
+    const issue = vi.spyOn(broker, "issue")
+    const take = vi.spyOn(broker, "take")
+    const { controlPlane, queue, sandbox, starter, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      broker,
+      secretDatabasePlan,
+      provisioner,
+    )
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    const run = supervisor.run(job)
+    await vi.waitFor(async () => {
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "running",
+      )
+    })
+    createdRoots.push(...sandbox.roots)
+
+    expect(issue).toHaveBeenCalledExactlyOnceWith(runtimeId, ["SESSION_SECRET"])
+    expect(take).toHaveBeenCalledExactlyOnceWith(runtimeId)
+    expect(starter.lastSecrets?.runtimeId).toBe(runtimeId)
+    expect(starter.lastDatabase?.runtimeId).toBe(runtimeId)
+    expect(provisioner.calls).toHaveLength(1)
+
+    await controlPlane.cancelForOrchestration(runtimeId, requester.subject)
+    await run
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+  })
+
+  it("keeps cancellation during database-owning starting in stopping until revoke completes", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    let releaseProvision!: () => void
+    provisioner.provisionGate = new Promise<void>((resolve) => {
+      releaseProvision = resolve
+    })
+    const { controlPlane, queue, sandbox, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      undefined,
+      databasePlan,
+      provisioner,
+    )
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    const run = supervisor.run(job)
+    await vi.waitFor(() => expect(provisioner.calls).toHaveLength(1))
+    createdRoots.push(...sandbox.roots)
+
+    const cancelled = await controlPlane.cancelForOrchestration(
+      runtimeId,
+      requester.subject,
+    )
+    expect(cancelled.status).toBe("stopping")
+    releaseProvision()
+    await run
+
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+    expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+      "stopped",
+    )
+  })
+
+  it("retains handle ownership when cancellation occurs while readiness is blocked", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const events: string[] = []
+    let releaseReady!: () => void
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      starter,
+      liveRuntimeRegistry,
+      supervisor,
+    } = compose(10 * 60_000, "file", undefined, databasePlan, provisioner)
+    starter.nextReadyGate = new Promise<void>((resolve) => {
+      releaseReady = resolve
+    })
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    sandbox.onDestroy = () => events.push("workspace-and-network")
+    provisioner.onRevoke = async () => {
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "stopping",
+      )
+      events.push("database-revoked")
+    }
+
+    const run = supervisor.run(job)
+    await vi.waitFor(() => expect(starter.lastHandle).not.toBeNull())
+    createdRoots.push(...sandbox.roots)
+    starter.lastHandle!.stopOverride = async () => {
+      events.push("process-and-credentials")
+    }
+    expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+      "starting",
+    )
+    const cancelled = await controlPlane.cancelForOrchestration(
+      runtimeId,
+      requester.subject,
+    )
+    expect(cancelled.status).toBe("stopping")
+
+    releaseReady()
+    await run
+    events.push(
+      (await controlPlane.get(runtimeId, requester)).status === "stopped"
+        ? "backend-stopped"
+        : "unexpected-terminal",
+    )
+
+    expect(starter.lastHandle?.stopCalls).toBe(1)
+    expect(events).toEqual([
+      "process-and-credentials",
+      "workspace-and-network",
+      "database-revoked",
+      "backend-stopped",
+    ])
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+    expect(provisioner.calls).toHaveLength(1)
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+  })
+
+  it("treats cancellation winning the running transition as lifecycle stop", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const events: string[] = []
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      starter,
+      liveRuntimeRegistry,
+      supervisor,
+    } = compose(10 * 60_000, "file", undefined, databasePlan, provisioner)
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    sandbox.onDestroy = () => events.push("workspace-and-network")
+    provisioner.onRevoke = () => {
+      events.push("database-revoked")
+    }
+    const originalMarkPhase = controlPlane.markPhase.bind(controlPlane)
+    vi.spyOn(controlPlane, "markPhase").mockImplementation(
+      async (id, phase) => {
+        if (phase === "running") {
+          starter.lastHandle!.stopOverride = async () => {
+            events.push("process-and-credentials")
+          }
+          const cancelled = await controlPlane.cancelForOrchestration(
+            runtimeId,
+            requester.subject,
+          )
+          expect(cancelled.status).toBe("stopping")
+        }
+        return originalMarkPhase(id, phase)
+      },
+    )
+
+    await supervisor.run(job)
+    createdRoots.push(...sandbox.roots)
+    events.push(
+      (await controlPlane.get(runtimeId, requester)).status === "stopped"
+        ? "backend-stopped"
+        : "unexpected-terminal",
+    )
+
+    expect(starter.lastHandle?.stopCalls).toBe(1)
+    expect(events).toEqual([
+      "process-and-credentials",
+      "workspace-and-network",
+      "database-revoked",
+      "backend-stopped",
+    ])
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+    expect(provisioner.calls).toHaveLength(1)
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+
+    await supervisor.run(job, { recovered: true })
+    expect(provisioner.calls).toHaveLength(1)
+  })
+
+  it("treats expiry winning the running transition as lifecycle stop", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      starter,
+      liveRuntimeRegistry,
+      supervisor,
+      setNow,
+    } = compose(1_000, "file", undefined, databasePlan, provisioner)
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    const originalMarkPhase = controlPlane.markPhase.bind(controlPlane)
+    vi.spyOn(controlPlane, "markPhase").mockImplementation(
+      async (id, phase) => {
+        if (phase === "running") {
+          setNow(new Date("2026-01-01T00:00:02.000Z"))
+          expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+            "stopping",
+          )
+        }
+        return originalMarkPhase(id, phase)
+      },
+    )
+
+    await supervisor.run(job)
+    createdRoots.push(...sandbox.roots)
+
+    expect(starter.lastHandle?.stopCalls).toBe(1)
+    expect(provisioner.calls).toHaveLength(1)
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+    expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+      "stopped",
+    )
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+  })
+
+  it("revokes before publishing a process-start failure", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const { controlPlane, queue, sandbox, starter, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      undefined,
+      databasePlan,
+      provisioner,
+    )
+    starter.startError = new Error("start failed")
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    provisioner.onRevoke = async () => {
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "starting",
+      )
+    }
+
+    await supervisor.run(job)
+    createdRoots.push(...sandbox.roots)
+
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+    expect(await controlPlane.get(runtimeId, requester)).toMatchObject({
+      status: "failed",
+      errorCode: "RUNTIME_START_FAILED",
+    })
+  })
+
+  it("revokes after an unexpected runtime exit before publishing failure", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const { controlPlane, queue, sandbox, starter, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      undefined,
+      databasePlan,
+      provisioner,
+    )
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    const run = supervisor.run(job)
+    await vi.waitFor(() => expect(starter.lastHandle).not.toBeNull())
+    createdRoots.push(...sandbox.roots)
+    starter.lastHandle?.crash(1)
+    await run
+
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+    expect(await controlPlane.get(runtimeId, requester)).toMatchObject({
+      status: "failed",
+      errorCode: "RUNTIME_EXITED",
+    })
+  })
+
+  it("attempts database cleanup on expiry and publishes stopped only afterward", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const { controlPlane, queue, sandbox, supervisor, setNow } = compose(
+      1_000,
+      "file",
+      undefined,
+      databasePlan,
+      provisioner,
+    )
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    const run = supervisor.run(job)
+    await vi.waitFor(async () => {
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "running",
+      )
+    })
+    createdRoots.push(...sandbox.roots)
+    provisioner.onRevoke = async () => {
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "stopping",
+      )
+    }
+    setNow(new Date("2026-01-01T00:00:02.000Z"))
+    await run
+
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+    expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+      "stopped",
+    )
+  })
+
+  it("fails closed on revoke failure and a handled retry cannot provision database two", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    provisioner.revokeError = new Error("revoke failed")
+    const { controlPlane, queue, sandbox, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      undefined,
+      databasePlan,
+      provisioner,
+    )
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    const run = supervisor.run(job)
+    await vi.waitFor(async () => {
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "running",
+      )
+    })
+    createdRoots.push(...sandbox.roots)
+    await controlPlane.cancelForOrchestration(runtimeId, requester.subject)
+    await run
+
+    expect(await controlPlane.get(runtimeId, requester)).toMatchObject({
+      status: "failed",
+      errorCode: "DATABASE_UNAVAILABLE",
+    })
+    expect(
+      JSON.stringify(await controlPlane.get(runtimeId, requester)),
+    ).not.toContain("database-password-marker")
+    expect(provisioner.calls).toHaveLength(1)
+    await supervisor.run(job, { recovered: true })
+    expect(provisioner.calls).toHaveLength(1)
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+  })
+
+  it("acknowledges a handled provisioned-runtime failure without a queue retry or database two", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    provisioner.revokeError = new Error("revoke failed")
+    const { controlPlane, queue, sandbox, starter, supervisor } = compose(
+      10 * 60_000,
+      "file",
+      undefined,
+      databasePlan,
+      provisioner,
+    )
+    starter.startError = new Error("process start failed")
+    const created = await controlPlane.createForOrchestration(
+      { repository, contractVersion: "backend-v1" },
+      requester.subject,
+      "fullstack-00000000-0000-0000-0000-000000000001",
+    )
+    const loop = new BackendRuntimeWorkerLoop(queue, supervisor, {
+      workerId: "worker-1",
+      leaseMs: 1_000,
+    })
+
+    await expect(loop.runOnce()).resolves.toBe(true)
+    createdRoots.push(...sandbox.roots)
+    await expect(loop.runOnce()).resolves.toBe(false)
+
+    expect(provisioner.calls).toHaveLength(1)
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+    expect(await controlPlane.get(created.runtime.id, requester)).toMatchObject(
+      {
+        status: "failed",
+        errorCode: "DATABASE_UNAVAILABLE",
+      },
+    )
   })
 
   it("runs fetch -> install -> start -> running, then stays running until told to stop", async () => {

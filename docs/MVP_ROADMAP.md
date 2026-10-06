@@ -55,8 +55,10 @@ exposure. Within that same narrow contract, M10 adds server-*generated*
 secrets restricted to exactly four canonical names
 (`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`),
 production-verified in M10-C4B -- see stages 9-10 below and
-docs/EPHEMERAL_SECRETS.md. Arbitrary backends, arbitrary or user-supplied
-secrets, and temporary databases (stage 11) remain unsupported.
+docs/EPHEMERAL_SECRETS.md. Arbitrary backends and arbitrary or user-supplied
+secrets remain unsupported. Temporary database support (stage 11) is
+partially implemented through M11-C4 but remains unavailable in production;
+real-host/real-gVisor verification and production activation have not started.
 
 ## Completed Foundation Milestones
 
@@ -138,13 +140,15 @@ disk, via a tmpfs-backed bind mount and a trusted bootstrap. See D-032 and
 docs/EPHEMERAL_SECRETS.md for the full design and the 2026-09-28 real-gVisor
 and production verification record. Stage 10 is explicitly **not**: arbitrary
 environment-variable management, user-supplied credentials, arbitrary
-backends, database provisioning, or relaxed backend egress -- all of those
-remain unimplemented. Stage 11 is untouched and has not started, still
-`[ ]`. Its architecture has since been designed and locked (D-033,
-`docs/TEMPORARY_DATABASES.md`) -- a separate host-local tenant PostgreSQL
-cluster, `fullstack-v1`-only, `pg`+`DATABASE_URL`-only admission -- but
-that is a design document only; no implementation, migration, network
-rule, or second PostgreSQL cluster exists yet.
+backends, database provisioning, or relaxed backend egress -- those
+capabilities remain outside M10. Stage 11 is still `[ ]`, but is partially
+implemented: its architecture is locked (D-033,
+`docs/TEMPORARY_DATABASES.md`), and M11-C1 through M11-C4 provide the portable
+and integrated implementation for the narrow `fullstack-v1`-only,
+`pg`+`DATABASE_URL`-only contract. M11-D real Linux/gVisor verification is
+`NOT RUN` and not started. M11-E production tenant PostgreSQL activation and
+acceptance is not started; no production tenant cluster or production DB-backed
+execution is enabled.
 
 Build Adapter generalization is complete as an architecture change: an
 explicit resolver selects `static-html-v1` or `vite-react-npm-v1`, detects
@@ -282,7 +286,9 @@ production-verified in M9 through the separate `fullstack-v1` parent
 resource (`/v1/fullstack-previews`), which reports its own public HTTPS
 origin and routes only `/api`/`/api/*` to the backend; the standalone
 `backend-v1` resource (`/v1/backend-runtimes`) still never reports a URL of
-its own. A provisioned database remains unimplemented (stage 11); a
+its own. Temporary database support is now implemented through M11-C4's
+portable/integrated path, but remains unavailable in production pending
+M11-D real-host/real-gVisor verification and M11-E activation/acceptance. A
 Peephole-*generated* secret restricted to exactly `JWT_SECRET`/
 `SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET` is now implemented and
 production-verified as stage 10 -- see D-032 and docs/EPHEMERAL_SECRETS.md.

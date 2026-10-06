@@ -2,12 +2,14 @@ import type { BackendRuntimeControlPlane } from "../../backend-runtime-api/contr
 import { BackendRuntimeSupervisor } from "../../backend-runtime-worker/backendRuntimeSupervisor"
 import type { LiveBackendRuntimeRouteRegistry } from "../../backend-runtime-worker/liveRuntimeRegistry"
 import type { BackendRuntimeSecretBroker } from "../../backend-runtime-worker/secretBroker"
+import type { TemporaryDatabaseLifecycleProvisioner } from "../../backend-runtime-worker/backendRuntimeSupervisor"
 import { ArchiveByteStore } from "../local/archiveByteStore"
 import { ExtractionState } from "../local/extractionState"
 import { GitHubCommitArchiveFetcher } from "../local/githubCommitArchiveFetcher"
 import type { resolveDnsConfig } from "./dnsConfig"
 import { GVisorBackendRuntimeProcess } from "./backendRuntimeProcess"
 import type { GeneratedSecretFilesystem } from "./generatedSecretFilesystem"
+import type { DatabaseCredentialFilesystem } from "./databaseCredentialFilesystem"
 import { GVisorSandboxProvisioner } from "./gvisorSandboxProvisioner"
 import type { VethNatNetworkProvisioner } from "./networkNamespace"
 import type { ProcessRunner } from "./processRunner"
@@ -36,6 +38,10 @@ export interface ComposeProductionBackendRuntimeOptions {
    * constructs hidden broker/filesystem fallbacks. */
   secretBroker: BackendRuntimeSecretBroker
   generatedSecretFilesystem: GeneratedSecretFilesystem
+  /** C4 activation seam. Both dependencies must be supplied together; the
+   * current production server intentionally supplies neither. */
+  temporaryDatabaseProvisioner?: TemporaryDatabaseLifecycleProvisioner
+  databaseCredentialFilesystem?: DatabaseCredentialFilesystem
   /** Process-local live-route registry the same-process full-stack proxy
    * resolver also reads from -- REQUIRED, not defaulted, and
    * deliberately never constructed by this function. The one process
@@ -65,6 +71,14 @@ export function composeProductionBackendRuntime(
   controlPlane: BackendRuntimeControlPlane,
   options: ComposeProductionBackendRuntimeOptions,
 ): BackendRuntimeSupervisor {
+  if (
+    Boolean(options.temporaryDatabaseProvisioner) !==
+    Boolean(options.databaseCredentialFilesystem)
+  ) {
+    throw new Error(
+      "Temporary-database provisioning and credential filesystem dependencies must be configured together.",
+    )
+  }
   const byteStore = new ArchiveByteStore()
   const extraction = new ExtractionState()
 
@@ -91,6 +105,7 @@ export function composeProductionBackendRuntime(
     resolveDnsConfig: options.resolveDnsConfig,
     maxRuntimeMs: options.maxRuntimeMs,
     generatedSecretFilesystem: options.generatedSecretFilesystem,
+    databaseCredentialFilesystem: options.databaseCredentialFilesystem,
   })
 
   return new BackendRuntimeSupervisor(
@@ -108,6 +123,7 @@ export function composeProductionBackendRuntime(
       installTimeoutMs: options.installTimeoutMs,
       readinessTimeoutMs: options.readinessTimeoutMs,
       secretBroker: options.secretBroker,
+      temporaryDatabaseProvisioner: options.temporaryDatabaseProvisioner,
       cleanup: (runtimeId) => {
         extraction.delete(runtimeId)
       },

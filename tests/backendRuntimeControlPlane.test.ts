@@ -357,6 +357,28 @@ describe("BackendRuntimeControlPlane", () => {
     expect(stillFetching.status).toBe("fetching")
   })
 
+  it("keeps trusted database-backed starting cancellation worker-owned", async () => {
+    const { controlPlane } = compose(databasePlan)
+    const created = await controlPlane.createForOrchestration(
+      createRequest(),
+      requester.subject,
+      "fullstack-00000000-0000-0000-0000-000000000001",
+    )
+    await controlPlane.startWorkerRuntime(created.runtime.id)
+    await controlPlane.markPhase(created.runtime.id, "installing")
+    await controlPlane.markPhase(created.runtime.id, "starting")
+
+    const cancelled = await controlPlane.cancelForOrchestration(
+      created.runtime.id,
+      requester.subject,
+    )
+
+    expect(cancelled.status).toBe("stopping")
+    expect(await controlPlane.isWorkerRuntimeActive(created.runtime.id)).toBe(
+      false,
+    )
+  })
+
   it("cancelling an already-terminal runtime is idempotent", async () => {
     const { controlPlane } = compose()
     const created = await controlPlane.create(createRequest(), requester)

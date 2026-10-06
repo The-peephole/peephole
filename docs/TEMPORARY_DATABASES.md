@@ -1,6 +1,6 @@
 # Temporary PostgreSQL Previews (M11) — Design
 
-**Status: PARTIALLY IMPLEMENTED (M11-C3 in progress). Not deployed. Not
+**Status: PARTIALLY IMPLEMENTED (M11-C4 integrated lifecycle PR). Not deployed. Not
 production-verified.**
 
 M11 (`docs/MVP_ROADMAP.md` stage 11, "temporary database support") remains
@@ -17,12 +17,18 @@ separate from M10's own `/run/peephole/secrets`, trusted-bootstrap support for
 the fixed `/run/secrets/database-url` file alongside M10's `/run/secrets/env`,
 a `temporaryDatabaseAccess` capability on the durable ingress-only network
 lease with the exact `/32` route and INPUT-chain rule this document locks,
-and the matching `NetworkOrphanReaper` validation/cleanup. None of this is
-wired into runtime execution: `BackendRuntimeSupervisor` still never obtains
-or passes real database material, and a database-requiring plan still fails
-closed with `DATABASE_UNAVAILABLE` before sandbox allocation (M11-C1). There
-is still no real tenant PostgreSQL cluster, no `pphdb0` interface, and
-`services/production/server.ts` is unchanged. `BackendRuntimePlan.platformEnvironment`
+and the matching `NetworkOrphanReaper` validation/cleanup. M11-C4 now wires
+these primitives into `BackendRuntimeSupervisor` through an optional,
+internal provision/revoke dependency. A trusted FullStack database plan
+provisions only after fetch, install, entrypoint validation, and the
+transition to `starting`; the process starter receives the C3 material, and
+ordered teardown revokes the database before publishing a graceful backend
+stop. The production server deliberately supplies neither the tenant
+provisioner nor the database credential filesystem, so a database-requiring
+production plan still fails closed with `DATABASE_UNAVAILABLE` before
+sandbox allocation. There is still no real tenant PostgreSQL cluster, no
+`pphdb0` interface, and no production provisioning credential.
+`BackendRuntimePlan.platformEnvironment`
 remains exactly `PORT`/`HOST`/`NODE_ENV`, and `PreviewGeneratedSecretName`
 remains exactly `JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`.
 
@@ -79,8 +85,8 @@ stays `[ ]` regardless of how many of these sub-stages complete.
 | M11-C2 | PostgreSQL provisioning + durable ownership / reconciliation | **COMPLETE** |
 | M11-C2A | Durable ownership + PostgreSQL provisioning foundation | **COMPLETE** |
 | M11-C2B | Three-set reconciliation / reaper | **COMPLETE** |
-| M11-C3 | Credential delivery + host-only sandbox network integration | **CURRENT — credential/network implementation PR** |
-| M11-C4 | Integrated FullStack lifecycle | NOT STARTED |
+| M11-C3 | Credential delivery + host-only sandbox network integration | **COMPLETE** |
+| M11-C4 | Integrated FullStack lifecycle | **CURRENT — integrated lifecycle implementation PR** |
 | M11-D | Real Linux / real-gVisor verification | NOT STARTED |
 | M11-E | Production infrastructure activation + production acceptance | NOT STARTED |
 
@@ -100,11 +106,45 @@ filesystem and its orphan reaper, trusted-bootstrap support for the fixed
 `database-url` file, an extended low-level process-starter boundary that
 validates plan/material/runtime-id agreement, and the `temporaryDatabaseAccess`
 network-lease capability with its exact `/32` route, exact INPUT-chain rule,
-and matching `NetworkOrphanReaper` validation. None of this is wired into the
-runtime: database-requiring plans still fail closed in the worker with
-`DATABASE_UNAVAILABLE`, strictly before sandbox allocation, and no database is
-provisioned as part of a real FullStack execution. M11-C4 remains required
-before any database-requiring backend can actually run.
+and matching `NetworkOrphanReaper` validation. M11-C4 connects those
+primitives to the trusted FullStack backend lifecycle when the paired
+dependencies are explicitly injected. Production does not inject them, so
+the production fail-closed behavior remains unchanged until M11-E.
+
+### M11-C4 integrated lifecycle
+
+The FullStack preview remains the durable database owner; the backend runtime
+is only its execution instance. At the backend worker boundary the only
+provisioning identities are `previewId = queued.orchestrationKey` and
+`backendRuntimeId = queued.runtimeId`. The worker re-validates that a DB plan
+has both the trusted orchestration identity and a provisioner before sandbox
+allocation.
+
+The implemented sequence is:
+
+```text
+frontend ready -> backend runtime created -> fetch -> install
+-> entrypoint validated -> backend starting -> generated secrets obtained
+-> temporary DB provisioned -> canonical DATABASE_URL built
+-> C3 process starter -> running
+-> route withdrawn -> process/credential cleanup -> workspace/network teardown
+-> temporary DB revoke -> backend stopped/failed -> FullStack stopped/failed
+```
+
+Only trusted DB-backed `starting`, `running`, and `stopping` may own a
+successfully provisioned database, a database credential file, or a
+DB-capable ingress-only namespace. Cancellation/expiry during `fetching` or
+`installing` remains immediately terminal because provisioning cannot yet have
+occurred. Cancellation/expiry in DB-backed `starting` or later becomes
+`stopping`, keeping lifecycle ownership with the worker. Process-start and
+runtime-exit failures remain non-terminal until ordered cleanup and DB revoke
+finish. A revoke failure publishes `DATABASE_UNAVAILABLE`, never `stopped`;
+the durable ownership row remains `revoking` or `revoke_failed` for C2B.
+
+`FullStackPreviewSupervisor` now waits for and examines the backend's final
+result. Route disappearance alone is never treated as cleanup completion. A
+clean child may allow parent `stopped`; a child failure during DB teardown
+produces parent `BACKEND_FAILED` instead.
 
 **The production host's RAM is a documented future prerequisite, not
 something already done.** M11-A3 found the production host to be a tight
@@ -943,6 +983,13 @@ the tenant cluster during startup would abort startup entirely (fail
 closed), the same posture the existing network reaper already takes today
 when it cannot prove a lease's liveness.
 
+This ordering is not production-wired in C4 because no tenant cluster exists.
+M11-E must compose `tenant PostgreSQL available ->
+TemporaryDatabaseOrphanReaper.reapAll() ->
+FullStackPreviewStartupReconciler -> public listeners`; startup reconciliation
+must never move ahead of the required DB reaper once production DB execution is
+enabled.
+
 Periodic **maintenance** reaping (not `reapAll()`, the bounded `reap()`
 variant) may use an age threshold to distinguish "actively provisioning
 right now" from "actually stale," mirroring `GeneratedSecretOrphanReaper`'s
@@ -973,11 +1020,13 @@ is an external, failable side effect, unlike M10's pure in-memory secret
 generation — a different broker shape entirely (§16 in the earlier design
 phases; reflected here only as the delivery-file consequence).
 
-**Implemented in M11-C3** (`services/preview-worker/gvisor/databaseCredentialFilesystem.ts`,
-`core/backendDatabase/databaseUrl.ts`, `scripts/gvisor/secret-bootstrap.mjs`).
-Not yet reachable from any real execution — `BackendRuntimeSupervisor` never
-constructs this material (M11-C4), and the reaper below is not wired into
-`services/production/server.ts` (also M11-C4+).
+**Implemented in M11-C3 and integrated in M11-C4**
+(`services/preview-worker/gvisor/databaseCredentialFilesystem.ts`,
+`core/backendDatabase/databaseUrl.ts`, `scripts/gvisor/secret-bootstrap.mjs`,
+`services/backend-runtime-worker/backendRuntimeSupervisor.ts`). It is reachable
+only in an explicitly dependency-injected runtime composition. The current
+production server injects no tenant provisioner or database credential
+filesystem, and the credential orphan reaper is not production-wired.
 
 Host path:
 
@@ -1011,9 +1060,8 @@ Properties:
 - has its own narrow `DatabaseCredentialOrphanReaper`, mirroring
   `GeneratedSecretOrphanReaper`'s `reapAll()`/age-bounded `reap()` discipline,
   not yet wired into production startup;
-- would be removed on both normal teardown and startup/maintenance
-  reconciliation once M11-C4 wires the reaper in, the same lifecycle
-  discipline M10's own tmpfs secret file already has today.
+- is removed by the C3 process handle during normal M11-C4 teardown; startup
+  and maintenance orphan-reaper production wiring remains an activation task.
 
 **Mount composition with M10 (M11-C3):** the OCI spec no longer bind-mounts
 M10's whole per-runtime directory onto `/run/secrets` itself. Both credential
@@ -1176,7 +1224,7 @@ repository.
 ---
 
 ## 19. Test plan (portable and PostgreSQL-18-integration coverage now exists
-for C1/C2/C3; real-gVisor and production-acceptance rows below remain
+for C1/C2/C3/C4; real-gVisor and production-acceptance rows below remain
 planned only)
 
 ### Portable
@@ -1242,6 +1290,30 @@ planned only)
   IP, a broader CIDR, a wrong port, UDP, an unexpected extra rule, and any
   default route on an ingress-only lease (DB-enabled or not).
 
+**M11-C4 additions (implemented — `tests/backendRuntimeSupervisor.test.ts`,
+`tests/backendRuntimeControlPlane.test.ts`,
+`tests/fullStackPreviewSupervisor.test.ts`,
+`tests/composeProductionBackendRuntime.test.ts`):**
+
+- missing orchestration identity and missing provisioner fail before sandbox
+  allocation; non-DB, frontend-failure, and install-failure paths make zero DB
+  calls;
+- provisioning occurs in `starting` with exact FullStack/backend identities,
+  and the canonical C3 database credential reaches the starter alongside M10
+  generated-secret material;
+- cancellation during DB-owning `starting`, running cancellation, expiry,
+  process-start failure, and unexpected process exit all retain worker cleanup
+  ownership through revoke;
+- process/credential stop precedes workspace/network destruction, which
+  precedes DB revoke and backend terminal publication;
+- FullStack graceful stop waits for the backend's final cleanup result;
+  backend DB teardown failure yields parent `BACKEND_FAILED`, never false
+  `stopped`;
+- revoke failure maps to `DATABASE_UNAVAILABLE`, is ACK-safe, and a recovered
+  delivery cannot provision a second database;
+- composition rejects provisioner/filesystem half-configuration, while the
+  current production server supplies neither.
+
 ### PostgreSQL 18 integration
 
 Against a disposable, real PostgreSQL 18 cluster (the same
@@ -1269,6 +1341,9 @@ Against a disposable, real PostgreSQL 18 cluster (the same
 - `DROP DATABASE ... WITH (FORCE)` succeeds even with a live connection
   open;
 - `DROP ROLE` succeeds after the drop;
+- the integrated C4 supervisor stores the exact durable preview/runtime owner,
+  delivers C3 runtime material to a fake process boundary, and on lifecycle
+  stop performs real FORCE database/role teardown before backend `stopped`;
 - partial-provisioning recovery (role created, database not) — bounded
   `DROP ROLE` only;
 - the provisioning role has no privilege over any unrelated role or
