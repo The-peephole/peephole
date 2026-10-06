@@ -946,18 +946,14 @@ not started. Not production-verified or production-enabled.
 M11's first production slice is designed to support exactly one temporary
 PostgreSQL database plus one application role per admitted `fullstack-v1`
 preview, where the backend declares exactly a `pg` dependency and exactly a
-`DATABASE_URL` environment requirement. Admission will be restricted to the
+`DATABASE_URL` environment requirement. Admission is restricted to the
 trusted FullStack orchestration path only: `services/backend-runtime-api/controlPlane.ts`'s
-`createInternal()` (an existing function, today with no database-aware
-check) will reject any plan carrying a non-null `databaseRequirement` when
-`orchestrationKey` is null, so the public, standalone `backend-v1` create
-path will never be able to admit a database-requiring plan.
-`QueuedBackendRuntime` (which today carries only `{runtimeId, repository,
-plan}`) will gain the already-existing, already server-derived
-`orchestrationKey` field `StoredBackendRuntime` already has today (== the
-FullStack preview's own id), so the backend worker will be able to
-identify the durable owner of a database it provisions without ever
-accepting that identity from a client.
+`createInternal()` rejects any plan carrying a non-null `databaseRequirement`
+when `orchestrationKey` is null, so the public, standalone `backend-v1` create
+path cannot admit a database-requiring plan. `QueuedBackendRuntime` now carries
+the trusted, server-derived `orchestrationKey: string | null`; for FullStack
+database execution its non-null value identifies the durable FullStack preview
+owner for the backend worker, and is never accepted from a client.
 
 The decision reached after a four-phase investigation (M11-A read the
 existing M8-M10 codebase; M11-A2 corrected several errors an independent
