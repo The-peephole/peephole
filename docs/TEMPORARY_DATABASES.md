@@ -1,6 +1,7 @@
 # Temporary PostgreSQL Previews (M11) — Design
 
-**Status: PARTIALLY IMPLEMENTED (M11-C4 integrated lifecycle PR). Not deployed. Not
+**Status: PARTIALLY IMPLEMENTED (M11-D1 real-gVisor verification harness).
+Harness implemented; real-host execution `NOT_RUN`. Not deployed. Not
 production-verified.**
 
 M11 (`docs/MVP_ROADMAP.md` stage 11, "temporary database support") remains
@@ -86,8 +87,8 @@ stays `[ ]` regardless of how many of these sub-stages complete.
 | M11-C2A | Durable ownership + PostgreSQL provisioning foundation | **COMPLETE** |
 | M11-C2B | Three-set reconciliation / reaper | **COMPLETE** |
 | M11-C3 | Credential delivery + host-only sandbox network integration | **COMPLETE** |
-| M11-C4 | Integrated FullStack lifecycle | **CURRENT — integrated lifecycle implementation PR** |
-| M11-D | Real Linux / real-gVisor verification | NOT STARTED |
+| M11-C4 | Integrated FullStack lifecycle | **COMPLETE** |
+| M11-D | Real Linux / real-gVisor verification | **CURRENT — harness implemented; real-host execution `NOT_RUN`** |
 | M11-E | Production infrastructure activation + production acceptance | NOT STARTED |
 
 M11-C1 added the portable representation, trusted FullStack admission, queue
@@ -110,6 +111,13 @@ and matching `NetworkOrphanReaper` validation. M11-C4 connects those
 primitives to the trusted FullStack backend lifecycle when the paired
 dependencies are explicitly injected. Production does not inject them, so
 the production fail-closed behavior remains unchanged until M11-E.
+
+M11-D1 adds the explicitly dual-gated real Linux/gVisor database harness in
+`tests/realTemporaryDatabaseRuntime.test.ts`. It is discovered and compiled by
+portable CI but skips unless both privileged opt-ins equal exactly `"1"`.
+Actual execution against the operator-prepared disposable PostgreSQL 18
+endpoint and test-specific rebuilt base rootfs remains M11-D2 and is
+`REAL_HOST_NOT_RUN`; D1 is `HARNESS_IMPLEMENTED`, not verification PASS.
 
 ### M11-C4 integrated lifecycle
 
@@ -1113,9 +1121,11 @@ mount shape (M11-D/M11-E, not this PR):
 - only then does the AWS deployment checklist in
   `docs/SANDBOX_DISK_SECURITY.md` reflect the currently-served rootfs.
 
-This verification is part of M11-D/production-activation preparation, not
-part of M11-C3. It has not been performed by this PR, no rootfs was rebuilt
-or deployed, and no production system was touched. M11-D and M11-E remain
+M11-D1 now implements this verification in an explicit real-host harness. It
+requires `PEEPHOLE_GVISOR_BASE_ROOTFS` to name a test-specific rebuilt image
+and validates both placeholders plus the trusted bootstrap before allocating a
+sandbox. The privileged M11-D2 execution remains `NOT_RUN`: no rootfs was
+rebuilt or deployed by D1, no production system was touched, and M11-E remains
 **NOT STARTED**.
 
 ---
@@ -1356,10 +1366,23 @@ Requires a base rootfs rebuilt from the current
 prerequisite" note) — an image predating M11-C3 does not carry the
 `/run/secrets/database-url` placeholder these tests bind-mount onto, and the
 existing `/run/secrets/env` placeholder replaces what used to be a directory
-target. Not run as part of this PR; `NOT_RUN` unless actually executed
-against a rebuilt image on real Linux/gVisor.
+target.
 
-Extending the existing `PEEPHOLE_REAL_GVISOR_TESTS=1`-gated suite pattern:
+**M11-D1 status: `HARNESS_IMPLEMENTED`; `REAL_HOST_NOT_RUN`.**
+`tests/realTemporaryDatabaseRuntime.test.ts` extends the existing privileged
+harness model without changing production composition. It requires both
+`PEEPHOLE_REAL_GVISOR_TESTS=1` and
+`PEEPHOLE_M11_REAL_GVISOR_DATABASE_TESTS=1`, plus an operator-provided
+`PEEPHOLE_M11_REAL_GVISOR_POSTGRES_URL` that resolves exactly to
+`192.168.253.1:5433` and a test-specific `PEEPHOLE_GVISOR_BASE_ROOTFS`.
+Non-exact gate values skip cleanly; once both gates are enabled, missing or
+invalid Linux/root/runsc/network/rootfs/PostgreSQL prerequisites fail rather
+than skip. The PostgreSQL endpoint must report major version 18 and the
+connected identity must satisfy the locked non-superuser provisioning-role
+policy. D1 does not prepare that endpoint or mutate host topology; actual
+privileged execution is the separate M11-D2 operator phase.
+
+The implemented harness asserts:
 
 - the sandbox's added `/32` route exists and is exactly one route;
 - `192.168.253.1:5433` is reachable from inside the sandbox;
@@ -1372,10 +1395,21 @@ Extending the existing `PEEPHOLE_REAL_GVISOR_TESTS=1`-gated suite pattern:
 - no NAT/MASQUERADE rule exists for this path;
 - `DATABASE_URL` reaches the sandboxed child (via digest/boolean
   comparison, never the raw value over any wire the test itself controls);
-- the raw value is absent from OCI `config.json`/`process.args`;
-- the credential tmpfs file is gone after `stop()`;
-- the database and role are gone (checked directly against `18-tenant`)
-  after `stop()`.
+- the raw value is absent from OCI `config.json`, `process.env`,
+  `process.args`, and the bounded dedicated runsc state scan while active and
+  after deletion;
+- the configured base rootfs contains symlink-free, empty, root-owned `0644`
+  `/run/secrets/env` and `/run/secrets/database-url` placeholders plus the
+  fixed trusted bootstrap;
+- the dedicated test-owned database credential root is real tmpfs, disjoint
+  from production and M10 storage, uses the production filesystem primitive,
+  loses the runtime's credential material after `stop()`, and is removed only
+  after zero owned entries are proven;
+- the database and role are gone (checked directly against the disposable
+  PostgreSQL 18 endpoint) after the integrated C4 lifecycle reaches backend
+  `stopped` with no error;
+- the exact test-owned runsc, namespace, veth, firewall, lease, loop/mount,
+  workspace, credential, database, and role resources leave zero residue.
 
 ### Production acceptance — prepared runbook, not executed
 
