@@ -43,7 +43,20 @@ export interface ProductionConfig {
   /** Operator-supplied site root; no public suffix inference is performed. */
   trustedRegistrableDomain: string
   trustedAppOrigin: string
+  /** M11 temporary PostgreSQL previews. Default OFF; see
+   * docs/TEMPORARY_DATABASES.md section 17 for the activation gate. */
+  temporaryDatabases: TemporaryDatabaseProductionConfig
 }
+
+export type TemporaryDatabaseProductionConfig =
+  | { enabled: false }
+  | {
+      enabled: true
+      /** Server/operator-only tenant provisioning credential. Never logged,
+       * echoed in errors, persisted, or passed to a sandbox. */
+      provisioningUrl: string
+      credentialRootDir: string
+    }
 
 const DEFAULTS = {
   workerConcurrency: 1,
@@ -61,6 +74,7 @@ const DEFAULTS = {
   artifactBaseDomain: "peepholeusercontent.dev",
   trustedRegistrableDomain: "peephole.dev",
   trustedAppOrigin: "https://app.peephole.dev",
+  databaseCredentialRootDir: "/run/peephole/db-credentials",
 } as const
 
 export function readProductionConfig(
@@ -152,6 +166,7 @@ export function readProductionConfig(
       environment.PEEPHOLE_ARTIFACT_BASE_DOMAIN,
       DEFAULTS.artifactBaseDomain,
     ),
+    temporaryDatabases: readTemporaryDatabaseConfig(environment),
   }
   // Compare at label boundaries in both directions, including equality.
   if (
@@ -169,6 +184,58 @@ export function readProductionConfig(
     )
   }
   return config
+}
+
+/** Only the exact value "1" enables M11; unset, empty, or "0" disables it,
+ * and anything else is a configuration error rather than a guess. While
+ * disabled, no other M11 variable is read or required. */
+function readTemporaryDatabaseConfig(
+  environment: NodeJS.ProcessEnv,
+): TemporaryDatabaseProductionConfig {
+  const flag = environment.PEEPHOLE_TEMPORARY_DATABASES?.trim() ?? ""
+  if (flag === "" || flag === "0") return { enabled: false }
+  if (flag !== "1") {
+    throw new Error("PEEPHOLE_TEMPORARY_DATABASES must be 0 or 1.")
+  }
+
+  const provisioningUrl = environment.PEEPHOLE_TENANT_DB_PROVISIONING_URL
+  // Messages below deliberately never include the configured value.
+  if (!provisioningUrl || !isProvisioningUrl(provisioningUrl)) {
+    throw new Error(
+      "PEEPHOLE_TENANT_DB_PROVISIONING_URL must be a PostgreSQL URL with a user, password, and database when PEEPHOLE_TEMPORARY_DATABASES=1.",
+    )
+  }
+  if (provisioningUrl === environment.PEEPHOLE_DATABASE_URL) {
+    throw new Error(
+      "PEEPHOLE_TENANT_DB_PROVISIONING_URL must not reuse the control-plane PEEPHOLE_DATABASE_URL.",
+    )
+  }
+
+  return {
+    enabled: true,
+    provisioningUrl,
+    credentialRootDir: readAbsolutePath(
+      "PEEPHOLE_DATABASE_CREDENTIAL_ROOT",
+      environment.PEEPHOLE_DATABASE_CREDENTIAL_ROOT,
+      DEFAULTS.databaseCredentialRootDir,
+    ),
+  }
+}
+
+function isProvisioningUrl(value: string): boolean {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  return (
+    (url.protocol === "postgresql:" || url.protocol === "postgres:") &&
+    url.username !== "" &&
+    url.password !== "" &&
+    url.pathname.length > 1 &&
+    url.hash === ""
+  )
 }
 
 function readPath(value: string | undefined, fallback: string): string {

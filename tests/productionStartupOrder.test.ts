@@ -16,7 +16,9 @@ describe("production startup safety gates", () => {
       "await ensureSandboxDiskCapability",
       "await ensureProductionDiskLayout",
       "const generatedSecrets = await initializeProductionGeneratedSecretRuntime",
+      "const temporaryDatabases = await initializeProductionTemporaryDatabaseRuntime",
       "const worker = composeProductionWorker",
+      "...temporaryDatabaseBackendDependencies(temporaryDatabases)",
       "await new FullStackPreviewStartupReconciler",
       "await routing.artifactHost.listen()",
       "await routing.tlsAskServer.listen()",
@@ -48,6 +50,39 @@ describe("production startup safety gates", () => {
     expect(maintenance).toContain("cleanup failed; will retry")
   })
 
+  it("adds temporary-database maintenance inside the same error-reporting sweep", async () => {
+    const source = await readFile(
+      path.resolve("services/production/server.ts"),
+      "utf8",
+    )
+    const maintenanceStart = source.indexOf("const maintain = () =>")
+    const maintenance = source.slice(
+      maintenanceStart,
+      source.indexOf("maintain()", maintenanceStart),
+    )
+    const tasks = maintenance.indexOf(
+      "...temporaryDatabaseMaintenanceTasks(temporaryDatabases)",
+    )
+
+    expect(tasks).toBeGreaterThan(maintenance.indexOf("Promise.all(["))
+    expect(tasks).toBeLessThan(
+      maintenance.indexOf("cleanup failed; will retry"),
+    )
+  })
+
+  it("never catches a temporary-database startup failure", async () => {
+    const source = await readFile(
+      path.resolve("services/production/server.ts"),
+      "utf8",
+    )
+    const start = source.indexOf(
+      "const temporaryDatabases = await initializeProductionTemporaryDatabaseRuntime",
+    )
+    const statement = source.slice(start, source.indexOf(")\n", start))
+
+    expect(statement).not.toMatch(/\.catch\(|try\s*\{/)
+  })
+
   it("shuts down lifecycle ownership before backend and static workers", async () => {
     const source = await readFile(
       path.resolve("services/production/server.ts"),
@@ -65,6 +100,7 @@ describe("production startup safety gates", () => {
       "await api.stop()",
       "await routing.tlsAskServer.close()",
       "await routing.artifactHost.close()",
+      "await temporaryDatabases?.close()",
       "await database.close()",
     ].map((token) => {
       const index = shutdown.indexOf(token)

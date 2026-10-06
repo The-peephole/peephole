@@ -4,12 +4,14 @@ import path from "node:path"
 import { describe, expect, it } from "vitest"
 
 import {
+  ensureDatabaseCredentialCapability,
   ensureProductionPreflight,
   ensureProductionDiskLayout,
   ensureGeneratedSecretInjectionCapability,
   ensureSandboxDiskCapability,
   runProductionPreflightChecks,
 } from "../services/production/preflight"
+import type { RootfsEntry } from "../services/production/preflight"
 import type {
   ProcessRunner,
   ProcessRunResult,
@@ -51,9 +53,41 @@ const HEALTHY_EXISTS = new Set([
   "/var/lib/peephole/base-rootfs/usr/local/bin/node",
 ])
 
-function healthyOptions() {
+const ROOTFS = "/var/lib/peephole/base-rootfs"
+
+/** The layout scripts/gvisor/build-base-rootfs.sh produces. */
+function healthyRootfsEntries(): Map<string, RootfsEntry> {
+  const directory: RootfsEntry = {
+    kind: "directory",
+    size: 4096,
+    uid: 0,
+    mode: 0o755,
+  }
+  return new Map<string, RootfsEntry>([
+    [`${ROOTFS}/run`, directory],
+    [`${ROOTFS}/run/secrets`, directory],
+    [
+      `${ROOTFS}/run/secrets/env`,
+      { kind: "file", size: 0, uid: 0, mode: 0o644 },
+    ],
+    [
+      `${ROOTFS}/run/secrets/database-url`,
+      { kind: "file", size: 0, uid: 0, mode: 0o644 },
+    ],
+    [`${ROOTFS}/opt`, directory],
+    [`${ROOTFS}/opt/peephole`, directory],
+    [
+      `${ROOTFS}/opt/peephole/secret-bootstrap.mjs`,
+      { kind: "file", size: 2048, uid: 0, mode: 0o555 },
+    ],
+  ])
+}
+
+function healthyOptions(entries = healthyRootfsEntries()) {
   return {
-    baseRootfsImage: "/var/lib/peephole/base-rootfs",
+    baseRootfsImage: ROOTFS,
+    inspectRootfsEntry: async (candidate: string) =>
+      entries.get(candidate) ?? null,
     processRunner: new FakeProcessRunner({
       runsc: ok("runsc version release-20260817.0"),
       ip: ok("ip utility, iproute2-6.19.0"),
@@ -90,6 +124,7 @@ describe("runProductionPreflightChecks", () => {
       "cgroup v2",
       "net.ipv4.ip_forward",
       "base rootfs image",
+      "base rootfs secret contract",
       "DNS config source",
     ])
   })
@@ -254,6 +289,153 @@ describe("ensureProductionDiskLayout", () => {
         deviceFor: async () => 7,
       }),
     ).resolves.toBeUndefined()
+  })
+})
+
+describe("base rootfs secret contract", () => {
+  async function contractResult(
+    mutate: (entries: Map<string, RootfsEntry>) => void,
+  ) {
+    const entries = healthyRootfsEntries()
+    mutate(entries)
+    const results = await runProductionPreflightChecks(healthyOptions(entries))
+    return results.find(
+      (result) => result.name === "base rootfs secret contract",
+    )
+  }
+
+  const file = (overrides: Partial<RootfsEntry> = {}): RootfsEntry => ({
+    kind: "file",
+    size: 0,
+    uid: 0,
+    mode: 0o644,
+    ...overrides,
+  })
+
+  it("accepts the layout the current rootfs builder produces", async () => {
+    expect(await contractResult(() => undefined)).toMatchObject({ ok: true })
+  })
+
+  it("rejects a pre-M11-C3 image with neither placeholder, independent of temporary databases", async () => {
+    const result = await contractResult((entries) => {
+      entries.delete(`${ROOTFS}/run/secrets/env`)
+      entries.delete(`${ROOTFS}/run/secrets/database-url`)
+    })
+
+    expect(result?.ok).toBe(false)
+    expect(result?.detail).toMatch(/run\/secrets\/env is missing/)
+    expect(result?.detail).toMatch(/run\/secrets\/database-url is missing/)
+    expect(result?.detail).toMatch(/build-base-rootfs\.sh/)
+  })
+
+  it.each(["env", "database-url"])(
+    "rejects each defect of the %s placeholder",
+    async (name) => {
+      const target = `${ROOTFS}/run/secrets/${name}`
+      for (const [entry, pattern] of [
+        [null, /is missing/],
+        [file({ kind: "directory" }), /is a directory/],
+        [file({ kind: "symlink" }), /is a symlink/],
+        [file({ size: 1 }), /is not empty/],
+        [file({ mode: 0o600 }), /has mode 600, not 644/],
+        [file({ uid: 1000 }), /is not root-owned/],
+      ] as const) {
+        const result = await contractResult((entries) => {
+          if (entry) entries.set(target, entry)
+          else entries.delete(target)
+        })
+        expect(result?.ok, `${name}: ${String(pattern)}`).toBe(false)
+        expect(result?.detail).toMatch(pattern)
+      }
+    },
+  )
+
+  it("rejects a missing, non-file, symlinked, writable, or non-root bootstrap", async () => {
+    const target = `${ROOTFS}/opt/peephole/secret-bootstrap.mjs`
+    for (const [entry, pattern] of [
+      [null, /is missing/],
+      [file({ kind: "directory", mode: 0o555 }), /is a directory/],
+      [file({ kind: "symlink", mode: 0o555 }), /is a symlink/],
+      [file({ mode: 0o755 }), /has mode 755, not 555/],
+      [file({ uid: 1000, mode: 0o555 }), /is not root-owned/],
+    ] as const) {
+      const result = await contractResult((entries) => {
+        if (entry) entries.set(target, entry)
+        else entries.delete(target)
+      })
+      expect(result?.ok, String(pattern)).toBe(false)
+      expect(result?.detail).toMatch(pattern)
+    }
+  })
+
+  it("rejects a symlinked /run/secrets directory", async () => {
+    const result = await contractResult((entries) => {
+      entries.set(`${ROOTFS}/run/secrets`, file({ kind: "symlink" }))
+    })
+
+    expect(result?.ok).toBe(false)
+    expect(result?.detail).toMatch(/run\/secrets is a symlink/)
+  })
+
+  it("makes ensureProductionPreflight refuse startup on an old image", async () => {
+    const entries = healthyRootfsEntries()
+    entries.delete(`${ROOTFS}/run/secrets/database-url`)
+
+    await expect(
+      ensureProductionPreflight(healthyOptions(entries)),
+    ).rejects.toThrow(/base rootfs secret contract/)
+  })
+})
+
+describe("ensureDatabaseCredentialCapability", () => {
+  it("rejects a non-absolute credential root", async () => {
+    await expect(
+      ensureDatabaseCredentialCapability({
+        credentialRootDir: "relative/db-credentials",
+      }),
+    ).rejects.toThrow(/Database-credential root must be absolute/)
+  })
+
+  it("accepts only a tmpfs-backed directory", async () => {
+    const temporaryDir = await mkdtemp(
+      path.join(os.tmpdir(), "peephole-db-credential-preflight-"),
+    )
+    try {
+      const root = path.join(temporaryDir, "db-credentials")
+      await expect(
+        ensureDatabaseCredentialCapability({
+          credentialRootDir: root,
+          processRunner: new FakeProcessRunner({ findmnt: ok("tmpfs\n") }),
+        }),
+      ).resolves.toBeUndefined()
+      await expect(
+        ensureDatabaseCredentialCapability({
+          credentialRootDir: root,
+          processRunner: new FakeProcessRunner({ findmnt: ok("ext4\n") }),
+        }),
+      ).rejects.toThrow(/not backed by tmpfs/)
+    } finally {
+      await rm(temporaryDir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects a credential root that is not a directory", async () => {
+    const temporaryDir = await mkdtemp(
+      path.join(os.tmpdir(), "peephole-db-credential-preflight-"),
+    )
+    try {
+      const root = path.join(temporaryDir, "db-credentials")
+      await writeFile(root, "not a directory")
+
+      await expect(
+        ensureDatabaseCredentialCapability({
+          credentialRootDir: root,
+          prepareDirectory: async () => undefined,
+        }),
+      ).rejects.toThrow(/Database-credential root must be a regular directory/)
+    } finally {
+      await rm(temporaryDir, { recursive: true, force: true })
+    }
   })
 })
 

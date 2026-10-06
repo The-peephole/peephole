@@ -39,7 +39,8 @@ export interface ComposeProductionBackendRuntimeOptions {
   secretBroker: BackendRuntimeSecretBroker
   generatedSecretFilesystem: GeneratedSecretFilesystem
   /** C4 activation seam. Both dependencies must be supplied together; the
-   * current production server intentionally supplies neither. */
+   * production server supplies both only when PEEPHOLE_TEMPORARY_DATABASES=1
+   * and neither otherwise. */
   temporaryDatabaseProvisioner?: TemporaryDatabaseLifecycleProvisioner
   databaseCredentialFilesystem?: DatabaseCredentialFilesystem
   /** Process-local live-route registry the same-process full-stack proxy

@@ -49,11 +49,29 @@ export interface ProductionPreflightOptions {
   pathExists?: (candidate: string) => Promise<boolean>
   /** Overridable for tests; defaults to the real resolveDnsConfigSource(). */
   resolveDnsConfigSource?: typeof resolveDnsConfigSource
+  /** Overridable for tests; defaults to a real no-follow lstat. */
+  inspectRootfsEntry?: (candidate: string) => Promise<RootfsEntry | null>
+}
+
+/** The no-follow facts the rootfs secret-contract check needs. */
+export interface RootfsEntry {
+  kind: "file" | "directory" | "symlink" | "other"
+  size: number
+  uid: number
+  /** Permission bits only (`mode & 0o7777`). */
+  mode: number
 }
 
 export interface GeneratedSecretRootPreflightOptions {
   secretRootDir: string
   baseRootfsImage: string
+  processRunner?: ProcessRunner
+  findmntBinaryPath?: string
+  prepareDirectory?: (candidate: string) => Promise<void>
+}
+
+export interface DatabaseCredentialRootPreflightOptions {
+  credentialRootDir: string
   processRunner?: ProcessRunner
   findmntBinaryPath?: string
   prepareDirectory?: (candidate: string) => Promise<void>
@@ -108,6 +126,10 @@ export async function runProductionPreflightChecks(
     checkCgroupV2(pathExists),
     checkIpForward(readFile),
     checkBaseRootfsImage(pathExists, options.baseRootfsImage),
+    checkBaseRootfsSecretContract(
+      options.inspectRootfsEntry ?? defaultInspectRootfsEntry,
+      options.baseRootfsImage,
+    ),
     checkDnsConfigSource(readFile, resolveDns),
   ])
 }
@@ -207,6 +229,95 @@ async function checkBaseRootfsImage(
   }
 }
 
+/** Exact layout `scripts/gvisor/build-base-rootfs.sh` produces for the
+ * credential bind mounts. The M10 generated-secret file and the M11 database
+ * credential file are each bind-mounted onto their own placeholder, so an
+ * image built before M11-C3 (no placeholders, older bootstrap) must refuse
+ * startup here rather than fail inside the first backend runtime. Checked
+ * whether or not temporary databases are enabled. */
+const ROOTFS_SECRET_CONTRACT: ReadonlyArray<{
+  relativePath: string
+  kind: RootfsEntry["kind"]
+  mode?: number
+  empty?: boolean
+}> = [
+  { relativePath: "run", kind: "directory" },
+  { relativePath: "run/secrets", kind: "directory" },
+  { relativePath: "run/secrets/env", kind: "file", mode: 0o644, empty: true },
+  {
+    relativePath: "run/secrets/database-url",
+    kind: "file",
+    mode: 0o644,
+    empty: true,
+  },
+  { relativePath: "opt", kind: "directory" },
+  { relativePath: "opt/peephole", kind: "directory" },
+  {
+    relativePath: "opt/peephole/secret-bootstrap.mjs",
+    kind: "file",
+    mode: 0o555,
+  },
+]
+
+async function checkBaseRootfsSecretContract(
+  inspect: (candidate: string) => Promise<RootfsEntry | null>,
+  baseRootfsImage: string,
+): Promise<PreflightCheckResult> {
+  const problems: string[] = []
+  for (const expected of ROOTFS_SECRET_CONTRACT) {
+    const candidate = path.join(baseRootfsImage, expected.relativePath)
+    const entry = await inspect(candidate).catch(() => null)
+    if (!entry) {
+      problems.push(`${expected.relativePath} is missing`)
+    } else if (entry.kind !== expected.kind) {
+      problems.push(`${expected.relativePath} is a ${entry.kind}`)
+    } else if (expected.kind === "file") {
+      if (entry.uid !== 0) {
+        problems.push(`${expected.relativePath} is not root-owned`)
+      }
+      if (expected.mode !== undefined && entry.mode !== expected.mode) {
+        problems.push(
+          `${expected.relativePath} has mode ${entry.mode.toString(8)}, not ${expected.mode.toString(8)}`,
+        )
+      }
+      if (expected.empty && entry.size !== 0) {
+        problems.push(`${expected.relativePath} is not empty`)
+      }
+    }
+  }
+
+  return {
+    name: "base rootfs secret contract",
+    ok: problems.length === 0,
+    detail:
+      problems.length === 0
+        ? "credential placeholders and trusted bootstrap match scripts/gvisor/build-base-rootfs.sh"
+        : `${problems.join("; ")} -- rebuild ${baseRootfsImage} with the current scripts/gvisor/build-base-rootfs.sh before starting this version.`,
+  }
+}
+
+async function defaultInspectRootfsEntry(
+  candidate: string,
+): Promise<RootfsEntry | null> {
+  try {
+    const stats = await lstat(candidate)
+    return {
+      kind: stats.isSymbolicLink()
+        ? "symlink"
+        : stats.isFile()
+          ? "file"
+          : stats.isDirectory()
+            ? "directory"
+            : "other",
+      size: stats.size,
+      uid: stats.uid,
+      mode: stats.mode & 0o7777,
+    }
+  } catch {
+    return null
+  }
+}
+
 function checkDnsConfigSource(
   readFile: (filePath: string) => string | null,
   resolveDns: typeof resolveDnsConfigSource,
@@ -278,27 +389,10 @@ export async function ensureProductionDiskLayout(
 export async function ensureGeneratedSecretInjectionCapability(
   options: GeneratedSecretRootPreflightOptions,
 ): Promise<void> {
-  if (!nativePath.isAbsolute(options.secretRootDir)) {
-    throw new Error("Generated-secret root must be absolute.")
-  }
-  const root = nativePath.resolve(options.secretRootDir)
-  const prepare =
-    options.prepareDirectory ??
-    (async (candidate: string) => {
-      await mkdir(candidate, { recursive: true, mode: 0o700 })
-    })
-  await prepare(root)
-  const rootStats = await lstat(root)
-  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
-    throw new Error("Generated-secret root must be a regular directory.")
-  }
-  if ((await realpath(root)) !== root) {
-    throw new Error("Generated-secret root must not traverse symlinks.")
-  }
-  await assertTmpfsFilesystem(
-    root,
-    options.processRunner,
-    options.findmntBinaryPath,
+  await ensureMemoryBackedRoot(
+    "Generated-secret",
+    options.secretRootDir,
+    options,
   )
 
   const bootstrap = nativePath.join(
@@ -317,6 +411,52 @@ export async function ensureGeneratedSecretInjectionCapability(
       "Trusted generated-secret bootstrap is missing from the base rootfs.",
     )
   }
+}
+
+/** M11 database-credential capability gate, run only when temporary
+ * databases are enabled: the dedicated root must be a real tmpfs-backed
+ * directory, mirroring the generated-secret root's requirements. */
+export async function ensureDatabaseCredentialCapability(
+  options: DatabaseCredentialRootPreflightOptions,
+): Promise<void> {
+  await ensureMemoryBackedRoot(
+    "Database-credential",
+    options.credentialRootDir,
+    options,
+  )
+}
+
+async function ensureMemoryBackedRoot(
+  label: string,
+  configuredRoot: string,
+  options: {
+    processRunner?: ProcessRunner
+    findmntBinaryPath?: string
+    prepareDirectory?: (candidate: string) => Promise<void>
+  },
+): Promise<void> {
+  if (!nativePath.isAbsolute(configuredRoot)) {
+    throw new Error(`${label} root must be absolute.`)
+  }
+  const root = nativePath.resolve(configuredRoot)
+  const prepare =
+    options.prepareDirectory ??
+    (async (candidate: string) => {
+      await mkdir(candidate, { recursive: true, mode: 0o700 })
+    })
+  await prepare(root)
+  const rootStats = await lstat(root)
+  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+    throw new Error(`${label} root must be a regular directory.`)
+  }
+  if ((await realpath(root)) !== root) {
+    throw new Error(`${label} root must not traverse symlinks.`)
+  }
+  await assertTmpfsFilesystem(
+    root,
+    options.processRunner,
+    options.findmntBinaryPath,
+  )
 }
 
 async function probeDiskManager(manager: SandboxDiskManager): Promise<void> {
