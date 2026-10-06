@@ -200,6 +200,9 @@ export class BackendRuntimeSupervisor {
         (resourceId) => {
           databaseResourceId = resourceId
         },
+        (handle) => {
+          processHandle = handle
+        },
       )
       signal.throwIfAborted()
       await this.monitorWhileRunning(queued.runtimeId, processHandle, signal)
@@ -283,6 +286,7 @@ export class BackendRuntimeSupervisor {
     workspace: LocalPreviewWorkspace,
     signal: AbortSignal,
     onDatabaseProvisioned: (resourceId: TemporaryDatabaseResourceId) => void,
+    onProcessStarted: (handle: RuntimeProcessHandle) => void,
   ): Promise<RuntimeProcessHandle> {
     const runtimeId = queued.runtimeId
     signal.throwIfAborted()
@@ -326,11 +330,14 @@ export class BackendRuntimeSupervisor {
         databaseCredential,
       ),
     )
+    // Publish cleanup ownership synchronously, before readiness or any later
+    // control-plane await can fail. From this point onward the outer finally
+    // always owns handle.stop().
+    onProcessStarted(handle)
 
     try {
       await handle.waitUntilReady(this.options.readinessTimeoutMs ?? 30_000)
     } catch (error) {
-      await handle.stop().catch(() => undefined)
       throw new RuntimePhaseError(
         error instanceof BackendRuntimeReadinessTimeoutError
           ? "RUNTIME_READINESS_TIMEOUT"
@@ -349,7 +356,23 @@ export class BackendRuntimeSupervisor {
     // unregisters this entry (unregister is unconditional and idempotent
     // there), so a failed transition never leaves a live route behind.
     this.liveRuntimeRegistry.register(runtimeId, handle.dialTarget)
-    await this.controlPlane.markPhase(runtimeId, "running")
+    try {
+      await this.controlPlane.markPhase(runtimeId, "running")
+    } catch (error) {
+      // Cancellation/expiry can win after the active check above. Confirm
+      // that authoritative state before classifying this as a lifecycle stop;
+      // a genuine control-plane failure while execution is still active must
+      // retain its fail-closed infrastructure classification.
+      let executionActive: boolean
+      try {
+        executionActive =
+          await this.controlPlane.isWorkerRuntimeActive(runtimeId)
+      } catch {
+        throw error
+      }
+      if (!executionActive) throw new RuntimeLifecycleStopError()
+      throw error
+    }
     return handle
   }
 

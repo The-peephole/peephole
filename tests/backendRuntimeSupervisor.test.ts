@@ -631,6 +631,167 @@ describe("BackendRuntimeSupervisor", () => {
     )
   })
 
+  it("retains handle ownership when cancellation occurs while readiness is blocked", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const events: string[] = []
+    let releaseReady!: () => void
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      starter,
+      liveRuntimeRegistry,
+      supervisor,
+    } = compose(10 * 60_000, "file", undefined, databasePlan, provisioner)
+    starter.nextReadyGate = new Promise<void>((resolve) => {
+      releaseReady = resolve
+    })
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    sandbox.onDestroy = () => events.push("workspace-and-network")
+    provisioner.onRevoke = async () => {
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "stopping",
+      )
+      events.push("database-revoked")
+    }
+
+    const run = supervisor.run(job)
+    await vi.waitFor(() => expect(starter.lastHandle).not.toBeNull())
+    createdRoots.push(...sandbox.roots)
+    starter.lastHandle!.stopOverride = async () => {
+      events.push("process-and-credentials")
+    }
+    expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+      "starting",
+    )
+    const cancelled = await controlPlane.cancelForOrchestration(
+      runtimeId,
+      requester.subject,
+    )
+    expect(cancelled.status).toBe("stopping")
+
+    releaseReady()
+    await run
+    events.push(
+      (await controlPlane.get(runtimeId, requester)).status === "stopped"
+        ? "backend-stopped"
+        : "unexpected-terminal",
+    )
+
+    expect(starter.lastHandle?.stopCalls).toBe(1)
+    expect(events).toEqual([
+      "process-and-credentials",
+      "workspace-and-network",
+      "database-revoked",
+      "backend-stopped",
+    ])
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+    expect(provisioner.calls).toHaveLength(1)
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+  })
+
+  it("treats cancellation winning the running transition as lifecycle stop", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const events: string[] = []
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      starter,
+      liveRuntimeRegistry,
+      supervisor,
+    } = compose(10 * 60_000, "file", undefined, databasePlan, provisioner)
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    sandbox.onDestroy = () => events.push("workspace-and-network")
+    provisioner.onRevoke = () => {
+      events.push("database-revoked")
+    }
+    const originalMarkPhase = controlPlane.markPhase.bind(controlPlane)
+    vi.spyOn(controlPlane, "markPhase").mockImplementation(
+      async (id, phase) => {
+        if (phase === "running") {
+          starter.lastHandle!.stopOverride = async () => {
+            events.push("process-and-credentials")
+          }
+          const cancelled = await controlPlane.cancelForOrchestration(
+            runtimeId,
+            requester.subject,
+          )
+          expect(cancelled.status).toBe("stopping")
+        }
+        return originalMarkPhase(id, phase)
+      },
+    )
+
+    await supervisor.run(job)
+    createdRoots.push(...sandbox.roots)
+    events.push(
+      (await controlPlane.get(runtimeId, requester)).status === "stopped"
+        ? "backend-stopped"
+        : "unexpected-terminal",
+    )
+
+    expect(starter.lastHandle?.stopCalls).toBe(1)
+    expect(events).toEqual([
+      "process-and-credentials",
+      "workspace-and-network",
+      "database-revoked",
+      "backend-stopped",
+    ])
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+    expect(provisioner.calls).toHaveLength(1)
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+
+    await supervisor.run(job, { recovered: true })
+    expect(provisioner.calls).toHaveLength(1)
+  })
+
+  it("treats expiry winning the running transition as lifecycle stop", async () => {
+    const provisioner = new FakeTemporaryDatabaseProvisioner()
+    const {
+      controlPlane,
+      queue,
+      sandbox,
+      starter,
+      liveRuntimeRegistry,
+      supervisor,
+      setNow,
+    } = compose(1_000, "file", undefined, databasePlan, provisioner)
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    const originalMarkPhase = controlPlane.markPhase.bind(controlPlane)
+    vi.spyOn(controlPlane, "markPhase").mockImplementation(
+      async (id, phase) => {
+        if (phase === "running") {
+          setNow(new Date("2026-01-01T00:00:02.000Z"))
+          expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+            "stopping",
+          )
+        }
+        return originalMarkPhase(id, phase)
+      },
+    )
+
+    await supervisor.run(job)
+    createdRoots.push(...sandbox.roots)
+
+    expect(starter.lastHandle?.stopCalls).toBe(1)
+    expect(provisioner.calls).toHaveLength(1)
+    expect(provisioner.revoked).toEqual([databaseResourceId])
+    expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+      "stopped",
+    )
+    expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+  })
+
   it("revokes before publishing a process-start failure", async () => {
     const provisioner = new FakeTemporaryDatabaseProvisioner()
     const { controlPlane, queue, sandbox, starter, supervisor } = compose(
