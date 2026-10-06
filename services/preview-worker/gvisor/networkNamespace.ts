@@ -345,13 +345,17 @@ export class VethNatNetworkProvisioner {
       // from the sandbox to the fixed tenant PostgreSQL address/port,
       // inserted before the unconditional DROP below -- see
       // docs/TEMPORARY_DATABASES.md section 7/section 18. No other host
-      // service or port is ever reachable.
+      // service or port is ever reachable. `-m tcp` is explicit because
+      // `iptables -S` always reports the implicit match, and the reaper's
+      // exact expected rule must equal what the host reads back.
       await this.iptablesRun([
         "-A",
         names.inputChain,
         "-d",
         `${TENANT_DATABASE_HOST}/32`,
         "-p",
+        "tcp",
+        "-m",
         "tcp",
         "--dport",
         String(TENANT_DATABASE_PORT),
