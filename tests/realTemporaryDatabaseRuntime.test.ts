@@ -680,7 +680,7 @@ describe.skipIf(!realDatabaseSuiteEnabled(process.env))(
           }
         }
 
-        if (environment && runtimeId) {
+        if (environment) {
           const credentialIds = await listOwnedDatabaseCredentialRuntimeIds(
             environment.credentialRoot,
             100,
