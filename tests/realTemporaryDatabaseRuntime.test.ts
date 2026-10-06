@@ -79,6 +79,7 @@ import type {
   TemporaryDatabaseRecord,
   TemporaryDatabaseStatus,
 } from "../types/temporaryDatabase"
+import { isDefaultRoute, parseProcNetRoute } from "./support/procNetRoute"
 import { createRealGvisorTestDirectory } from "./support/realGvisorTestRoot"
 import {
   removeDedicatedTestRootIfReconciled,
@@ -411,35 +412,26 @@ describe.skipIf(!realDatabaseSuiteEnabled(process.env))(
         ]) {
           expect(proof.attempts[name]?.connected, name).toBe(false)
         }
+        // Once runsc starts it imports the namespace's routes into its own
+        // netstack, and the host-side `ip -n <namespace> route` then reports
+        // nothing. The table the sandboxed child actually routes with is the
+        // `/proc/net/route` it read from inside the sandbox.
         expect(proof.routes).not.toMatch(/^\S+\s+00000000\s+/mu)
-
-        const routes = await runChecked(environment.processRunner, "ip", [
-          "-n",
-          primaryLease.namespace,
-          "-j",
-          "-4",
-          "route",
-          "show",
-        ])
-        const parsedRoutes = JSON.parse(routes.stdout) as Array<{
-          dst?: string
-          gateway?: string
-          dev?: string
-        }>
-        const databaseRoutes = parsedRoutes.filter(
-          (candidate) =>
-            candidate.dst === TENANT_DATABASE_HOST ||
-            candidate.dst === `${TENANT_DATABASE_HOST}/32`,
-        )
-        expect(databaseRoutes).toEqual([
-          expect.objectContaining({
-            gateway: primaryLease.hostIp,
-            dev: primaryLease.peerVeth,
-          }),
-        ])
+        const sandboxRoutes = parseProcNetRoute(proof.routes)
+        expect(sandboxRoutes.filter(isDefaultRoute)).toEqual([])
         expect(
-          parsedRoutes.some((candidate) => candidate.dst === "default"),
-        ).toBe(false)
+          sandboxRoutes.filter(
+            (candidate) => candidate.destination === TENANT_DATABASE_HOST,
+          ),
+        ).toEqual([
+          {
+            iface: primaryLease.peerVeth,
+            destination: TENANT_DATABASE_HOST,
+            gateway: primaryLease.hostIp,
+            mask: "255.255.255.255",
+            prefixLength: 32,
+          },
+        ])
 
         const inputRules = await runChecked(
           environment.processRunner,
