@@ -430,7 +430,7 @@ describe("VethNatNetworkProvisioner.createIngressOnly temporaryDatabaseAccess", 
 
     expect(chainLines).toEqual([
       `iptables -w 5 -A ${inputChain} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT`,
-      `iptables -w 5 -A ${inputChain} -d 192.168.253.1/32 -p tcp --dport 5433 -j ACCEPT`,
+      `iptables -w 5 -A ${inputChain} -d 192.168.253.1/32 -p tcp -m tcp --dport 5433 -j ACCEPT`,
       `iptables -w 5 -A ${inputChain} -j DROP`,
     ])
   })

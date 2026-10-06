@@ -641,6 +641,64 @@ describe("NetworkOrphanReaper temporaryDatabaseAccess", () => {
     expect(host.ipv4).toEqual([])
   })
 
+  it("accepts and cleans the literal `iptables -S` output a real host reports for a DB lease", async () => {
+    const lease = await allocateDatabaseIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    // Captured from a real Linux host (M11-D2 lease 15870), not derived from
+    // expectedRules(): the kernel reports the implicit `-m tcp` match and
+    // orders conntrack states as RELATED,ESTABLISHED.
+    host.ipv4 = [
+      ["-P", "INPUT", "ACCEPT"],
+      ["-P", "FORWARD", "ACCEPT"],
+      ["-P", "OUTPUT", "ACCEPT"],
+      ["-N", lease.egressChain],
+      ["-N", lease.inputChain],
+      ["-N", lease.returnChain],
+      ["-A", "INPUT", "-i", lease.hostVeth, "-j", lease.inputChain],
+      ["-A", "FORWARD", "-o", lease.hostVeth, "-j", lease.returnChain],
+      ["-A", "FORWARD", "-i", lease.hostVeth, "-j", lease.egressChain],
+      ["-A", lease.egressChain, "-j", "DROP"],
+      [
+        "-A",
+        lease.inputChain,
+        "-m",
+        "conntrack",
+        "--ctstate",
+        "RELATED,ESTABLISHED",
+        "-j",
+        "ACCEPT",
+      ],
+      [
+        "-A",
+        lease.inputChain,
+        "-d",
+        "192.168.253.1/32",
+        "-p",
+        "tcp",
+        "-m",
+        "tcp",
+        "--dport",
+        "5433",
+        "-j",
+        "ACCEPT",
+      ],
+      ["-A", lease.inputChain, "-j", "DROP"],
+      ["-A", lease.returnChain, "-j", "DROP"],
+    ]
+
+    await reaper.reapAll()
+
+    expect(await manager.listOwnedLeases()).toEqual([])
+    expect(host.namespaces).toEqual(new Set())
+    expect(host.links).toEqual(new Set())
+    expect(host.ipv4).toEqual([
+      ["-P", "INPUT", "ACCEPT"],
+      ["-P", "FORWARD", "ACCEPT"],
+      ["-P", "OUTPUT", "ACCEPT"],
+    ])
+    expect(host.ipv6).toEqual([])
+  })
+
   it("fails closed if the DB route/rule exists on a lease whose marker does not authorize it", async () => {
     const lease = await allocateIngressOnly(manager)
     host.install(lease, "full", { withDefaultRoute: false })
@@ -689,30 +747,11 @@ describe("NetworkOrphanReaper temporaryDatabaseAccess", () => {
   it("fails closed on a wrong port for the INPUT accept rule", async () => {
     const lease = await allocateDatabaseIngressOnly(manager)
     host.install(lease, "full", { withDefaultRoute: false })
-    removeRule(host.ipv4, [
-      "-A",
-      lease.inputChain,
-      "-d",
-      "192.168.253.1/32",
-      "-p",
-      "tcp",
-      "--dport",
-      "5433",
-      "-j",
-      "ACCEPT",
-    ])
-    host.ipv4.push([
-      "-A",
-      lease.inputChain,
-      "-d",
-      "192.168.253.1/32",
-      "-p",
-      "tcp",
-      "--dport",
-      "5432",
-      "-j",
-      "ACCEPT",
-    ])
+    replaceDatabaseRule(host.ipv4, lease.inputChain, {
+      destination: "192.168.253.1/32",
+      protocol: "tcp",
+      port: "5432",
+    })
 
     await expect(reaper.reapAll()).rejects.toThrow(/unexpected IPv4 rule/)
   })
@@ -720,30 +759,54 @@ describe("NetworkOrphanReaper temporaryDatabaseAccess", () => {
   it("fails closed on UDP instead of TCP for the INPUT accept rule", async () => {
     const lease = await allocateDatabaseIngressOnly(manager)
     host.install(lease, "full", { withDefaultRoute: false })
-    removeRule(host.ipv4, [
-      "-A",
-      lease.inputChain,
-      "-d",
-      "192.168.253.1/32",
-      "-p",
-      "tcp",
-      "--dport",
-      "5433",
-      "-j",
-      "ACCEPT",
-    ])
-    host.ipv4.push([
-      "-A",
-      lease.inputChain,
-      "-d",
-      "192.168.253.1/32",
-      "-p",
-      "udp",
-      "--dport",
-      "5433",
-      "-j",
-      "ACCEPT",
-    ])
+    replaceDatabaseRule(host.ipv4, lease.inputChain, {
+      destination: "192.168.253.1/32",
+      protocol: "udp",
+      port: "5433",
+    })
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected IPv4 rule/)
+  })
+
+  it("fails closed on a wrong destination for the INPUT accept rule", async () => {
+    const lease = await allocateDatabaseIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    replaceDatabaseRule(host.ipv4, lease.inputChain, {
+      destination: "192.168.253.2/32",
+      protocol: "tcp",
+      port: "5433",
+    })
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected IPv4 rule/)
+  })
+
+  it("fails closed on a broader destination CIDR for the INPUT accept rule", async () => {
+    const lease = await allocateDatabaseIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    replaceDatabaseRule(host.ipv4, lease.inputChain, {
+      destination: "192.168.253.0/24",
+      protocol: "tcp",
+      port: "5433",
+    })
+
+    await expect(reaper.reapAll()).rejects.toThrow(/unexpected IPv4 rule/)
+  })
+
+  it("fails closed if the DB accept rule exists on a lease whose marker does not authorize it", async () => {
+    const lease = await allocateIngressOnly(manager)
+    host.install(lease, "full", { withDefaultRoute: false })
+    const dropIndex = host.ipv4.findIndex((rule) =>
+      sameRule(rule, ["-A", lease.inputChain, "-j", "DROP"]),
+    )
+    host.ipv4.splice(
+      dropIndex,
+      0,
+      databaseRule(lease.inputChain, {
+        destination: "192.168.253.1/32",
+        protocol: "tcp",
+        port: "5433",
+      }),
+    )
 
     await expect(reaper.reapAll()).rejects.toThrow(/unexpected IPv4 rule/)
   })
@@ -876,6 +939,8 @@ describe("expectedRules for the ingress-only policy", () => {
         "-d",
         "192.168.253.1/32",
         "-p",
+        "tcp",
+        "-m",
         "tcp",
         "--dport",
         "5433",
@@ -1023,4 +1088,42 @@ function render(rule: readonly string[]): string {
 function removeRule(rules: string[][], expected: string[]): void {
   const index = rules.findIndex((rule) => sameRule(rule, expected))
   if (index >= 0) rules.splice(index, 1)
+}
+
+/** A DB accept rule in the canonical form `iptables -S` reports. */
+function databaseRule(
+  chain: string,
+  rule: { destination: string; protocol: string; port: string },
+): string[] {
+  return [
+    "-A",
+    chain,
+    "-d",
+    rule.destination,
+    "-p",
+    rule.protocol,
+    "-m",
+    rule.protocol,
+    "--dport",
+    rule.port,
+    "-j",
+    "ACCEPT",
+  ]
+}
+
+/** Swaps the installed DB accept rule in place, failing if it is absent so a
+ * fail-closed test can never pass merely because nothing was replaced. */
+function replaceDatabaseRule(
+  rules: string[][],
+  chain: string,
+  replacement: { destination: string; protocol: string; port: string },
+): void {
+  const original = databaseRule(chain, {
+    destination: "192.168.253.1/32",
+    protocol: "tcp",
+    port: "5433",
+  })
+  const index = rules.findIndex((rule) => sameRule(rule, original))
+  if (index < 0) throw new Error("The installed DB accept rule was not found.")
+  rules.splice(index, 1, databaseRule(chain, replacement))
 }

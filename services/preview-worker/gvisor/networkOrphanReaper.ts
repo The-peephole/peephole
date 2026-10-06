@@ -616,13 +616,16 @@ export function expectedRules(lease: NetworkLease): {
     if (lease.temporaryDatabaseAccess) {
       // The one narrow permission this capability grants -- see
       // networkNamespace.ts's `configureIngressOnlyFirewall`, which this
-      // must mirror exactly.
+      // must mirror exactly. This is the canonical `iptables -S` form,
+      // which always includes the implicit `-m tcp` match.
       inputRules.push([
         "-A",
         lease.inputChain,
         "-d",
         `${TENANT_DATABASE_HOST}/32`,
         "-p",
+        "tcp",
+        "-m",
         "tcp",
         "--dport",
         String(TENANT_DATABASE_PORT),
