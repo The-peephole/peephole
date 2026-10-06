@@ -58,7 +58,8 @@ production-verified in M10-C4B -- see stages 9-10 below and
 docs/EPHEMERAL_SECRETS.md. Arbitrary backends and arbitrary or user-supplied
 secrets remain unsupported. Temporary database support (stage 11) is
 partially implemented through M11-C4 but remains unavailable in production;
-real-host/real-gVisor verification and production activation have not started.
+the M11-D real-host harness is implemented but execution is `NOT_RUN`, and
+production activation has not started.
 
 ## Completed Foundation Milestones
 
@@ -145,10 +146,10 @@ capabilities remain outside M10. Stage 11 is still `[ ]`, but is partially
 implemented: its architecture is locked (D-033,
 `docs/TEMPORARY_DATABASES.md`), and M11-C1 through M11-C4 provide the portable
 and integrated implementation for the narrow `fullstack-v1`-only,
-`pg`+`DATABASE_URL`-only contract. M11-D real Linux/gVisor verification is
-`NOT RUN` and not started. M11-E production tenant PostgreSQL activation and
-acceptance is not started; no production tenant cluster or production DB-backed
-execution is enabled.
+`pg`+`DATABASE_URL`-only contract. M11-D is current: its real Linux/gVisor
+harness is implemented, but real-host execution is `NOT_RUN`. M11-E production
+tenant PostgreSQL activation and acceptance is not started; no production
+tenant cluster or production DB-backed execution is enabled.
 
 Build Adapter generalization is complete as an architecture change: an
 explicit resolver selects `static-html-v1` or `vite-react-npm-v1`, detects
@@ -288,7 +289,7 @@ origin and routes only `/api`/`/api/*` to the backend; the standalone
 `backend-v1` resource (`/v1/backend-runtimes`) still never reports a URL of
 its own. Temporary database support is now implemented through M11-C4's
 portable/integrated path, but remains unavailable in production pending
-M11-D real-host/real-gVisor verification and M11-E activation/acceptance. A
+M11-D real-host/real-gVisor execution and M11-E activation/acceptance. A
 Peephole-*generated* secret restricted to exactly `JWT_SECRET`/
 `SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET` is now implemented and
 production-verified as stage 10 -- see D-032 and docs/EPHEMERAL_SECRETS.md.

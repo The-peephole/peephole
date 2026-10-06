@@ -56,12 +56,12 @@ production-verified in M9 (see section 5 and the M9 record near the end of
 this document). Ephemeral generated secrets (roadmap stage 10) are
 implemented and covered at both the portable and real-gVisor-gated layers,
 production-verified in M10-C4B (see section 5's M10 generated-secret
-subsection and docs/EPHEMERAL_SECRETS.md); temporary databases (roadmap
-stage 11) still have no test at any layer -- that contract is not
-implemented. Its planned test matrix (portable, PostgreSQL-18 integration,
-real-gVisor, and a prepared-not-executed production runbook) is documented
-in docs/TEMPORARY_DATABASES.md section 19, but no test in that matrix has
-been written yet.
+subsection and docs/EPHEMERAL_SECRETS.md). Temporary databases (roadmap stage
+11) have C1-C4 portable and PostgreSQL 18 integration coverage. M11-D1 adds a
+real-gVisor database harness, discovered and compiled in portable CI but
+skipped without its two exact privileged opt-ins; its real Linux execution is
+`NOT_RUN` until M11-D2. Production activation and acceptance are also
+`NOT_RUN` and remain M11-E work. See docs/TEMPORARY_DATABASES.md section 19.
 
 ## 3. Portable Tests
 
@@ -718,6 +718,46 @@ See docs/PRODUCTION_SMOKE.md for the complete command sequence and output
 record of both smoke runs. D-032 is Accepted and M10 is complete for the four
 canonical generated-secret names as of 2026-09-28.
 
+### M11 temporary-database real-host harness (M11-D1; implemented, not run)
+
+`tests/realTemporaryDatabaseRuntime.test.ts` is the M11-D1 integrated C4
+verification harness. Portable CI discovers and typechecks it, runs its exact
+gate-semantics tests, and skips the privileged scenario. The scenario runs only
+when both `PEEPHOLE_REAL_GVISOR_TESTS=1` and
+`PEEPHOLE_M11_REAL_GVISOR_DATABASE_TESTS=1`; values such as `0`, `false`,
+`yes`, or `true` do not opt in. Once opted in, it fails rather than skips if
+Linux/root/runsc/network tooling, the test-specific rebuilt rootfs, or the
+operator-prepared PostgreSQL prerequisite is missing or invalid.
+
+The suite consumes only `PEEPHOLE_M11_REAL_GVISOR_POSTGRES_URL`, validated as
+the locked `192.168.253.1:5433` destination and confirmed through SQL as
+PostgreSQL major version 18 under the required non-superuser provisioning-role
+policy. It never falls back to the control-plane database and never creates a
+PostgreSQL cluster/listener, `pphdb0`, systemd unit, or production
+configuration. It also requires `PEEPHOLE_GVISOR_BASE_ROOTFS` to name a
+non-production, test-specific rootfs and validates both C3 credential
+placeholders and the trusted bootstrap without rebuilding or replacing that
+image.
+
+The integrated scenario uses the real `BackendRuntimeSupervisor`,
+`TemporaryDatabaseProvisioner`/physical cleaner/tenant catalog,
+`GVisorSandboxProvisioner`, `GVisorBackendRuntimeProcess`,
+`TmpfsDatabaseCredentialFilesystem`, `VethNatNetworkProvisioner`, and
+`NetworkLeaseManager`. Test-only seams are limited to an in-memory ownership
+store/control plane plus local archive extraction and a no-op dependency
+install; tenant SQL, SCRAM, gVisor, OCI mounts, network namespace/firewall,
+credential tmpfs, lifecycle stop, and revoke remain production primitives.
+The child returns only a digest and connection booleans. The test checks the
+exact DB route/rule and positive endpoint, same-host wrong port, public,
+metadata, RFC1918, link-local, host-service, and inter-job negatives; no
+default route/NAT; OCI/argv/runsc-state non-leakage; live and post-stop physical
+database/role state; backend `stopped` with no error; and exact-resource zero
+residue.
+
+Status is `HARNESS_IMPLEMENTED` / `REAL_HOST_NOT_RUN`. Actual privileged Linux
+execution belongs to M11-D2. Production activation/acceptance remains
+`NOT_RUN` and belongs to M11-E.
+
 ### Production-host safety for privileged real-gVisor suites
 
 Privileged real-gVisor tests that create or reconcile Peephole host resources
@@ -849,15 +889,17 @@ Add coverage in the same order as product development:
     architecture designed and locked (D-033, still Proposed, not Accepted).
     M11-C1 (portable admission/ownership), M11-C2 (PostgreSQL
     provisioning/reconciliation, real PostgreSQL 18 integration-tested), and
-    M11-C3 (credential delivery + host-only network primitives) are complete,
-    and M11-C4's integrated FullStack lifecycle is current with portable and
+    M11-C3 (credential delivery + host-only network primitives), and M11-C4's
+    integrated FullStack lifecycle are complete with portable and
     PostgreSQL-18-gated coverage -- see docs/TEMPORARY_DATABASES.md section
-    19. The current production server deliberately supplies no tenant
+    19. M11-D is current: its real-gVisor database harness is implemented, but
+    privileged real-host execution remains `NOT_RUN`. The current production
+    server deliberately supplies no tenant
     provisioner/credential-filesystem pair, so a production database plan
     still fails closed with `DATABASE_UNAVAILABLE` before sandbox allocation.
-    M11-D real-gVisor verification and M11-E activation remain not started;
-    no tenant cluster, `pphdb0`, provisioning credential, or production DB
-    reaper wiring exists yet
+    M11-E activation remains not started; no production tenant cluster,
+    `pphdb0`, provisioning credential, or production DB reaper wiring exists
+    yet
 
 The full-stack fixture becomes eligible for these tests only as each required
 contract is actually implemented.
