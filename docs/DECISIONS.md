@@ -752,7 +752,10 @@ full-stack gVisor E2E, frontend/backend routing, browser E2E, and
 restart-fail-closed behavior in production -- was completed on 2026-09-21;
 see docs/PRODUCTION_SMOKE.md and docs/TEST_PLAN.md for the verification
 record. M9 is complete. UI, M10 (ephemeral env/secrets), and M11 (temporary
-database support) remain out of scope and have not started.
+database support) were out of scope for that milestone. M10 was completed
+later; M11 is now partially implemented through M11-C4, but M11-D real-host/
+real-gVisor verification and M11-E production activation/acceptance have not
+started.
 
 ## D-032 - Ephemeral secrets (M10): generated-only first slice, delivered outside the OCI `process.env`/`config.json` path
 
@@ -805,7 +808,9 @@ no env, no secret ever joins that schema.
 
 Full design, threat model, architecture comparison, broker/OCI/idempotency/
 failure-semantics detail, and test plan: docs/EPHEMERAL_SECRETS.md. M11
-(temporary database support) is unaffected and has not started.
+(temporary database support) is unaffected by this decision. M11-C1 through
+M11-C4 are now implemented; M11-D real-host/real-gVisor verification and
+M11-E production activation/acceptance remain not started.
 
 **M10-A foundation status (added after this decision was proposed, still not
 Accepted):** the canonical name/policy types (`types/backendRuntimeSecrets.ts`),
@@ -927,12 +932,16 @@ stdout to prove Peephole never forwards that stdout into its journal (see
 above).
 
 D-032 is Accepted as of 2026-09-28. M10 is complete for the four canonical
-generated-secret names. M11 (temporary database support) has not started.
+generated-secret names. M11 (temporary database support) is partially
+implemented through M11-C4, not real-host/real-gVisor-verified, and not
+production-verified or production-enabled; M11-D and M11-E remain not started.
 
 ## D-033 - Temporary PostgreSQL previews use a separate host-local tenant cluster
 
-**Status:** Proposed — architecture locked in M11-A/A2/A3/A4, not yet
-implemented or production-verified.
+**Status:** Proposed — architecture locked in M11-A/A2/A3/A4 and portable/
+integrated implementation complete through M11-C4; M11-D real-host/
+real-gVisor verification and M11-E production activation/acceptance remain
+not started. Not production-verified or production-enabled.
 
 M11's first production slice is designed to support exactly one temporary
 PostgreSQL database plus one application role per admitted `fullstack-v1`
@@ -1035,8 +1044,8 @@ See `docs/TEMPORARY_DATABASES.md` for the full design, including the exact
 locked provisioning/teardown SQL sequences, the complete crash-window
 table, and the planned test matrix.
 
-D-033 is Proposed. It is not Accepted until implementation (M11-C1 through
-M11-C4), real-host/real-gVisor verification (M11-D), and production
-verification (M11-E) are all
-complete -- the same bar D-032 was held to before its own Accepted status.
-M11 (`docs/MVP_ROADMAP.md` stage 11) remains unchecked.
+D-033 is Proposed. M11-C1 through M11-C4 are implemented, but it is not
+Accepted until real-host/real-gVisor verification (M11-D) and production
+verification (M11-E) are complete -- the same bar D-032 was held to before
+its own Accepted status. M11-D and M11-E remain not started, and M11
+(`docs/MVP_ROADMAP.md` stage 11) remains unchecked.
