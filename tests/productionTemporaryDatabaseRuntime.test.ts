@@ -1,9 +1,33 @@
-import { readdir, readFile } from "node:fs/promises"
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+
+import {
+  TENANT_DATABASE_HOST,
+  TENANT_DATABASE_PORT,
+} from "../core/backendDatabase/databaseUrl"
+import {
+  deriveTemporaryDatabaseObjectName,
+  mintTemporaryDatabaseResourceId,
+} from "../core/backendDatabase/resourceIdentity"
+import { createOpaqueSecretValue } from "../core/backendSecrets/generatedSecretValue"
 
 import type { PostgresDatabase } from "../services/preview-api/postgres/database"
-import type { DatabaseCredentialFilesystem } from "../services/preview-worker/gvisor/databaseCredentialFilesystem"
+import {
+  TmpfsDatabaseCredentialFilesystem,
+  type DatabaseCredentialFilesystem,
+  type TmpfsDatabaseCredentialFilesystemOptions,
+} from "../services/preview-worker/gvisor/databaseCredentialFilesystem"
+import { DatabaseCredentialOrphanReaper } from "../services/preview-worker/gvisor/databaseCredentialOrphanReaper"
 import {
   assertTenantProvisioningCapability,
   initializeProductionTemporaryDatabaseRuntime,
@@ -63,6 +87,7 @@ function harness(
     reapAll?: () => Promise<unknown>
     credentialReapAll?: () => Promise<unknown>
     ownershipStatuses?: TemporaryDatabaseStatus[]
+    credentialRootExists?: boolean
   } = {},
 ) {
   const events: string[] = []
@@ -92,10 +117,17 @@ function harness(
       )
       return filesystem
     },
+    credentialRootExists: async (credentialRootDir: string) => {
+      events.push(`credential root check ${credentialRootDir}`)
+      return overrides.credentialRootExists ?? false
+    },
     ensureCredentialCapability: async (options: {
       credentialRootDir: string
+      prepareDirectory?: (candidate: string) => Promise<void>
     }) => {
-      events.push(`credential capability ${options.credentialRootDir}`)
+      events.push(
+        `credential capability ${options.credentialRootDir}${options.prepareDirectory ? " (validate only)" : ""}`,
+      )
       await overrides.credentialCapability?.()
     },
     createTenantAdmin: (connectionString: string) => {
@@ -147,23 +179,52 @@ function harness(
 }
 
 describe("initializeProductionTemporaryDatabaseRuntime", () => {
-  /** Every M11 dependency except the ownership store throws while disabled. */
-  function disabledDependencies(statuses: TemporaryDatabaseStatus[]) {
-    const test = harness({ ownershipStatuses: statuses })
+  const DISABLED = {
+    enabled: false as const,
+    credentialRootDir: ENABLED.credentialRootDir,
+  }
+  const FILESYSTEM_EVENT =
+    "credential filesystem /run/peephole/db-credentials forbids /var/lib/peephole/jobs,/var/lib/peephole/artifacts,/run/peephole/secrets"
+  const ROOT_CHECK_EVENT = "credential root check /run/peephole/db-credentials"
+  const CLEANUP_EVENTS = [
+    "credential capability /run/peephole/db-credentials (validate only)",
+    "credential reapAll /run/peephole/db-credentials",
+  ]
+
+  /** Credential-side and ownership dependencies stay real fakes; every
+   * tenant-side dependency throws, proving none is touched while disabled. */
+  function disabledDependencies(
+    statuses: TemporaryDatabaseStatus[],
+    overrides: Parameters<typeof harness>[0] = {},
+  ) {
+    const test = harness({ ...overrides, ownershipStatuses: statuses })
     const fail = () => {
       throw new Error("must not be called while disabled")
     }
     return {
       events: test.events,
       dependencies: {
-        createOwnershipStore: test.dependencies.createOwnershipStore,
-        createCredentialFilesystem: fail,
-        ensureCredentialCapability: fail,
+        ...test.dependencies,
         createTenantAdmin: fail,
         assertTenantCapability: fail,
         createOrphanReaper: fail,
-        createCredentialOrphanReaper: fail,
       },
+    }
+  }
+
+  async function initializeDisabled(
+    test: ReturnType<typeof disabledDependencies>,
+  ) {
+    try {
+      return {
+        runtime: await initializeProductionTemporaryDatabaseRuntime(
+          { ...BASE_OPTIONS, config: DISABLED },
+          test.dependencies,
+        ),
+        error: undefined,
+      }
+    } catch (error) {
+      return { runtime: undefined, error: error as Error }
     }
   }
 
@@ -171,19 +232,38 @@ describe("initializeProductionTemporaryDatabaseRuntime", () => {
     ["no ownership rows", []],
     ["only revoked rows", ["revoked", "revoked"]],
   ] as const)(
-    "while disabled with %s, reads ownership only and creates no tenant runtime",
+    "while disabled with an absent credential root and %s, creates no root and no tenant runtime",
     async (_name, statuses) => {
       const test = disabledDependencies([...statuses])
 
-      await expect(
-        initializeProductionTemporaryDatabaseRuntime(
-          { ...BASE_OPTIONS, config: { enabled: false } },
-          test.dependencies,
-        ),
-      ).resolves.toBeNull()
-      expect(test.events).toEqual(["ownership listAll"])
+      const { runtime, error } = await initializeDisabled(test)
+
+      expect(error).toBeUndefined()
+      expect(runtime).toBeNull()
+      expect(test.events).toEqual([
+        FILESYSTEM_EVENT,
+        ROOT_CHECK_EVENT,
+        "ownership listAll",
+      ])
     },
   )
+
+  it("while disabled, cleans a leftover credential under revoked-only ownership, then allows startup", async () => {
+    const test = disabledDependencies(["revoked"], {
+      credentialRootExists: true,
+    })
+
+    const { runtime, error } = await initializeDisabled(test)
+
+    expect(error).toBeUndefined()
+    expect(runtime).toBeNull()
+    expect(test.events).toEqual([
+      FILESYSTEM_EVENT,
+      ROOT_CHECK_EVENT,
+      ...CLEANUP_EVENTS,
+      "ownership listAll",
+    ])
+  })
 
   it.each([
     "provisioning",
@@ -191,29 +271,61 @@ describe("initializeProductionTemporaryDatabaseRuntime", () => {
     "revoking",
     "revoke_failed",
   ] as const)(
-    "refuses startup while disabled with a non-terminal %s row, without touching the tenant cluster",
+    "refuses startup while disabled with a non-terminal %s row, after credential cleanup and without touching the tenant cluster",
     async (status) => {
-      const test = disabledDependencies(["revoked", status, status])
+      for (const credentialRootExists of [false, true]) {
+        const test = disabledDependencies(["revoked", status, status], {
+          credentialRootExists,
+        })
 
-      let error: unknown
-      try {
-        await initializeProductionTemporaryDatabaseRuntime(
-          { ...BASE_OPTIONS, config: { enabled: false } },
-          test.dependencies,
+        const { error } = await initializeDisabled(test)
+
+        expect(error).toBeInstanceOf(
+          TemporaryDatabasesDisabledWithOwnedResourcesError,
         )
-      } catch (caught) {
-        error = caught
+        expect(error?.message).toContain(`${status}=2`)
+        expect(error?.message).not.toContain("revoked=")
+        expect(error?.message).toContain("PEEPHOLE_TEMPORARY_DATABASES=1")
+        expect(error?.message).not.toMatch(/placeholder|postgres(ql)?:\/\//)
+        expect(test.events).toEqual([
+          FILESYSTEM_EVENT,
+          ROOT_CHECK_EVENT,
+          ...(credentialRootExists ? CLEANUP_EVENTS : []),
+          "ownership listAll",
+        ])
       }
+    },
+  )
 
-      expect(error).toBeInstanceOf(
-        TemporaryDatabasesDisabledWithOwnedResourcesError,
-      )
-      const message = (error as Error).message
-      expect(message).toContain(`${status}=2`)
-      expect(message).not.toContain("revoked=")
-      expect(message).toContain("PEEPHOLE_TEMPORARY_DATABASES=1")
-      expect(message).not.toMatch(/placeholder|postgres(ql)?:\/\//)
-      expect(test.events).toEqual(["ownership listAll"])
+  it.each([
+    [
+      "an unsafe or non-tmpfs root",
+      {
+        credentialCapability: () =>
+          Promise.reject(new Error("Database-credential root is not tmpfs.")),
+      },
+      /not tmpfs/,
+    ],
+    [
+      "a credential cleanup failure",
+      {
+        credentialReapAll: () =>
+          Promise.reject(new Error("credential removal failed")),
+      },
+      /credential removal failed/,
+    ],
+  ])(
+    "refuses startup while disabled on %s, before reading ownership",
+    async (_name, override, pattern) => {
+      const test = disabledDependencies(["revoked"], {
+        ...override,
+        credentialRootExists: true,
+      })
+
+      const { error } = await initializeDisabled(test)
+
+      expect(error?.message).toMatch(pattern)
+      expect(test.events).not.toContain("ownership listAll")
     },
   )
 
@@ -498,5 +610,121 @@ describe("M11-E1 production wiring boundaries", () => {
     expect(
       Object.keys(temporaryDatabaseBackendDependencies(runtime)).sort(),
     ).toEqual(["databaseCredentialFilesystem", "temporaryDatabaseProvisioner"])
+  })
+})
+
+describe("disabled-mode credential rollback cleanup (real filesystem)", () => {
+  // The supervisor's ordered teardown can fail to remove the credential file
+  // (recorded as a cleanup error) and still revoke the database afterwards,
+  // leaving: ownership `revoked`, DB/role absent, plaintext credential file
+  // present. Startup with the feature disabled must still remove it.
+  const MARKER = "RollbackCredMarker_4Kq8"
+  const RESOURCE_ID = mintTemporaryDatabaseResourceId(() =>
+    new Uint8Array(14).fill(7),
+  )
+  const OBJECT_NAME = deriveTemporaryDatabaseObjectName(RESOURCE_ID)
+  let parentDir: string
+  let credentialRoot: string
+
+  beforeEach(async () => {
+    parentDir = await mkdtemp(path.join(os.tmpdir(), "peephole-db-rollback-"))
+    credentialRoot = path.join(parentDir, "db-credentials")
+  })
+
+  afterEach(async () => {
+    await rm(parentDir, { recursive: true, force: true })
+  })
+
+  function realFilesystem(options: TmpfsDatabaseCredentialFilesystemOptions) {
+    return new TmpfsDatabaseCredentialFilesystem({
+      ...options,
+      verifyMemoryBackedRoot: async () => undefined,
+      setOwnership: async () => undefined,
+    })
+  }
+
+  async function leaveStaleCredential(runtimeId: string) {
+    await realFilesystem({ rootDir: credentialRoot }).create({
+      runtimeId,
+      resourceId: RESOURCE_ID,
+      databaseUrl: createOpaqueSecretValue(
+        `postgresql://${OBJECT_NAME}:${MARKER}@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/${OBJECT_NAME}`,
+      ),
+    })
+  }
+
+  function startDisabled(
+    statuses: TemporaryDatabaseStatus[],
+    overrides: { ensureCredentialCapability?: "real" } = {},
+  ) {
+    const fail = () => {
+      throw new Error("tenant dependency must not be called while disabled")
+    }
+    return initializeProductionTemporaryDatabaseRuntime(
+      {
+        ...BASE_OPTIONS,
+        config: { enabled: false, credentialRootDir: credentialRoot },
+      },
+      {
+        createOwnershipStore: () =>
+          ({
+            listAll: async () => statuses.map(ownershipRecord),
+          }) as unknown as TemporaryDatabaseOwnershipStore,
+        createCredentialFilesystem: realFilesystem,
+        // The real root check and real orphan reaper run; only the findmnt
+        // tmpfs probe is replaced, since test temp dirs are not tmpfs.
+        ...(overrides.ensureCredentialCapability === "real"
+          ? {}
+          : { ensureCredentialCapability: async () => undefined }),
+        createCredentialOrphanReaper: (options) =>
+          new DatabaseCredentialOrphanReaper({
+            ...options,
+            verifyMemoryBackedRoot: async () => undefined,
+          }),
+        createTenantAdmin: fail,
+        assertTenantCapability: fail,
+        createOrphanReaper: fail,
+      },
+    )
+  }
+
+  it("does not create an absent root", async () => {
+    await expect(startDisabled([])).resolves.toBeNull()
+    await expect(lstat(credentialRoot)).rejects.toMatchObject({
+      code: "ENOENT",
+    })
+  })
+
+  it("removes a credential left behind by a revoked database, then starts", async () => {
+    await leaveStaleCredential("runtime-stale-1")
+    expect(await readdir(credentialRoot)).toEqual(["runtime-stale-1"])
+
+    await expect(startDisabled(["revoked"])).resolves.toBeNull()
+    expect(await readdir(credentialRoot)).toEqual([])
+  })
+
+  it("removes the stale credential but still refuses startup on non-terminal ownership, without leaking it", async () => {
+    await leaveStaleCredential("runtime-stale-2")
+
+    let message = ""
+    try {
+      await startDisabled(["revoked", "provisioned"])
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+
+    expect(message).toMatch(/provisioned=1/)
+    expect(message).not.toContain(MARKER)
+    expect(message).not.toMatch(/postgres(ql)?:\/\//)
+    expect(await readdir(credentialRoot)).toEqual([])
+  })
+
+  it("refuses startup when the configured root exists but is not a directory", async () => {
+    await mkdir(parentDir, { recursive: true })
+    await writeFile(credentialRoot, "not a directory")
+
+    await expect(
+      startDisabled(["revoked"], { ensureCredentialCapability: "real" }),
+    ).rejects.toThrow(/Database-credential root must be a regular directory/)
   })
 })

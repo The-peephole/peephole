@@ -51,8 +51,11 @@ export interface ProductionConfig {
   temporaryDatabases: TemporaryDatabaseProductionConfig
 }
 
+/** The database-credential root is known in both modes: a rollback that
+ * disables temporary databases must still clean credential files an earlier
+ * enabled process left under the same (possibly non-default) root. */
 export type TemporaryDatabaseProductionConfig =
-  | { enabled: false }
+  | { enabled: false; credentialRootDir: string }
   | {
       enabled: true
       /** Server/operator-only tenant provisioning credential. Never logged,
@@ -190,16 +193,22 @@ export function readProductionConfig(
 }
 
 /** Only the exact value "1" enables M11; unset, empty, or "0" disables it,
- * and anything else is a configuration error rather than a guess. While
- * disabled, no other M11 variable is read or required. */
+ * and anything else is a configuration error rather than a guess. The
+ * credential root is read in both modes; the provisioning URL is read and
+ * required only while enabled. */
 function readTemporaryDatabaseConfig(
   environment: NodeJS.ProcessEnv,
 ): TemporaryDatabaseProductionConfig {
   const flag = environment.PEEPHOLE_TEMPORARY_DATABASES?.trim() ?? ""
-  if (flag === "" || flag === "0") return { enabled: false }
-  if (flag !== "1") {
+  if (flag !== "" && flag !== "0" && flag !== "1") {
     throw new Error("PEEPHOLE_TEMPORARY_DATABASES must be 0 or 1.")
   }
+  const credentialRootDir = readAbsolutePath(
+    "PEEPHOLE_DATABASE_CREDENTIAL_ROOT",
+    environment.PEEPHOLE_DATABASE_CREDENTIAL_ROOT,
+    DEFAULTS.databaseCredentialRootDir,
+  )
+  if (flag !== "1") return { enabled: false, credentialRootDir }
 
   const provisioningUrl = environment.PEEPHOLE_TENANT_DB_PROVISIONING_URL
   // Messages below deliberately never include the configured value.
@@ -214,15 +223,7 @@ function readTemporaryDatabaseConfig(
     )
   }
 
-  return {
-    enabled: true,
-    provisioningUrl,
-    credentialRootDir: readAbsolutePath(
-      "PEEPHOLE_DATABASE_CREDENTIAL_ROOT",
-      environment.PEEPHOLE_DATABASE_CREDENTIAL_ROOT,
-      DEFAULTS.databaseCredentialRootDir,
-    ),
-  }
+  return { enabled: true, provisioningUrl, credentialRootDir }
 }
 
 /**

@@ -303,15 +303,40 @@ describe("readProductionConfig temporary databases (M11)", () => {
   const provisioningUrl =
     "postgresql://m11_provisioner:placeholder-secret@%2Frun%2Fpostgresql:5433/tenant_admin"
 
-  it("is disabled when the flag is unset, empty, or 0, without reading other M11 settings", () => {
+  it("is disabled when the flag is unset, empty, or 0, ignoring the provisioning URL but keeping the default credential root", () => {
     for (const flag of [undefined, "", " ", "0"]) {
       expect(
         readProductionConfig({
           PEEPHOLE_TEMPORARY_DATABASES: flag,
           PEEPHOLE_TENANT_DB_PROVISIONING_URL: "not a url",
-          PEEPHOLE_DATABASE_CREDENTIAL_ROOT: "relative/path",
         }).temporaryDatabases,
-      ).toEqual({ enabled: false })
+      ).toEqual({
+        enabled: false,
+        credentialRootDir: "/run/peephole/db-credentials",
+      })
+    }
+  })
+
+  it("keeps a custom credential root while disabled so rollback cleanup reaches it", () => {
+    expect(
+      readProductionConfig({
+        PEEPHOLE_TEMPORARY_DATABASES: "0",
+        PEEPHOLE_DATABASE_CREDENTIAL_ROOT: "/run/custom/db-credentials",
+      }).temporaryDatabases,
+    ).toEqual({
+      enabled: false,
+      credentialRootDir: "/run/custom/db-credentials",
+    })
+  })
+
+  it("rejects a relative credential root even while disabled", () => {
+    for (const flag of [undefined, "0"]) {
+      expect(() =>
+        readProductionConfig({
+          PEEPHOLE_TEMPORARY_DATABASES: flag,
+          PEEPHOLE_DATABASE_CREDENTIAL_ROOT: "relative/path",
+        }),
+      ).toThrow(/PEEPHOLE_DATABASE_CREDENTIAL_ROOT must be an absolute path/)
     }
   })
 

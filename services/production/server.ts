@@ -119,8 +119,9 @@ async function main(): Promise<void> {
     artifactStorageDir: productionConfig.artifactStorageDir,
     orphanReaperMaxAgeMs: productionConfig.orphanReaperMaxAgeMs,
   })
-  // M11 (default OFF): null unless PEEPHOLE_TEMPORARY_DATABASES=1, but even
-  // while disabled any non-terminal ownership row refuses startup. When
+  // M11 (default OFF): null unless PEEPHOLE_TEMPORARY_DATABASES=1. Even while
+  // disabled it clears leftover database-credential files and refuses startup
+  // on any non-terminal ownership row, without contacting the tenant. When
   // enabled, tenant capability and both startup reapAll() passes complete
   // here, before FullStack reconciliation and before any listener/worker;
   // a failure aborts startup instead of running without database support.

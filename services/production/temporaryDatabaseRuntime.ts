@@ -1,3 +1,5 @@
+import { lstat } from "node:fs/promises"
+
 import {
   TENANT_DATABASE_HOST,
   TENANT_DATABASE_PORT,
@@ -69,7 +71,9 @@ interface ProductionTemporaryDatabaseRuntimeDependencies {
   ) => TemporaryDatabaseOwnershipStore
   ensureCredentialCapability?: (options: {
     credentialRootDir: string
+    prepareDirectory?: (candidate: string) => Promise<void>
   }) => Promise<void>
+  credentialRootExists?: (credentialRootDir: string) => Promise<boolean>
   createTenantAdmin?: (connectionString: string) => ClosableTenantAdmin
   assertTenantCapability?: (tenantAdmin: TenantDatabaseAdmin) => Promise<void>
   createCredentialFilesystem?: (
@@ -104,16 +108,23 @@ export class TemporaryDatabasesDisabledWithOwnedResourcesError extends Error {
 
 /**
  * M11 production activation seam (docs/TEMPORARY_DATABASES.md section 16).
- * While disabled it reads only the control-plane ownership rows: with none,
- * or only `revoked` ones, it returns null without touching the tenant cluster
- * or the credential root. Any non-terminal row means databases this or an
- * earlier process owned may still physically exist, so startup is refused --
- * never silently skipped -- rather than letting FullStack reconciliation
- * terminalize their parents unreconciled (e.g. a rollback that switched the
- * flag off after a crash). Nothing is mutated in that case.
+ *
+ * While disabled it never contacts the tenant cluster. It still reconciles
+ * the database-credential root, because a `revoked` ownership row does not
+ * prove the plaintext credential file is gone: process-side credential
+ * removal can fail while the later DB revoke succeeds. An absent root is a
+ * no-op (never created just for this); an existing one must pass the same
+ * tmpfs/safe-root checks and every owned entry is removed -- no backend from
+ * this process can be live yet. It then reads the control-plane ownership
+ * rows: any non-terminal row means databases this or an earlier process owned
+ * may still physically exist, so startup is refused -- never silently
+ * skipped -- rather than letting FullStack reconciliation terminalize their
+ * parents unreconciled (e.g. a rollback that switched the flag off after a
+ * crash). With none, or only `revoked` ones, it returns null.
  *
  * When enabled, proves the credential root and the tenant provisioning
- * identity (including a Unix-domain-socket session), then runs startup reconciliation for both
+ * identity (including a Unix-domain-socket session), then runs startup
+ * reconciliation for both
  * temporary databases and their credential files before returning -- the
  * caller must do this before `FullStackPreviewStartupReconciler` and before
  * any listener or worker exists. Any failure rejects; it never degrades to
@@ -129,19 +140,6 @@ export async function initializeProductionTemporaryDatabaseRuntime(
     ((controlDatabase) =>
       new PostgresTemporaryDatabaseOwnershipStore(controlDatabase))
   )(options.controlDatabase)
-
-  if (!config.enabled) {
-    const outstanding = new Map<TemporaryDatabaseStatus, number>()
-    for (const record of await ownershipStore.listAll()) {
-      if (record.status === "revoked") continue
-      outstanding.set(record.status, (outstanding.get(record.status) ?? 0) + 1)
-    }
-    if (outstanding.size > 0) {
-      throw new TemporaryDatabasesDisabledWithOwnedResourcesError(outstanding)
-    }
-    return null
-  }
-
   const credentialFilesystem = (
     dependencies.createCredentialFilesystem ??
     ((filesystemOptions) =>
@@ -154,10 +152,44 @@ export async function initializeProductionTemporaryDatabaseRuntime(
       options.generatedSecretRootDir,
     ],
   })
-  await (
+  const credentialOrphanReaper = (
+    dependencies.createCredentialOrphanReaper ??
+    ((reaperOptions) => new DatabaseCredentialOrphanReaper(reaperOptions))
+  )({
+    rootDir: config.credentialRootDir,
+    filesystem: credentialFilesystem,
+    maxAgeMs: options.orphanReaperMaxAgeMs,
+  })
+  const ensureCredentialCapability =
     dependencies.ensureCredentialCapability ??
     ensureDatabaseCredentialCapability
-  )({
+
+  if (!config.enabled) {
+    if (
+      await (dependencies.credentialRootExists ?? pathExistsNoFollow)(
+        config.credentialRootDir,
+      )
+    ) {
+      await ensureCredentialCapability({
+        credentialRootDir: config.credentialRootDir,
+        // Validate what exists; never create a root while disabled.
+        prepareDirectory: async () => undefined,
+      })
+      await credentialOrphanReaper.reapAll()
+    }
+
+    const outstanding = new Map<TemporaryDatabaseStatus, number>()
+    for (const record of await ownershipStore.listAll()) {
+      if (record.status === "revoked") continue
+      outstanding.set(record.status, (outstanding.get(record.status) ?? 0) + 1)
+    }
+    if (outstanding.size > 0) {
+      throw new TemporaryDatabasesDisabledWithOwnedResourcesError(outstanding)
+    }
+    return null
+  }
+
+  await ensureCredentialCapability({
     credentialRootDir: config.credentialRootDir,
   })
 
@@ -190,14 +222,6 @@ export async function initializeProductionTemporaryDatabaseRuntime(
       ownershipStore,
       tenantCatalog: new PostgresTemporaryDatabaseTenantCatalog(tenantAdmin),
       physicalCleaner,
-      maxAgeMs: options.orphanReaperMaxAgeMs,
-    })
-    const credentialOrphanReaper = (
-      dependencies.createCredentialOrphanReaper ??
-      ((reaperOptions) => new DatabaseCredentialOrphanReaper(reaperOptions))
-    )({
-      rootDir: config.credentialRootDir,
-      filesystem: credentialFilesystem,
       maxAgeMs: options.orphanReaperMaxAgeMs,
     })
 
@@ -319,6 +343,16 @@ interface TenantCapabilityRow {
   rolcreaterole: boolean
   rolreplication: boolean
   rolbypassrls: boolean
+}
+
+async function pathExistsNoFollow(candidate: string): Promise<boolean> {
+  try {
+    await lstat(candidate)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+    throw error
+  }
 }
 
 function unavailableReason(error: unknown): string {
