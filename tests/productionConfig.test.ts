@@ -361,11 +361,34 @@ describe("readProductionConfig temporary databases (M11)", () => {
       undefined,
       "",
       "not a url",
-      "mysql://user:placeholder-secret@host/db",
-      "postgresql://user@host:5433/db",
-      "postgresql://:placeholder-secret@host:5433/db",
-      "postgresql://user:placeholder-secret@host:5433/",
-      "postgresql://user:placeholder-secret@host:5433/db#fragment",
+      "mysql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db",
+      "socket://user:placeholder-secret@/run/postgresql?db=db",
+      "postgresql://user@%2Frun%2Fpostgresql:5433/db",
+      "postgresql://:placeholder-secret@%2Frun%2Fpostgresql:5433/db",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db/extra",
+      // TCP endpoints: the sandbox-facing listener, loopback, names, other IPs.
+      "postgresql://user:placeholder-secret@192.168.253.1:5433/db",
+      "postgresql://user:placeholder-secret@127.0.0.1:5433/db",
+      "postgresql://user:placeholder-secret@localhost:5433/db",
+      "postgresql://user:placeholder-secret@[::1]:5433/db",
+      "postgresql://user:placeholder-secret@tenant-db.example.com:5433/db",
+      "postgresql://user:placeholder-secret@10.0.0.5:5433/db",
+      // Wrong or missing port: the port also names the socket file.
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5432/db",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql/db",
+      // Query strings can override host/port/user in node-postgres.
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db?host=192.168.253.1",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db?port=5432",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db?sslmode=disable",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db?",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db#fragment",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db#",
+      // Non-canonical socket directories.
+      "postgresql://user:placeholder-secret@run%2Fpostgresql:5433/db",
+      "postgresql://user:placeholder-secret@%2Frun%2F..%2Fetc:5433/db",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql%2F:5433/db",
+      "postgresql://user:placeholder-secret@%2F:5433/db",
     ]) {
       let message = ""
       try {
@@ -377,9 +400,23 @@ describe("readProductionConfig temporary databases (M11)", () => {
         message = error instanceof Error ? error.message : String(error)
       }
       expect(message, String(candidate)).toMatch(
-        /PEEPHOLE_TENANT_DB_PROVISIONING_URL must be a PostgreSQL URL/,
+        /PEEPHOLE_TENANT_DB_PROVISIONING_URL must be a Unix-socket PostgreSQL URL/,
       )
       expect(message).not.toContain("placeholder-secret")
+    }
+  })
+
+  it("accepts the canonical Unix-socket forms node-postgres resolves to a socket directory", () => {
+    for (const candidate of [
+      provisioningUrl,
+      "postgres://m11_provisioner:placeholder-secret@%2fvar%2frun%2fpostgresql:5433/tenant_admin",
+    ]) {
+      expect(
+        readProductionConfig({
+          PEEPHOLE_TEMPORARY_DATABASES: "1",
+          PEEPHOLE_TENANT_DB_PROVISIONING_URL: candidate,
+        }).temporaryDatabases,
+      ).toMatchObject({ enabled: true, provisioningUrl: candidate })
     }
   })
 

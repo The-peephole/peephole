@@ -83,6 +83,27 @@ describe("production startup safety gates", () => {
     expect(statement).not.toMatch(/\.catch\(|try\s*\{/)
   })
 
+  it("runs the temporary-database gate unconditionally so a disabled flag cannot skip ownership reconciliation", async () => {
+    const source = await readFile(
+      path.resolve("services/production/server.ts"),
+      "utf8",
+    )
+
+    // The initializer itself decides disabled behavior (including refusing
+    // startup on outstanding ownership); server.ts must never branch on it.
+    expect(source).not.toContain("temporaryDatabases.enabled")
+    expect(
+      source.match(/initializeProductionTemporaryDatabaseRuntime\(/g),
+    ).toHaveLength(1)
+    const call = source.indexOf(
+      "const temporaryDatabases = await initializeProductionTemporaryDatabaseRuntime",
+    )
+    const mainStart = source.indexOf("async function main()")
+    const preceding = source.slice(mainStart, call)
+    // Top-level statement of main(): no enclosing block opened before it.
+    expect(preceding.split("{").length).toBe(preceding.split("}").length + 1)
+  })
+
   it("shuts down lifecycle ownership before backend and static workers", async () => {
     const source = await readFile(
       path.resolve("services/production/server.ts"),

@@ -1,3 +1,6 @@
+import path from "node:path"
+
+import { TENANT_DATABASE_PORT } from "../../core/backendDatabase/databaseUrl"
 import { validateTrustedAppOrigin } from "./trustedOrigin"
 import {
   DEFAULT_HOST_DISK_RESERVE_BYTES,
@@ -202,7 +205,7 @@ function readTemporaryDatabaseConfig(
   // Messages below deliberately never include the configured value.
   if (!provisioningUrl || !isProvisioningUrl(provisioningUrl)) {
     throw new Error(
-      "PEEPHOLE_TENANT_DB_PROVISIONING_URL must be a PostgreSQL URL with a user, password, and database when PEEPHOLE_TEMPORARY_DATABASES=1.",
+      `PEEPHOLE_TENANT_DB_PROVISIONING_URL must be a Unix-socket PostgreSQL URL of the form postgresql://<user>:<password>@%2F<socket-dir>:${String(TENANT_DATABASE_PORT)}/<database> with no query string when PEEPHOLE_TEMPORARY_DATABASES=1.`,
     )
   }
   if (provisioningUrl === environment.PEEPHOLE_DATABASE_URL) {
@@ -222,19 +225,47 @@ function readTemporaryDatabaseConfig(
   }
 }
 
+/**
+ * The provisioning connection must use the tenant cluster's local Unix-domain
+ * socket, never the sandbox-facing TCP listener or any network host
+ * (docs/TEMPORARY_DATABASES.md section 8). The one accepted form is the one
+ * node-postgres resolves to a socket directory: a percent-encoded absolute
+ * path as the URL host (`%2Frun%2Fpostgresql`), with the locked tenant port
+ * naming the socket file. Query strings are refused outright because
+ * node-postgres lets `?host=`/`?port=`/`?user=` override the URL itself.
+ */
 function isProvisioningUrl(value: string): boolean {
+  // Even an empty `?` or `#` is refused, so exactly one form is accepted.
+  if (value.includes("?") || value.includes("#")) return false
   let url: URL
   try {
     url = new URL(value)
   } catch {
     return false
   }
+  if (
+    (url.protocol !== "postgresql:" && url.protocol !== "postgres:") ||
+    url.username === "" ||
+    url.password === "" ||
+    url.pathname.length <= 1 ||
+    url.pathname.slice(1).includes("/") ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    url.port !== String(TENANT_DATABASE_PORT) ||
+    !/^%2f/i.test(url.hostname)
+  ) {
+    return false
+  }
+  let socketDirectory: string
+  try {
+    socketDirectory = decodeURIComponent(url.hostname)
+  } catch {
+    return false
+  }
   return (
-    (url.protocol === "postgresql:" || url.protocol === "postgres:") &&
-    url.username !== "" &&
-    url.password !== "" &&
-    url.pathname.length > 1 &&
-    url.hash === ""
+    socketDirectory.length > 1 &&
+    path.posix.normalize(socketDirectory) === socketDirectory &&
+    !socketDirectory.endsWith("/")
   )
 }
 

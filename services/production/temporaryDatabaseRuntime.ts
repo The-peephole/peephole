@@ -16,7 +16,11 @@ import {
 import { PostgresTemporaryDatabaseOwnershipStore } from "../temporary-database/postgresOwnershipStore"
 import { PostgresTenantAdmin } from "../temporary-database/postgresTenantAdmin"
 import { PostgresTemporaryDatabaseTenantCatalog } from "../temporary-database/postgresTenantCatalog"
-import type { TenantDatabaseAdmin } from "../temporary-database/ports"
+import type {
+  TemporaryDatabaseOwnershipStore,
+  TenantDatabaseAdmin,
+} from "../temporary-database/ports"
+import type { TemporaryDatabaseStatus } from "../../types/temporaryDatabase"
 import {
   TemporaryDatabaseOrphanReaper,
   type TemporaryDatabaseOrphanReaperOptions,
@@ -60,6 +64,9 @@ interface ClosableTenantAdmin extends TenantDatabaseAdmin {
 }
 
 interface ProductionTemporaryDatabaseRuntimeDependencies {
+  createOwnershipStore?: (
+    controlDatabase: PostgresDatabase,
+  ) => TemporaryDatabaseOwnershipStore
   ensureCredentialCapability?: (options: {
     credentialRootDir: string
   }) => Promise<void>
@@ -83,11 +90,30 @@ export class TenantDatabaseCapabilityError extends Error {
   }
 }
 
+export class TemporaryDatabasesDisabledWithOwnedResourcesError extends Error {
+  constructor(outstanding: ReadonlyMap<TemporaryDatabaseStatus, number>) {
+    const summary = [...outstanding]
+      .map(([status, count]) => `${status}=${String(count)}`)
+      .join(", ")
+    super(
+      `Temporary databases are disabled, but durable temporary-database ownership still requires reconciliation (${summary}). Set PEEPHOLE_TEMPORARY_DATABASES=1 with the tenant cluster available so startup reconciliation can resolve it before FullStack previews are reconciled.`,
+    )
+    this.name = "TemporaryDatabasesDisabledWithOwnedResourcesError"
+  }
+}
+
 /**
  * M11 production activation seam (docs/TEMPORARY_DATABASES.md section 16).
- * Returns null without touching the tenant cluster or the credential root
- * while the feature is disabled. When enabled, proves the credential root and
- * the tenant provisioning identity, then runs startup reconciliation for both
+ * While disabled it reads only the control-plane ownership rows: with none,
+ * or only `revoked` ones, it returns null without touching the tenant cluster
+ * or the credential root. Any non-terminal row means databases this or an
+ * earlier process owned may still physically exist, so startup is refused --
+ * never silently skipped -- rather than letting FullStack reconciliation
+ * terminalize their parents unreconciled (e.g. a rollback that switched the
+ * flag off after a crash). Nothing is mutated in that case.
+ *
+ * When enabled, proves the credential root and the tenant provisioning
+ * identity (including a Unix-domain-socket session), then runs startup reconciliation for both
  * temporary databases and their credential files before returning -- the
  * caller must do this before `FullStackPreviewStartupReconciler` and before
  * any listener or worker exists. Any failure rejects; it never degrades to
@@ -98,7 +124,23 @@ export async function initializeProductionTemporaryDatabaseRuntime(
   dependencies: ProductionTemporaryDatabaseRuntimeDependencies = {},
 ): Promise<ProductionTemporaryDatabaseRuntime | null> {
   const { config } = options
-  if (!config.enabled) return null
+  const ownershipStore = (
+    dependencies.createOwnershipStore ??
+    ((controlDatabase) =>
+      new PostgresTemporaryDatabaseOwnershipStore(controlDatabase))
+  )(options.controlDatabase)
+
+  if (!config.enabled) {
+    const outstanding = new Map<TemporaryDatabaseStatus, number>()
+    for (const record of await ownershipStore.listAll()) {
+      if (record.status === "revoked") continue
+      outstanding.set(record.status, (outstanding.get(record.status) ?? 0) + 1)
+    }
+    if (outstanding.size > 0) {
+      throw new TemporaryDatabasesDisabledWithOwnedResourcesError(outstanding)
+    }
+    return null
+  }
 
   const credentialFilesystem = (
     dependencies.createCredentialFilesystem ??
@@ -133,9 +175,6 @@ export async function initializeProductionTemporaryDatabaseRuntime(
       dependencies.assertTenantCapability ?? assertTenantProvisioningCapability
     )(tenantAdmin)
 
-    const ownershipStore = new PostgresTemporaryDatabaseOwnershipStore(
-      options.controlDatabase,
-    )
     const physicalCleaner = new PostgresTemporaryDatabasePhysicalCleaner(
       tenantAdmin,
     )
@@ -221,6 +260,7 @@ export async function assertTenantProvisioningCapability(
         `SELECT current_setting('server_version_num')::int AS version,
                 current_setting('port') AS port,
                 current_setting('listen_addresses') AS listen_addresses,
+                inet_server_addr() IS NULL AS unix_socket,
                 r.rolcanlogin, r.rolsuper, r.rolcreatedb, r.rolcreaterole,
                 r.rolreplication, r.rolbypassrls
            FROM pg_roles r
@@ -234,6 +274,14 @@ export async function assertTenantProvisioningCapability(
 
   if (!facts) {
     throw new TenantDatabaseCapabilityError("provisioning role not found")
+  }
+  // PostgreSQL documents inet_server_addr() as NULL exactly when the current
+  // connection is a Unix-domain socket; provisioning must never ride TCP,
+  // least of all the sandbox-facing listener.
+  if (facts.unix_socket !== true) {
+    throw new TenantDatabaseCapabilityError(
+      "the provisioning session must use the local Unix-domain socket, not TCP",
+    )
   }
   if (facts.version < 180_000 || facts.version >= 190_000) {
     throw new TenantDatabaseCapabilityError("PostgreSQL 18 is required")
@@ -264,6 +312,7 @@ interface TenantCapabilityRow {
   version: number
   port: string
   listen_addresses: string
+  unix_socket: boolean
   rolcanlogin: boolean
   rolsuper: boolean
   rolcreatedb: boolean

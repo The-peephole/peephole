@@ -9,14 +9,17 @@ import {
   initializeProductionTemporaryDatabaseRuntime,
   temporaryDatabaseBackendDependencies,
   temporaryDatabaseMaintenanceTasks,
+  TemporaryDatabasesDisabledWithOwnedResourcesError,
   type ProductionTemporaryDatabaseRuntime,
 } from "../services/production/temporaryDatabaseRuntime"
 import type {
+  TemporaryDatabaseOwnershipStore,
   TenantAdminSession,
   TenantDatabaseAdmin,
 } from "../services/temporary-database/ports"
 import { TemporaryDatabaseProvisioner } from "../services/temporary-database/temporaryDatabaseProvisioner"
 import { PREVIEW_GENERATED_SECRET_NAMES } from "../types/backendRuntimeSecrets"
+import type { TemporaryDatabaseStatus } from "../types/temporaryDatabase"
 
 // Placeholder only; never a real credential.
 const PROVISIONING_URL =
@@ -42,16 +45,34 @@ function fakeCredentialFilesystem(): DatabaseCredentialFilesystem {
   } as unknown as DatabaseCredentialFilesystem
 }
 
+function ownershipRecord(status: TemporaryDatabaseStatus) {
+  return {
+    resourceId: "pv-placeholder",
+    previewId: "fullstack-placeholder",
+    backendRuntimeId: "backend-placeholder",
+    status,
+    createdAt: "2026-10-07T00:00:00.000Z",
+    updatedAt: "2026-10-07T00:00:00.000Z",
+  }
+}
+
 function harness(
   overrides: {
     capability?: () => Promise<void>
     credentialCapability?: () => Promise<void>
     reapAll?: () => Promise<unknown>
     credentialReapAll?: () => Promise<unknown>
+    ownershipStatuses?: TemporaryDatabaseStatus[]
   } = {},
 ) {
   const events: string[] = []
   let adminClosed = 0
+  const ownershipStore = {
+    listAll: async () => {
+      events.push("ownership listAll")
+      return (overrides.ownershipStatuses ?? []).map(ownershipRecord)
+    },
+  } as unknown as TemporaryDatabaseOwnershipStore
   const filesystem = fakeCredentialFilesystem()
   const tenantAdmin: TenantDatabaseAdmin & { close(): Promise<void> } = {
     withSession: () => Promise.reject(new Error("unused")),
@@ -61,6 +82,7 @@ function harness(
     },
   }
   const dependencies = {
+    createOwnershipStore: () => ownershipStore,
     createCredentialFilesystem: (options: {
       rootDir?: string
       forbiddenRoots?: readonly string[]
@@ -125,25 +147,75 @@ function harness(
 }
 
 describe("initializeProductionTemporaryDatabaseRuntime", () => {
-  it("creates nothing and touches no tenant or credential resource while disabled", async () => {
+  /** Every M11 dependency except the ownership store throws while disabled. */
+  function disabledDependencies(statuses: TemporaryDatabaseStatus[]) {
+    const test = harness({ ownershipStatuses: statuses })
     const fail = () => {
       throw new Error("must not be called while disabled")
     }
+    return {
+      events: test.events,
+      dependencies: {
+        createOwnershipStore: test.dependencies.createOwnershipStore,
+        createCredentialFilesystem: fail,
+        ensureCredentialCapability: fail,
+        createTenantAdmin: fail,
+        assertTenantCapability: fail,
+        createOrphanReaper: fail,
+        createCredentialOrphanReaper: fail,
+      },
+    }
+  }
 
-    await expect(
-      initializeProductionTemporaryDatabaseRuntime(
-        { ...BASE_OPTIONS, config: { enabled: false } },
-        {
-          createCredentialFilesystem: fail,
-          ensureCredentialCapability: fail,
-          createTenantAdmin: fail,
-          assertTenantCapability: fail,
-          createOrphanReaper: fail,
-          createCredentialOrphanReaper: fail,
-        },
-      ),
-    ).resolves.toBeNull()
-  })
+  it.each([
+    ["no ownership rows", []],
+    ["only revoked rows", ["revoked", "revoked"]],
+  ] as const)(
+    "while disabled with %s, reads ownership only and creates no tenant runtime",
+    async (_name, statuses) => {
+      const test = disabledDependencies([...statuses])
+
+      await expect(
+        initializeProductionTemporaryDatabaseRuntime(
+          { ...BASE_OPTIONS, config: { enabled: false } },
+          test.dependencies,
+        ),
+      ).resolves.toBeNull()
+      expect(test.events).toEqual(["ownership listAll"])
+    },
+  )
+
+  it.each([
+    "provisioning",
+    "provisioned",
+    "revoking",
+    "revoke_failed",
+  ] as const)(
+    "refuses startup while disabled with a non-terminal %s row, without touching the tenant cluster",
+    async (status) => {
+      const test = disabledDependencies(["revoked", status, status])
+
+      let error: unknown
+      try {
+        await initializeProductionTemporaryDatabaseRuntime(
+          { ...BASE_OPTIONS, config: { enabled: false } },
+          test.dependencies,
+        )
+      } catch (caught) {
+        error = caught
+      }
+
+      expect(error).toBeInstanceOf(
+        TemporaryDatabasesDisabledWithOwnedResourcesError,
+      )
+      const message = (error as Error).message
+      expect(message).toContain(`${status}=2`)
+      expect(message).not.toContain("revoked=")
+      expect(message).toContain("PEEPHOLE_TEMPORARY_DATABASES=1")
+      expect(message).not.toMatch(/placeholder|postgres(ql)?:\/\//)
+      expect(test.events).toEqual(["ownership listAll"])
+    },
+  )
 
   it("proves capabilities, then reconciles databases and credentials before returning", async () => {
     const test = harness()
@@ -264,6 +336,7 @@ describe("assertTenantProvisioningCapability", () => {
     version: 180_006,
     port: "5433",
     listen_addresses: "192.168.253.1",
+    unix_socket: true,
     rolcanlogin: true,
     rolsuper: false,
     rolcreatedb: true,
@@ -313,6 +386,16 @@ describe("assertTenantProvisioningCapability", () => {
   })
 
   it.each([
+    [
+      "a TCP session",
+      { unix_socket: false },
+      /local Unix-domain socket, not TCP/,
+    ],
+    [
+      "an unknown transport",
+      { unix_socket: null },
+      /local Unix-domain socket, not TCP/,
+    ],
     ["PostgreSQL 16", { version: 160_004 }, /PostgreSQL 18 is required/],
     [
       "the control-plane port",
