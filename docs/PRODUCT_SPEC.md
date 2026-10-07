@@ -135,6 +135,12 @@ branch name.
   outside the OCI `process.env`/`config.json` path, via a tmpfs-backed bind
   mount and trusted bootstrap; never user-supplied credentials or arbitrary
   environment names
+- temporary PostgreSQL (M11, production-verified 2026-10-07): for a trusted
+  `fullstack-v1` preview whose backend declares exactly a `pg` dependency and
+  `DATABASE_URL`, Peephole provisions one temporary database and role in a
+  separate host-local tenant cluster and delivers `DATABASE_URL` through a
+  dedicated tmpfs file; never for standalone `backend-v1`, other engines or
+  clients, or user-supplied database credentials
 
 ### Recognized but not executable
 
@@ -145,9 +151,10 @@ branch name.
 - workspace and monorepo ambiguity
 - Next.js, WXT, and non-Vite React blockers
 - any backend candidate outside `express-node-npm-v1`'s narrow shape
-  (a different framework, a missing lockfile, a database dependency, or an
-  environment requirement beyond `PORT`/`HOST`/`NODE_ENV` and the four M10
-  canonical generated-secret names)
+  (a different framework, a missing lockfile, a database dependency other
+  than M11's exact `pg` + `DATABASE_URL` shape, or an environment
+  requirement beyond `PORT`/`HOST`/`NODE_ENV`, the four M10 canonical
+  generated-secret names, and M11's `DATABASE_URL`)
 
 ### Not implemented
 
@@ -157,7 +164,8 @@ branch name.
   `backend-v1` resource itself (routing is `fullstack-v1`'s job, above)
 - arbitrary or user-supplied secret/environment injection (only the four
   M10 canonical generated-secret names above are supported)
-- temporary database provisioning
+- temporary database provisioning beyond M11's narrow PostgreSQL + `pg` +
+  `DATABASE_URL` trusted-FullStack slice above
 - private repositories, Docker/Compose, or arbitrary language execution
 
 ## 8. Current Compatibility Contract
@@ -240,10 +248,10 @@ silently guessing how a repository should run.
 9. frontend ↔ backend routing (implemented, production-verified M9)
 10. ephemeral env / secrets (implemented, production-verified M10-C4B,
     2026-09-28, narrow four-name allowlist)
-11. temporary database support (not started)
+11. temporary database support (implemented, production-verified M11,
+    2026-10-07, narrow PostgreSQL + `pg` + `DATABASE_URL` slice)
 
-Stage 11 describes future work and must not be inferred from the existing
-full-stack fixtures or documented as current capability. Stage 8's "narrow"
+Stage 8's "narrow"
 qualifier is load-bearing: it supports exactly one backend shape (Express +
 npm + a committed lockfile + zero database dependencies), whose fixed
 `BackendRuntimePlan.platformEnvironment` was, at that stage alone, only
@@ -257,10 +265,13 @@ and through a separate `generatedSecretNames` path (never
 `PORT`/`HOST`/`NODE_ENV`), generation and injection of exactly
 `JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET` -- never
 user-supplied credentials, arbitrary environment names, external
-credentials, or database variables/provisioning. None of stages 8-10 means
-"arbitrary Node backends are supported," and stage 11 (temporary databases)
-remains unimplemented -- its architecture is designed and locked (D-033,
-docs/TEMPORARY_DATABASES.md), not built.
+credentials, or database variables/provisioning. Stage 11 adds, for trusted
+`fullstack-v1` previews only, exactly one server-provisioned temporary
+PostgreSQL database and role when the backend declares exactly `pg` and
+`DATABASE_URL`. `DATABASE_URL` is delivered through its own tmpfs path
+rather than `platformEnvironment` or M10's `generatedSecretNames` (D-033,
+docs/TEMPORARY_DATABASES.md). None of stages 8-11 means "arbitrary Node
+backends are supported" or "arbitrary databases are supported."
 
 Build Adapter generalization is an internal capability boundary. The
 implemented adapters cover package-free root static HTML and root or

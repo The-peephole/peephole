@@ -729,7 +729,9 @@ value. Classification priority: `PORT`/`HOST`/`NODE_ENV` (exact name) ->
 `POSTGRES_URL`, `MYSQL_URL`, `REDIS_URL`, `MONGODB_URI`, ...) ->
 `database-requirement` (this is evidence of a requirement, never a signal
 that Peephole will provision a database -- temporary database support is a
-separate, not-yet-started roadmap stage); an exact match against a narrow
+separate roadmap stage (M11, D-033) whose server-side admission accepts only
+exactly `DATABASE_URL` + `pg` for trusted `fullstack-v1` previews); an exact
+match against a narrow
 allowlist (`JWT_SECRET`, `SESSION_SECRET`, `COOKIE_SECRET`, `CSRF_SECRET`) ->
 `preview-generated-candidate` (a *future* ephemeral-secret stage could
 plausibly generate these itself; this stage generates nothing); a broader

@@ -56,10 +56,12 @@ secrets restricted to exactly four canonical names
 (`JWT_SECRET`/`SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`),
 production-verified in M10-C4B -- see stages 9-10 below and
 docs/EPHEMERAL_SECRETS.md. Arbitrary backends and arbitrary or user-supplied
-secrets remain unsupported. Temporary database support (stage 11) is
-partially implemented through M11-C4 but remains unavailable in production;
-the M11-D real-host harness is implemented but execution is `NOT_RUN`, and
-production activation has not started.
+secrets remain unsupported. Within the same contract, temporary PostgreSQL
+support (stage 11, M11) is implemented and production-verified
+(2026-10-07). It covers one server-owned database and `pv_*` role per
+trusted `fullstack-v1` preview whose backend declares exactly `pg` and
+`DATABASE_URL` -- see stage 11 below, D-033, and
+docs/TEMPORARY_DATABASES.md.
 
 ## Completed Foundation Milestones
 
@@ -131,7 +133,7 @@ because a fixture or interface for it exists.
 8. [x] backend-v1 execution foundation implemented; production-verified in M9
 9. [x] frontend ↔ backend routing; production-verified in M9
 10. [x] ephemeral env / secrets
-11. [ ] temporary database support
+11. [x] temporary database support
 
 Stage 10 is implemented and production-verified, narrowly: Peephole may
 *generate* and inject values for exactly four server-only secret names --
@@ -142,14 +144,32 @@ docs/EPHEMERAL_SECRETS.md for the full design and the 2026-09-28 real-gVisor
 and production verification record. Stage 10 is explicitly **not**: arbitrary
 environment-variable management, user-supplied credentials, arbitrary
 backends, database provisioning, or relaxed backend egress -- those
-capabilities remain outside M10. Stage 11 is still `[ ]`, but is partially
-implemented: its architecture is locked (D-033,
-`docs/TEMPORARY_DATABASES.md`), and M11-C1 through M11-C4 provide the portable
-and integrated implementation for the narrow `fullstack-v1`-only,
-`pg`+`DATABASE_URL`-only contract. M11-D is current: its real Linux/gVisor
-harness is implemented, but real-host execution is `NOT_RUN`. M11-E production
-tenant PostgreSQL activation and acceptance is not started; no production
-tenant cluster or production DB-backed execution is enabled.
+capabilities remain outside M10.
+
+Stage 11 is implemented and production-verified (2026-10-07), narrowly.
+- **Supported:** a trusted `fullstack-v1` preview whose
+  `express-node-npm-v1` backend declares exactly the `pg` dependency and
+  exactly the server-side `DATABASE_URL` requirement. Peephole provisions
+  one temporary PostgreSQL database and one `pv_*` login role in a separate
+  host-local `18-tenant` cluster (`192.168.253.1:5433`). It delivers
+  `DATABASE_URL` through a dedicated tmpfs file mounted at
+  `/run/secrets/database-url`, never through `platformEnvironment` or OCI
+  `process.env`. The sandbox may reach only that one `/32` address and port.
+  Peephole revokes the database and role on stop, expiry, or failure, and
+  reconciles them at startup after a crash.
+- **Verification:** M11-D's real-host/real-gVisor harness and three
+  independent production acceptance runs (M11-E4 normal lifecycle, E5
+  graceful stop, E6 ungraceful server crash with startup reconciliation)
+  passed against deployed revision
+  `83f1d1b6392cfa04b36e087c6930ae5ab8ede25a`, with
+  `PEEPHOLE_TEMPORARY_DATABASES=1`.
+- **Not supported:** standalone/public `backend-v1` database admission
+  (denied), non-PostgreSQL engines, clients other than `pg` (no Prisma or
+  other ORM), any variable other than `DATABASE_URL`, more than one database
+  per preview, user-supplied database credentials, and general outbound
+  backend networking.
+
+See D-033 and `docs/TEMPORARY_DATABASES.md`.
 
 Build Adapter generalization is complete as an architecture change: an
 explicit resolver selects `static-html-v1` or `vite-react-npm-v1`, detects
@@ -287,9 +307,9 @@ production-verified in M9 through the separate `fullstack-v1` parent
 resource (`/v1/fullstack-previews`), which reports its own public HTTPS
 origin and routes only `/api`/`/api/*` to the backend; the standalone
 `backend-v1` resource (`/v1/backend-runtimes`) still never reports a URL of
-its own. Temporary database support is now implemented through M11-C4's
-portable/integrated path, but remains unavailable in production pending
-M11-D real-host/real-gVisor execution and M11-E activation/acceptance. A
+its own. Temporary database support (stage 11) was later implemented and
+production-verified in M11 for trusted `fullstack-v1` previews only; the
+standalone `backend-v1` create path still cannot admit a database plan. A
 Peephole-*generated* secret restricted to exactly `JWT_SECRET`/
 `SESSION_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET` is now implemented and
 production-verified as stage 10 -- see D-032 and docs/EPHEMERAL_SECRETS.md.
@@ -351,6 +371,24 @@ SHA-256 digest, never the raw value. It was production-verified on
 -- see D-032 and docs/EPHEMERAL_SECRETS.md for the full verification record.
 It does not imply support for arbitrary secret names, user-supplied
 credentials, or provisioned databases (stage 11).
+
+A third dedicated commit on the same repository is the pinned fixture for
+stage 11's own production verification:
+
+```text
+repository: The-peephole/peephole-fixture-fullstack
+repository id: 1371618449
+commit: fecbe5976d6498e75e7a8455319097814457b472
+```
+
+This M11 pin's backend declares `SESSION_SECRET` and `DATABASE_URL` and
+depends on exactly `express` and `pg`. It exposes `GET /api/db-check`, which
+reports only a fixed non-secret shape (`{"connected":true}` on success),
+never connection details. It was
+production-verified on 2026-10-07 against deployed revision
+`83f1d1b6392cfa04b36e087c6930ae5ab8ede25a` -- see D-033 and
+docs/TEMPORARY_DATABASES.md. It does not imply support for other database
+engines, clients, or variables.
 
 ## Cross-Cutting Work
 

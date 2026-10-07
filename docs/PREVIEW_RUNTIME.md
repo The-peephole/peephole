@@ -23,7 +23,7 @@ Supported first:
 | Next.js SSR / Node server | Unsupported | Persistent server runner deferred |
 | Shared-root npm/pnpm/yarn workspace | Analysis only / unsupported | Workspace orchestration remains deferred |
 | One narrow backend shape (`express-node-npm-v1`) paired with its frontend | Production-verified server-side (`fullstack-v1`), no extension UI yet | See section 13a; not offered as a Build Preview option in the extension |
-| Any other backend, DB, Docker, arbitrary/user-supplied secrets | Unsupported | Arbitrary Node backends and provisioned databases remain unimplemented (roadmap stage 11); server-generated secrets are implemented, but only for exactly four canonical names alongside the one narrow backend shape above -- see section 13b |
+| Any other backend, DB, Docker, arbitrary/user-supplied secrets | Unsupported | Arbitrary Node backends remain unimplemented. Server-generated secrets are implemented only for exactly four canonical names (section 13b), and temporary databases only for PostgreSQL + `pg` + `DATABASE_URL` in a trusted `fullstack-v1` preview (section 13c), both alongside the one narrow backend shape above. Every other database shape is unsupported |
 | Library repository with no demo app | Analysis only | There may be nothing visual to run |
 
 `react/react` is an example of the last category: it is primarily a library repository and should not be assumed to have a default preview application.
@@ -371,6 +371,33 @@ host disk today. User-supplied secrets, `database-requirement` variables,
 and any relaxation of the ingress-only network policy above remain
 explicitly out of scope for this slice and are not implemented.
 
+## 13c. Temporary PostgreSQL (M11): Implemented, Production-Verified
+
+M11 is implemented and production-verified as of 2026-10-07 -- see D-033
+(Accepted) and docs/TEMPORARY_DATABASES.md for the full design and evidence.
+It is enabled in production by `PEEPHOLE_TEMPORARY_DATABASES=1`.
+
+- **Admission.** A trusted `fullstack-v1` preview whose
+  `express-node-npm-v1` backend declares exactly a `pg` dependency and
+  exactly the server-side `DATABASE_URL` requirement gets one temporary
+  database and one `pv_*` login role, in a separate host-local `18-tenant`
+  PostgreSQL cluster. The standalone `backend-v1` create path still rejects
+  any database plan.
+- **Credential path.** The `DATABASE_URL` path is structurally separate from
+  M10's. The value is never in `platformEnvironment` (still exactly
+  `PORT`/`HOST`/`NODE_ENV`) or M10's `generatedSecretNames`. It is written to
+  its own `/run/peephole/db-credentials` tmpfs root and bind-mounted
+  read-only at `/run/secrets/database-url`, next to M10's
+  `/run/secrets/env`, so it never appears in OCI `config.json` or argv.
+- **Network.** The only change to the ingress-only network policy above is
+  one exact `/32` route and one `INPUT` rule for TCP `192.168.253.1:5433`
+  on that preview's lease. General backend egress stays denied.
+- **Lifecycle.** Stop, expiry, and failure revoke the database and role
+  before the backend and parent report terminal success. After a crash,
+  startup reconciliation removes the remaining database, role, credential,
+  and runtime state before the durable parent is failed and before listeners
+  open.
+
 ## 14. Minimum API Contract
 
 Create:
@@ -422,12 +449,11 @@ Known limitations and follow-up work:
   automated post-deployment smoke orchestration remain operational work;
 - the dedicated malicious dependency-script suite still needs its recorded
   production-like AWS run;
-- temporary database provisioning (roadmap stage 11) remains unimplemented;
-  its architecture is designed and locked (D-033,
-  docs/TEMPORARY_DATABASES.md) but nothing has been built, deployed, or
-  verified; ephemeral generated-secret injection (roadmap stage 10) is
-  implemented and production-verified, but only for the four canonical
-  names -- see section 13b.
+- ephemeral generated-secret injection (roadmap stage 10) is implemented and
+  production-verified, but only for the four canonical names -- see section
+  13b; temporary database provisioning (roadmap stage 11) is implemented and
+  production-verified, but only for PostgreSQL + `pg` + `DATABASE_URL` in
+  trusted `fullstack-v1` previews -- see section 13c.
 
 The official current Vite + React pin is
 `The-peephole/peephole-fixture-vite-react@4a2c3b78e15d90865ed565c3d38c4045b5a5235f`

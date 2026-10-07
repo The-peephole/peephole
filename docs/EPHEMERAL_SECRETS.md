@@ -17,14 +17,17 @@ proved `/api/secret-check` returns only a SHA-256 digest, produced zero
 journal hits for the fixture's deliberate raw-value stdout probe, and normal
 `DELETE` cleanup passed. Separately, with a fresh preview from the same
 fixture left `ready`, an intentional `peephole` main-process `SIGKILL` (not a
-graceful stop, not a `SIGTERM`-forwarding test -- that is verified through
+`systemctl stop`, not a `SIGTERM`-forwarding test -- that is verified through
 the harness's normal `stop()` path above) was followed by full systemd
-recovery, generated-secret/runsc/network/disk reconciliation to zero residue,
+recovery, generated-secret/runsc/network/disk state ending at zero residue,
 the `ready` durable-parent record coming back
 `failed`/`ORCHESTRATION_UNAVAILABLE` without reconstructing lost
 coordinates/secrets, and old-route revocation -- see D-032 for the full
-record. D-032 is Accepted and `docs/MVP_ROADMAP.md` stage 10 is checked
-complete.
+record. **Correction (2026-10-07):** that `MainPID` was the tsx wrapper, so
+systemd sent the actual server `SIGTERM` and its graceful shutdown handler
+ran. That test was therefore not an ungraceful server crash -- see D-032's
+correction note. D-032 is Accepted and `docs/MVP_ROADMAP.md` stage 10 is
+checked complete.
 
 This never relaxes `SECRET_ENV_REQUIRED`/`BACKEND_REQUIRED` for the static
 `static-v1`/`static-v2` contract, never starts M11 (temporary database
@@ -683,7 +686,8 @@ separately, the Peephole service's systemd `MainPID` was intentionally
 `SIGKILL`ed, with the M10 FullStack preview above still `ready`, to exercise
 crash recovery: systemd's existing `Restart=on-failure` brought the service
 back automatically, generated secrets/runsc sandboxes/network namespaces/disk
-state fully reconciled to zero residue, the durable FullStack parent that had
+state ended at zero residue (see the 2026-10-07 correction below for which
+code path ran), the durable FullStack parent that had
 been `ready` came back `failed`/`ORCHESTRATION_UNAVAILABLE` after
 restart/reconciliation without process-local backend coordinates or secrets
 ever being reconstructed, its old backend route returned 404 afterward, and
@@ -724,14 +728,36 @@ above is the first scenario that actually depends on a caught, forwarded
 signal reaching a child process. M10-C4B exercised this fix against real
 runsc through the real-gVisor suite's normal `RuntimeProcessHandle.stop()`
 path, confirming the trusted bootstrap's `SIGTERM` forwarding actually reaches
-the sandboxed child under real runsc PID 1 semantics. The separate,
-intentional production `MainPID` `SIGKILL` test (below) is a different
-scenario -- it kills the Peephole service process itself, which cannot call
-`stop()` on anything, so it is not a graceful-stop/forwarding test; it
-verifies systemd restart, startup orphan reconciliation, and
-generated-secret/runsc/network/disk residue cleanup instead, and every
-orphaned runtime it reconciles goes through the existing forceful
-(`SIGKILL`-based) reaper paths, not the `SIGTERM` forwarding path above.
+the sandboxed child under real runsc PID 1 semantics. That harness path
+remains the only evidence for trusted-bootstrap `SIGTERM` forwarding.
+
+**Correction (2026-10-07, found during M11-E6 preparation).** This document
+previously said the intentional production `MainPID` `SIGKILL` test "kills
+the Peephole service process itself, which cannot call `stop()` on
+anything", and that every orphaned runtime it reconciled went through the
+forceful reaper paths. That interpretation was wrong.
+- `peephole.service` runs `ExecStart=…/node_modules/.bin/tsx
+  services/production/server.ts`, so the systemd `MainPID` is the tsx CLI
+  wrapper. The actual server is the wrapper's child Node process, in the
+  same cgroup.
+- `systemctl kill --kill-who=main --signal=SIGKILL` killed only the
+  wrapper. `KillMode=control-group` then sent the surviving server
+  `SIGTERM`.
+- The 2026-09-28 journal shows the server logging `[peephole] received
+  SIGTERM, shutting down...`. Its shutdown handler then aborted the workers
+  (producing the two worker-loop error lines, including `Backend runtime
+  stop command failed.`), before systemd recorded `Failed with result
+  'signal'` and restarted the unit.
+
+The server's graceful shutdown path therefore ran and may have performed
+some of the observed cleanup. These outcomes remain valid: the automatic
+restart, startup reconciliation running, the
+`failed`/`ORCHESTRATION_UNAVAILABLE` parent with nothing reconstructed, the
+`404` old route, zero final residue, and the eventual smoke pass. The test
+is **not** evidence that no graceful shutdown handler ran. The first valid
+pure ungraceful server-process crash evidence is M11-E6 (D-033,
+docs/TEMPORARY_DATABASES.md section 19), which sent `SIGKILL` to the
+verified server child only.
 
 ### Bounds (env-name and value safety)
 
@@ -830,6 +856,14 @@ user-supplied `DATABASE_URL` as a workaround — `findUnsupportedReason`
 `databaseDependencies.length > 0` independently of the environment-requirement
 check, and this design does not touch that rejection.
 
+*(Later, M11:* that rejection was narrowed by M11 itself, not by M10. It now
+admits exactly one `pg` dependency plus exactly the server-side
+`DATABASE_URL` requirement, for trusted `fullstack-v1` orchestration only,
+with the value server-provisioned through M11's own credential path, never
+through M10's `generatedSecretNames` or `/run/secrets/env`. Every other
+database shape is still rejected. See D-033 and
+docs/TEMPORARY_DATABASES.md.)
+
 ## 17. Test plan (portable: implemented; real-gVisor: implemented and run, passed)
 
 Portable (no real gVisor needed):
@@ -896,8 +930,8 @@ described in the M10-C4B status paragraph above:
   paragraph above for the `SIGKILL`→`SIGTERM` production fix this required.
   This is verified only through the harness's normal `stop()` path; the
   separate intentional `MainPID` `SIGKILL`/systemd-recovery test (see the
-  M10-C4B status paragraph above) is not a graceful-stop/forwarding test and
-  is not evidence for this item.
+  M10-C4B status paragraph above and its 2026-10-07 correction) is not
+  evidence for this item.
 - [verified, passed] Backend egress remains unconditionally blocked for the
   generated-secret variant specifically (a narrow no-default-route check),
   alongside the unchanged, unmodified pre-existing ingress-only suite in the
@@ -918,11 +952,14 @@ described in the M10-C4B status paragraph above:
   tmpfs secret residue after the new bounded reaper sweep runs, mirroring the
   existing `GVisorOrphanReaper`/`docs/SANDBOX_DISK_SECURITY.md` "after a
   deliberately interrupted job" verification pattern. The M10-C4A
-  orphan-reaper test covers a synthetically staged stale entry; M10-C4B's
+  orphan-reaper test covers a synthetically staged stale entry. M10-C4B's
   intentional production `MainPID` `SIGKILL` (see status paragraph above)
-  additionally proved this against a real mid-run crash of the Peephole
-  service itself, with startup reconciliation reducing generated-secret,
-  runsc, network, and disk state to zero residue.
+  ended at zero residue, but per the 2026-10-07 correction the server's
+  `SIGTERM` shutdown handler ran first, so that run does not isolate the
+  startup reaper. M11-E6 (2026-10-07) does: after `SIGKILL` of only the
+  server child, the preview's generated-secret tmpfs entry was still present
+  and was removed by the restarted instance's startup reconciliation, along
+  with the runsc, network, disk, and database state.
 
 ## 18. Open questions
 

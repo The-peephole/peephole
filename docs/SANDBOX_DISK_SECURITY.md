@@ -31,7 +31,7 @@ still retained as a soft limit, but it is no longer the security boundary.
 | Compressed GitHub archive | process memory plus host-only bundle staging | 50 MiB limit and admission reservation |
 | Published artifact copy | artifact storage | at most 100 MiB per accepted output, outside workspace quota |
 | Generated-secret injection (M10, production-enabled, four canonical names only) | dedicated `/run/peephole/secrets/<runtime-id>` host tmpfs root | per-runtime directory `0700`, fixed file `0600`, read-only bind at `/run/secrets/env` (narrowed from a directory bind onto `/run/secrets` itself to an individual file bind onto a fixed placeholder baked into the base rootfs, M11-C3, so it can coexist with the row below); preflight capability check rejects non-tmpfs backing |
-| Temporary-database credential injection (M11-C3 primitives implemented, not wired into runtime execution -- see `docs/TEMPORARY_DATABASES.md`) | dedicated `/run/peephole/db-credentials/<runtime-id>` host tmpfs root, structurally separate from the M10 root above | single fixed file (`database-url`), read-only bind at `/run/secrets/database-url`; no `NAME=value` parsing |
+| Temporary-database credential injection (M11, production-enabled with `PEEPHOLE_TEMPORARY_DATABASES=1` -- see `docs/TEMPORARY_DATABASES.md`) | dedicated `/run/peephole/db-credentials/<runtime-id>` host tmpfs root, structurally separate from the M10 root above | single fixed file (`database-url`), read-only bind at `/run/secrets/database-url`; no `NAME=value` parsing |
 
 The ext4 mount root is owned by uid/gid 65534 with mode `0700`. World-writable
 `0777` is no longer required: the production host process is privileged for
@@ -257,10 +257,11 @@ sudo find /var/lib/peephole/base-rootfs/run/secrets -maxdepth 1 -printf '%m %s %
 #   /var/lib/peephole/base-rootfs/run/secrets/database-url
 ```
 
-This is a prerequisite check, not evidence it has been run: no rootfs has
-been rebuilt or deployed as part of the M11-C3 PR itself, and this step
-belongs to M11-D/M11-E production-activation preparation (see
-`docs/TEMPORARY_DATABASES.md` section 15), not to M11-C3.
+This check was not run as part of the M11-C3 PR itself. It became part of
+M11-D/M11-E preparation (see `docs/TEMPORARY_DATABASES.md` section 15).
+Since M11-E1, production startup preflight enforces the same placeholder
+and trusted-bootstrap contract and refuses to start on a stale image. The
+production rootfs satisfied it for the 2026-10-07 M11 acceptance runs.
 
 Run these on the intended worker host and retain the output with the deployment
 record:

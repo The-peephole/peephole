@@ -163,7 +163,8 @@ smoke described in [Production smoke verification](docs/PRODUCTION_SMOKE.md).
 | Backend execution (`backend-v1`) | The narrow Express + npm runtime is implemented, wired into production, and real-gVisor-verified; the extension UI is still disabled by default (no Build Preview option), and the runtime resource itself never gets a public URL |
 | Frontend ↔ backend routing (`fullstack-v1`) | Implemented and production-verified: a separate resource pairs one `backend-v1` runtime with one static build behind a single same-origin HTTPS preview, routing only `/api`/`/api/*`; not offered as an extension Build Preview option yet |
 | Ephemeral generated secrets (M10) | Implemented and production-verified (2026-09-28): within the same narrow `backend-v1`/`fullstack-v1` contract, Peephole may *generate* and inject values for exactly four server-only names -- `JWT_SECRET`, `SESSION_SECRET`, `COOKIE_SECRET`, `CSRF_SECRET` -- outside the OCI `process.env`/`config.json` path, via a tmpfs-backed bind mount and trusted bootstrap; not offered as an extension Build Preview option yet |
-| Not implemented | Shared-root workspace orchestration, any backend outside that one narrow shape, arbitrary or user-supplied secret/env provisioning, temporary databases, private repositories, and arbitrary Dockerfiles/languages |
+| Temporary PostgreSQL (M11) | Implemented and production-verified (2026-10-07): for a trusted `fullstack-v1` preview whose `express-node-npm-v1` backend declares exactly `pg` and `DATABASE_URL`, Peephole provisions one temporary PostgreSQL database and `pv_*` role in a separate host-local tenant cluster, delivers `DATABASE_URL` through a dedicated tmpfs file (never OCI `process.env`), allows network access to that one database endpoint only, and revokes the database and role on stop or after a crash; standalone `backend-v1` database admission stays denied; not offered as an extension Build Preview option yet |
+| Not implemented | Shared-root workspace orchestration, any backend outside that one narrow shape, arbitrary or user-supplied secret/env provisioning, any database engine/client/variable other than PostgreSQL + `pg` + `DATABASE_URL`, user-supplied database credentials, private repositories, and arbitrary Dockerfiles/languages |
 
 Analysis support is broader than production execution support. The official
 Vite + React golden path is
@@ -212,16 +213,19 @@ Branch Preview, repository/application structure detection, the explicit
 Build Adapter architecture, bounded frontend target selection, existing
 deployed-site Live Preview, backend detection + environment requirement
 analysis, the narrow backend execution (`backend-v1`) contract,
-frontend/backend routing (`fullstack-v1`), and ephemeral generated secrets
-for a narrow four-name allowlist (M10) are implemented and
-production-verified (M9 for stages 8-9, 2026-09-28 for stage 10). Nested
-build execution remains limited to independently installable React + Vite +
-npm targets with a target-local lockfile; backend execution is limited to
-one narrow adapter (Express + npm + lockfile + no database, with
-`BackendRuntimePlan.platformEnvironment` fixed to exactly
-`PORT`/`HOST`/`NODE_ENV` and, separately, exactly four server-generated
-names supported through M10's own `generatedSecretNames` path -- see
-"Supported projects" above), and the standalone `backend-v1` resource
+frontend/backend routing (`fullstack-v1`), ephemeral generated secrets for
+a narrow four-name allowlist (M10), and narrow temporary PostgreSQL support
+(M11) are implemented and production-verified (M9 for stages 8-9,
+2026-09-28 for stage 10, 2026-10-07 for stage 11). Nested build execution
+remains limited to independently installable React + Vite + npm targets with
+a target-local lockfile. Backend execution is limited to one narrow adapter:
+Express + npm + lockfile, with `BackendRuntimePlan.platformEnvironment`
+fixed to exactly `PORT`/`HOST`/`NODE_ENV`. Separately, exactly four
+server-generated names are supported through M10's own
+`generatedSecretNames` path, and exactly one `pg` dependency plus
+`DATABASE_URL` is supported, for trusted `fullstack-v1` previews only,
+through M11's server-owned temporary database lifecycle -- see "Supported
+projects" above. The standalone `backend-v1` resource
 itself still has no public URL -- routing is the separate `fullstack-v1`
 resource's job. None of these has an extension-side Build Preview UI yet.
 
@@ -233,15 +237,19 @@ resource's job. None of these has an extension-side Build Preview UI yet.
 9. frontend ↔ backend routing; production-verified in M9
 10. ephemeral env / secrets; implemented and production-verified in M10-C4B
     (2026-09-28), narrowly, for exactly four canonical generated-secret names
-11. temporary database support (not started)
+11. temporary database support; implemented and production-verified in M11
+    (2026-10-07), narrowly, for PostgreSQL + `pg` + `DATABASE_URL` in trusted
+    `fullstack-v1` previews
 
 Stage 10 is implemented and production-verified, narrowly: Peephole may
 *generate* and inject values for exactly `JWT_SECRET`/`SESSION_SECRET`/
 `COOKIE_SECRET`/`CSRF_SECRET`; arbitrary/user-supplied secrets remain
-unsupported. Stage 11 is a roadmap item, not current product support: no
-provisioned database exists yet, though its architecture has since been
-designed and locked (see D-033 and docs/TEMPORARY_DATABASES.md) with no
-implementation started. Separate operational debt includes
+unsupported. Stage 11 is implemented and production-verified, narrowly:
+`fullstack-v1` only, `express-node-npm-v1` only, `pg` only, `DATABASE_URL`
+only, with a server-owned temporary database and role per preview -- see
+D-033 and docs/TEMPORARY_DATABASES.md. It is not support for arbitrary
+databases, backends, or environment variables. Separate operational debt
+includes
 accessibility review, production observability, automated production-smoke
 orchestration, tighter install-stage package egress, and the
 production-like malicious-script run.

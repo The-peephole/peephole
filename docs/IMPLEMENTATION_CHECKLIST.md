@@ -18,13 +18,15 @@ later full-stack roadmap.
 9. [x] frontend ↔ backend routing; production-verified in M9
 10. [x] ephemeral env / secrets; production-verified in M10-C4B (2026-09-28),
     narrowly, for exactly four canonical generated-secret names
-11. [ ] temporary database support
+11. [x] temporary database support; production-verified in M11 (2026-10-07),
+    narrowly, for PostgreSQL + `pg` + `DATABASE_URL` in trusted
+    `fullstack-v1` previews
 
-Stage 11 is not started. The full-stack fixture proves only its
-independently installable frontend target under plain Build Preview; it is
-not itself evidence that stages 8-10 are implemented -- see D-030/D-031/D-032
-and docs/PREVIEW_RUNTIME.md/docs/EPHEMERAL_SECRETS.md for the actual
-production verification record.
+The full-stack fixture proves only its independently installable frontend
+target under plain Build Preview; it is not itself evidence that stages 8-11
+are implemented -- see D-030/D-031/D-032/D-033 and
+docs/PREVIEW_RUNTIME.md/docs/EPHEMERAL_SECRETS.md/docs/TEMPORARY_DATABASES.md
+for the actual production verification record.
 
 ## Bootstrap
 

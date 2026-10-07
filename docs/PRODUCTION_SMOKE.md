@@ -386,24 +386,32 @@ exercised directly against production (SHA
   completed and left zero residue.
 - **Intentional crash recovery**: with a fresh M10 FullStack preview left in
   the `ready` state, and with authorization, only the Peephole service's
-  systemd `MainPID` was sent `SIGKILL` (not the fixture, not a graceful
-  stop -- this does not exercise the trusted bootstrap's `SIGTERM` forwarding
-  path; that is verified separately, through the real-gVisor harness's normal
-  `stop()` path, see docs/EPHEMERAL_SECRETS.md). systemd's existing
-  `Restart=on-failure` (`RestartUSec=5s`) brought the service back
-  automatically; generated-secret, runsc, network namespace, and disk state
-  all reconciled to zero residue on startup; the durable FullStack parent
-  that had been `ready` came back `failed`/`ORCHESTRATION_UNAVAILABLE` after
+  systemd `MainPID` was sent `SIGKILL` (not the fixture, not a
+  `systemctl stop` -- this does not exercise the trusted bootstrap's
+  `SIGTERM` forwarding path; that is verified separately, through the
+  real-gVisor harness's normal `stop()` path, see docs/EPHEMERAL_SECRETS.md).
+  systemd's existing `Restart=on-failure` (`RestartUSec=5s`) brought the
+  service back automatically; generated-secret, runsc, network namespace,
+  and disk state ended at zero residue; the durable FullStack parent that
+  had been `ready` came back `failed`/`ORCHESTRATION_UNAVAILABLE` after
   restart/reconciliation, with process-local backend coordinates and secrets
   never reconstructed; and its old backend route returned 404 afterward.
-  PASS.
+  PASS for those outcomes. **Correction (2026-10-07):** this was not an
+  ungraceful server crash. The `MainPID` is the tsx wrapper, so
+  `KillMode=control-group` sent the actual server `SIGTERM`, and the journal
+  shows `[peephole] received SIGTERM, shutting down...` before the restart.
+  The application's graceful shutdown handler ran and may have performed
+  some of the cleanup, so this is not evidence that no graceful handler ran.
+  See the M11 record below for the first valid ungraceful server-process
+  crash.
 - **Production host smoke -- first run (BLOCKED, expected)**: run immediately
   after the `SIGKILL`/recovery test above, still inside
   `npm run smoke:production:host`'s unmodified default 15-minute log lookback
   window (`PEEPHOLE_SMOKE_LOG_SINCE` was not overridden). The "service
   errors" gate correctly matched exactly two `worker loop error` journal
   lines, both timestamped at the intentional `MainPID` `SIGKILL` boundary
-  itself, and no other or new errors. Per the accepted acceptance procedure,
+  (emitted by the server's `SIGTERM` shutdown handler, per the correction
+  above), and no other or new errors. Per the accepted acceptance procedure,
   this result was recorded as **BLOCKED** and not promoted to a pass, since
   the crash-recovery evidence being valid does not by itself make an
   intentionally-induced error line acceptable smoke output.
@@ -420,22 +428,48 @@ None of the above changed this document's own automated commands or their
 security model. D-032 is Accepted and M10 is complete for the four canonical
 generated-secret names as of 2026-09-28.
 
-## M11 temporary-database verification (design only, not executed)
+## M11 temporary-database production verification record (2026-10-07)
 
-M11 (temporary PostgreSQL previews) is **design only** as of this writing --
-see D-033 (Proposed) and docs/TEMPORARY_DATABASES.md. No implementation,
-migration, tenant PostgreSQL cluster, or network rule exists yet, so
-nothing below has been run, and nothing in this document's own automated
-`npm run smoke:production`/`smoke:production:host` commands exercises it.
-docs/TEMPORARY_DATABASES.md section 19 records the full planned production
-acceptance runbook (capacity prerequisite first, then a real fixture
-create/query/DELETE cycle, independently-recorded graceful-stop and
-intentional `MainPID` `SIGKILL` crash-recovery evidence, the tenant-DB
-startup reaper, and a final unchanged host smoke pass) -- that runbook is
-not duplicated here to avoid two documents drifting out of sync; this
-section exists only as a pointer for a future session executing it.
-Production activation additionally requires the host RAM prerequisite in
-docs/TEMPORARY_DATABASES.md section 17, which has not been performed.
+This is a one-off, manually performed verification record. This document's
+automated `npm run smoke:production` commands still exercise only the
+static fixture; they do not create a DB-backed preview. The full record is
+in docs/TEMPORARY_DATABASES.md section 19 and D-033 (Accepted 2026-10-07).
+
+- **Revision and fixture**: deployed revision
+  `83f1d1b6392cfa04b36e087c6930ae5ab8ede25a` with
+  `PEEPHOLE_TEMPORARY_DATABASES=1`. Fixture
+  `The-peephole/peephole-fixture-fullstack@fecbe5976d6498e75e7a8455319097814457b472`
+  (id `1371618449`).
+- **Prerequisites**: the capacity gate was met (host upsized to
+  `m7i-flex.large`, 2 vCPU, ~7.6 GiB RAM). The tenant infrastructure was
+  active: `pphdb0` at `192.168.253.1/32`, `postgresql@18-tenant` on
+  `192.168.253.1:5433`, and the `m11_provisioner` role.
+- **E4: normal create/query/delete**: a fresh authenticated preview reached
+  `ready`, and `/api/db-check` returned exactly `{"connected":true}`. A real
+  `pv_*` database and role existed. `DELETE` revoked ownership and left zero
+  DB, role, runtime, network, disk, and credential residue. Smoke passed.
+- **E5: graceful stop**: a second fresh preview was stopped by `DELETE`.
+  Ownership was `revoked` (database and role dropped) before the parent
+  reached `stopped`. Residue was zero, and the unchanged API and host smoke
+  passed.
+- **E6: actual-server-child `SIGKILL` and recovery**: a third fresh preview
+  reached `ready` with `db-check` connected. `SIGKILL` went only to the
+  verified server child Node process, **not** the tsx-wrapper `MainPID`
+  (see the M10 correction above). The wrapper exited `137`, and
+  `Restart=on-failure` restarted the unit automatically. Startup
+  reconciliation removed the remaining runsc, disk, secret, network,
+  credential, database, and role state, and moved ownership to `revoked`,
+  all before the parent became `failed`/`ORCHESTRATION_UNAVAILABLE` and
+  before listeners opened. The old origin returned `404`.
+- **Final state**: zero residue (non-terminal ownership, `pv_*`
+  databases/roles/sessions, credentials, runsc, network, leases, bundles,
+  mounts, loops). The feature remained enabled and the revision unchanged.
+- **Smoke after E6**: the **immediate** unchanged
+  `npm run smoke:production` and `npm run smoke:production:host` both
+  passed, inside the default 15-minute journal window (no
+  `PEEPHOLE_SMOKE_LOG_SINCE` override). Because no shutdown handler ran,
+  there were no crash-boundary error lines, so M10-C4B's BLOCKED-then-wait
+  sequence did not apply.
 
 ## M9 production verification record (2026-09-21)
 

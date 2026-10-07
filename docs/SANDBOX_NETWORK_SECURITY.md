@@ -222,11 +222,17 @@ and network startup reconciliation have completed.
   firewall integrity remain trusted; cleanup deliberately preserves ambiguous
   state rather than deleting a merely similar resource.
 
-**Planned, not implemented:** M11 (temporary PostgreSQL previews, currently
-DESIGN ONLY -- see `docs/TEMPORARY_DATABASES.md` and D-033) proposes exactly
-one narrow addition to the `backend-v1` ingress-only policy above: a single
-new `INPUT`-chain exception (never `FORWARD`, `egressChain`, `returnChain`,
-or NAT/MASQUERADE) letting a sandbox reach one fixed host-local
-`/32` PostgreSQL destination on one fixed TCP port. No code implementing
-this exists yet, and the policy described in this document is unchanged
-until it does.
+**M11 addition (implemented and production-verified, 2026-10-07):** M11
+(temporary PostgreSQL previews -- see `docs/TEMPORARY_DATABASES.md` and
+D-033, Accepted) makes exactly one narrow addition to the `backend-v1`
+ingress-only policy above, and only for a DB-backed trusted `fullstack-v1`
+runtime's lease. It adds one exact `192.168.253.1/32` route and a single
+`INPUT`-chain rule, `-i <hostVeth> -d 192.168.253.1/32 -p tcp --dport 5433
+-j ACCEPT`, letting the sandbox reach the host-only `pphdb0` tenant
+PostgreSQL listener. It never touches `FORWARD`, `egressChain`,
+`returnChain`, or NAT/MASQUERADE. `NetworkOrphanReaper` validates and
+removes exactly this addition. Every other lease, and every other
+destination from a DB-capable lease, is unchanged. Because runsc imports
+the namespace's routes into its own netstack, the route is observable only
+from inside the sandbox (as the M11-D harness does), not with
+`ip -n <namespace> route` on the host.
