@@ -13,6 +13,10 @@
 </p>
 
 <p align="center">
+  <sub>The Chrome Web Store currently publishes 0.1.0. This repository's source is the 0.2.0 release candidate, which is not yet published; see the <a href="docs/RELEASE_V0.2.0.md">v0.2.0 release record</a>.</sub>
+</p>
+
+<p align="center">
   Peephole analyzes supported public repositories, builds eligible static frontends in an isolated production sandbox, and renders the HTTPS artifact in a Chrome Side Panel.
 </p>
 
@@ -263,6 +267,7 @@ production-like malicious-script run.
 - [GitHub App authentication](docs/GITHUB_APP_AUTH.md)
 - [Privacy policy](PRIVACY.md)
 - [Chrome Web Store listing and release operations](docs/CHROME_WEB_STORE.md)
+- [v0.2.0 release-candidate record](docs/RELEASE_V0.2.0.md)
 - [v0.1.0 release record and remaining checks](docs/RELEASE_V0.1.0.md)
 - [Requester IP trust](docs/REQUESTER_IP_TRUST.md)
 - [Sandbox disk security](docs/SANDBOX_DISK_SECURITY.md)

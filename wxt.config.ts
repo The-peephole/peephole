@@ -21,7 +21,7 @@ export default defineConfig({
     return {
       name: "Peephole",
       description: "Preview a GitHub repository before you clone it.",
-      version: "0.1.0",
+      version: "0.2.0",
       icons: {
         16: "icons/peephole-16.png",
         32: "icons/peephole-32.png",

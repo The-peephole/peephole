@@ -1,12 +1,18 @@
 # Chrome Web Store listing and release operations
 
-This document is the operator source of truth for the Peephole v0.1.0 Chrome
-Web Store listing. The listing is public at
-[`fieofkhijgngfoflgpkbghbkaidhdgel`](https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel),
-version 0.1.0, updated September 14, 2026. Public listing fields can be checked
-without Dashboard access; permissions, privacy answers, distribution, account,
-and policy prompts still require verification in the current Developer
-Dashboard before a later update. Official references:
+This document is the operator source of truth for the Peephole Chrome Web
+Store listing. The listing is public at
+[`fieofkhijgngfoflgpkbghbkaidhdgel`](https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel).
+
+- **Currently published version:** 0.1.0, updated September 14, 2026.
+- **Release candidate in this repository:** 0.2.0. It has not been submitted
+  or published; see [RELEASE_V0.2.0.md](RELEASE_V0.2.0.md).
+- The extension ID stays the same.
+
+Public listing fields can be checked without Dashboard access. Permissions,
+privacy answers, distribution, account, and policy prompts still require
+verification in the current Developer Dashboard immediately before the
+v0.2.0 submission. Official references:
 
 - [Privacy practices](https://developer.chrome.com/docs/webstore/cws-dashboard-privacy)
 - [User Data Policy](https://developer.chrome.com/docs/webstore/user_data)
@@ -34,7 +40,46 @@ Dashboard before a later update. Official references:
 Category names can change. **NEEDS DASHBOARD VERIFICATION** before a listing
 update.
 
-**Full English description**
+**Full English description (proposed for v0.2.0; not yet submitted)**
+
+> Peephole lets you inspect a public GitHub repository before you clone it.
+>
+> Open a public repository on GitHub and select Peephole from the repository
+> header. Peephole analyzes the repository's public metadata and selected
+> project files, then shows its detected framework, package manager, runtime,
+> repository structure, backend and environment requirements, confirmed
+> deployments, and preview compatibility in a Chrome Side Panel that follows
+> GitHub's Light, Dark, and Dark Dimmed themes.
+>
+> Choose any public branch: Peephole resolves it to one exact commit before
+> analyzing or previewing it. When a repository contains more than one
+> frontend project, Peephole lists the detected candidates so you can select a
+> supported target.
+>
+> For supported projects, connect GitHub and choose Build preview. Peephole
+> verifies your GitHub identity, sends the exact public commit (and the target
+> you selected) to its preview service, builds it in an isolated,
+> resource-limited gVisor sandbox, and displays the resulting static site from
+> a separate HTTPS artifact origin.
+>
+> Peephole supports public repositories only. The production-verified build
+> paths are static HTML and root or selected nested Vite + React projects
+> using npm with a target-local lockfile. Peephole can recognize additional
+> project shapes, including backends, but it previews only supported static
+> frontends; Vue and Svelte do not currently produce an executable runner
+> plan. A repository may be unsupported or fail to build if it requires a
+> backend, private dependency, secret, unsupported package manager, native
+> service, or other capability outside that contract.
+>
+> Peephole does not ask you to create a GitHub personal access token. GitHub App
+> OAuth is used only to verify the requester identity for preview jobs; public
+> repository analysis uses GitHub's public API path. No analytics or advertising
+> SDK is included.
+>
+> Source code and security documentation:
+> https://github.com/The-peephole/peephole
+
+**Published v0.1.0 description (historical; kept for comparison)**
 
 > Peephole lets you inspect a public GitHub repository before you clone it.
 >
@@ -84,6 +129,12 @@ actual Peephole Privacy Policy content (checked after PR #4 merged
 v0.1.0 Chrome Web Store privacy-policy URL; a dedicated GitHub Pages site was
 not set up for this task.
 
+Because this URL tracks `main`, a policy change goes live for every installed
+version as soon as it merges. The October 7, 2026 revision is therefore
+written version-neutrally: it covers the published v0.1.0 behavior and the
+additional v0.2.0 behavior, and it marks the newer behaviors as applying only
+to newer versions.
+
 **Source URL**
 
 > https://github.com/The-peephole/peephole
@@ -100,14 +151,18 @@ not set up for this task.
 | --- | --- | --- | --- |
 | `identity` | Uses Chrome's identity API to launch GitHub App OAuth and receive the extension-specific `chromiumapp.org/github` callback. | `core/preview/githubConnection.ts` calls `browser.identity.getRedirectURL()` and `launchWebAuthFlow()`. | No narrower Chrome API provides this extension OAuth callback flow. It is used only after **Connect GitHub**. |
 | `sidePanel` | Opens and updates Peephole's repository analysis and preview UI in Chrome's Side Panel. | `core/sidepanel/messages.ts` calls the Side Panel API; `sidepanel.html` is the declared panel. | Required for the user-facing Side Panel. No `tabs` or broad scripting permission is requested. |
-| `storage` | Stores the short-lived Peephole session in `browser.storage.session` and removes the legacy PAT key from local storage. | `core/preview/sessionStorage.ts` and `core/github/tokenStorage.ts`. | The Storage API permission covers session storage; persistent GitHub credentials are not stored. Removing it would break login/session handling and legacy cleanup. |
-| `https://api.github.com/*` | Fetches public repository metadata, the default-branch commit, root file entries, and bounded selected public text files for analysis. | `core/github/client.ts` and `core/github/knownFiles.ts`. The extension client is constructed without an OAuth token in `entrypoints/background.ts`. | The exact GitHub API origin is already narrower than GitHub-wide or `<all_urls>` access. Background cross-origin requests require host access. |
+| `storage` | Stores the short-lived Peephole session in `browser.storage.session`. Stores a per-tab GitHub theme snapshot (light/dark scheme plus a fixed set of color values) in `browser.storage.session` so the Side Panel matches the page. Removes the legacy PAT key from local storage. | `core/preview/sessionStorage.ts`, `core/sidepanel/themeStorage.ts`, and `core/github/tokenStorage.ts`. | The Storage API permission covers session storage. Persistent GitHub credentials are not stored, and the theme snapshot is UI state that is never sent to a server. Removing it would break login/session handling, theme matching, and legacy cleanup. |
+| `https://api.github.com/*` | Fetches public repository metadata, the selected branch's exact commit, a bounded public branch list (up to 100), bounded public Deployments and status records (up to 10 deployments, up to 5 status lookups), root and bounded nested directory listings, and bounded selected public text files for analysis. | `core/github/client.ts`, `core/github/knownFiles.ts`, `core/github/repositoryStructureLoader.ts`, `core/github/backendCandidateLoader.ts`, and `core/github/repositoryDeploymentsLoader.ts`. The extension client is constructed without an OAuth token in `entrypoints/background.ts`. | The exact GitHub API origin is already narrower than GitHub-wide or `<all_urls>` access. Background cross-origin requests require host access. |
 | `https://api.3.34.33.24.sslip.io/*` | Starts GitHub sign-in, exchanges the OAuth result for a Peephole session, and creates/reads/cancels preview jobs on the production API. | `core/preview/githubConnection.ts`, `core/preview/apiClient.ts`, and the generated manifest. | Exact HTTPS production API host; no wildcard domain, localhost API host, or `<all_urls>` is requested. |
-| Content script `https://github.com/*/*` | Adds the Peephole control only on GitHub owner/repository paths, observes GitHub SPA navigation, and reads the current repository identity. | `entrypoints/github.content/index.tsx` and `entrypoints/github.content/githubDom.ts`. Runtime DOM checks reject non-repository pages. | Chrome match patterns cannot precisely express “exactly a valid GitHub repository route” beyond the two path segments; runtime validation supplies the remaining restriction. |
+| Content script `https://github.com/*/*` | Adds the Peephole control only on GitHub owner/repository paths, observes GitHub SPA navigation, reads the current repository identity, and reads a bounded snapshot of the page's computed GitHub/Primer theme colors. | `entrypoints/github.content/index.tsx`, `entrypoints/github.content/githubDom.ts`, and `entrypoints/github.content/githubTheme.ts`. Runtime DOM checks reject non-repository pages. | Chrome match patterns cannot precisely express “exactly a valid GitHub repository route” beyond the two path segments; runtime validation supplies the remaining restriction. |
 | Web-accessible `icons/peephole-32.png` on `https://github.com/*` | Lets the GitHub content-script UI display the packaged Peephole icon. | `entrypoints/github.content/mountPeepholeUi.tsx` resolves the packaged icon; `wxt.config.ts` exposes only that icon. | Only one static icon is exposed and only to GitHub pages. |
 
 The generated v0.1.0 manifest has no `activeTab`, `tabs`, `scripting`,
 `webRequest`, native messaging, downloads, cookies, or `<all_urls>` permission.
+The v0.2.0 release-candidate manifest has exactly the same permissions, host
+permissions, content-script scope, web-accessible resources, and CSP as
+v0.1.0; only `version` differs. See RELEASE_V0.2.0.md for the field-by-field
+comparison.
 
 ### Remote code
 
@@ -136,11 +191,23 @@ the behavior; do not optimize for fewer disclosures.
 | --- | --- | --- |
 | Authentication information | Yes | OAuth code, signed state and PKCE verifier are exchanged; the server transiently handles a GitHub access token and the extension stores a short-lived Peephole bearer session in session storage. `core/preview/githubConnection.ts`, `core/preview/sessionStorage.ts`, `services/preview-api/githubAppOAuth.ts`. |
 | Personally identifiable information / user identifier | Yes | The GitHub numeric user ID is converted to `github:<id>` and persisted as the preview requester ID. `services/preview-api/githubAppOAuth.ts`, `services/preview-api/previewSession.ts`, `services/preview-api/postgres/migrations/001_initial.sql`. |
-| Website content | Yes | Peephole reads the GitHub repository identity from the page and fetches public metadata, root entries, and selected public file contents. `entrypoints/github.content/githubDom.ts`, `core/github/client.ts`, `core/github/knownFiles.ts`. |
+| Website content | Yes | Peephole reads the GitHub repository identity from the page. It fetches public repository metadata, branch names/commits, Deployments evidence, root and bounded nested directory listings, and selected public file contents. In v0.2.0 it also reads a bounded snapshot of the page's computed theme colors, which stays local. `entrypoints/github.content/githubDom.ts`, `entrypoints/github.content/githubTheme.ts`, `core/github/client.ts`, `core/github/knownFiles.ts`, `core/github/repositoryStructureLoader.ts`. |
 | Web history / browsing activity | Yes, conservatively | The extension processes the current GitHub repository URL for its visible user-facing feature. It does not collect general browser history. `entrypoints/github.content/index.tsx` and `utils/githubUrl.ts`. If the Dashboard distinguishes current-page website content from history, use its definitions and keep the public explanation explicit. |
 | User activity | Likely no | No clickstream, analytics, ad measurement, or behavioral profile is sent or stored. Preview button actions necessarily create requested jobs, but no separate activity analytics exists. **NEEDS DASHBOARD VERIFICATION** because the label definition may encompass service interactions. |
 | Location | Yes in the published listing, conservatively | No geolocation API or location-inference feature exists. The service processes a requester IP for abuse quotas, so the published listing discloses location conservatively even though Peephole does not derive or store a location. `services/preview-api/requesterIp.ts`, `services/preview-api/postgres/quota.ts`. |
 | Financial, health, communications, or form data | No | Peephole has no such feature or permission. Public repositories could contain arbitrary public text, but the extension reads only the bounded analysis files and a requested build processes the public commit. |
+
+**v0.2.0 working conclusion (not Dashboard certification):** the five
+behaviors added since v0.1.0 introduce no new user-data category. Branch,
+Deployments, and nested-file data are public GitHub repository / website
+content. The selected `sourceRoot` is public repository target metadata.
+Theme colors are local session UI state. None is financial, health,
+communications, form, advertising, tracking, or persistent-credential data.
+Every checkbox, the User activity and Location answers, the remote-code
+declaration, category, certifications, 2FA/account state, and distribution
+settings remain **MANUAL/PENDING**. The owner must check them in the live
+Developer Dashboard immediately before submission. If the live wording
+conflicts with this recommendation, stop before submission.
 
 Certification statements should be accepted only while the implementation and
 published `PRIVACY.md` remain accurate:
@@ -159,7 +226,12 @@ published `PRIVACY.md` remain accurate:
 | Data | Where it goes | Storage and expiry proved by code |
 | --- | --- | --- |
 | GitHub repository URL/owner/name | Page to content script/background; public requests to GitHub | Background memory caches only; current-ref cache is 60 seconds and commit analysis lasts for the background process. |
-| Public repository ID, branch, commit, homepage, root entries, and selected text files | GitHub API to extension; for requested previews, only the repository ID/owner/name/commit SHA and preview contract version go to Peephole — the server independently resolves and validates the build plan from GitHub, it is not sent by the extension | Repository and the server-resolved build plan are stored in the preview job row. No automated deletion schedule for the row is implemented. |
+| Public repository ID, default branch, commit, homepage, root entries, and selected text files | GitHub API to extension | Background memory caches only. |
+| Public branch names and their commits (v0.2.0; up to 100) | GitHub API to extension; a selected branch is resolved to one exact commit before analysis/preview | Background memory only; never persisted or sent to Peephole except as the resolved commit SHA of a requested preview. |
+| Deployment evidence (v0.2.0; up to 10 deployments, up to 5 status lookups) | GitHub API to extension; keeps only deployment ID, ref, commit SHA, environment name/production flag, status state, environment URL, and timestamps | Background memory only. The environment URL is shown as an external link, never fetched, crawled, or embedded (`core/github/externalUrlPolicy.ts`). |
+| Bounded nested project paths and files (v0.2.0) | GitHub API to extension: up to 8 directory listings of up to 200 entries each, up to 20 candidate probes, and bounded nested `package.json`/lockfile/env-template reads within fixed byte budgets | Background memory only. Env templates yield variable names only; real `.env` files are never requested. |
+| GitHub theme snapshot (v0.2.0) | Page computed styles to content script, then background, then Side Panel | `browser.storage.session`, keyed by tab (`peepholeGitHubTheme:<tabId>`). Light/dark scheme plus a fixed set of color values; never sent to a server. |
+| Preview request | Extension to Peephole: repository ID/owner/name, commit SHA, preview contract version and, when a target is explicitly selected (v0.2.0), that target's `sourceRoot` | The server independently validates the requested target and resolves the build plan from GitHub; the extension never sends a plan or command. Repository, target, and the server-resolved build plan are stored in the preview job row. No automated deletion schedule for the row is implemented. |
 | OAuth code, signed state, PKCE verifier | Extension, Peephole API, GitHub | Signed state expires in 10 minutes. No server database persistence was found for these values. |
 | GitHub OAuth access token | GitHub to Peephole API and back to GitHub `/user` | Held transiently in `GitHubAppOAuth.issueSession()`; no persistence path was found and it is never returned to the extension. |
 | Numeric GitHub user ID | GitHub to Peephole API | Encoded as the signed session subject and persisted as `requester_id` in preview jobs; hashed forms participate in quotas. Historical job-row deletion is not implemented. |
@@ -177,8 +249,29 @@ link-local, metadata, host, and peer-sandbox destinations are blocked.
 
 ## Asset checklist
 
-Official CWS guidance requires a PNG 128×128 icon, at least one full-bleed
-1280×800 or 640×400 screenshot, and a 440×280 PNG/JPEG small promotional tile.
+Official CWS guidance requires the following assets. It was rechecked on
+October 7, 2026 against <https://developer.chrome.com/docs/webstore/images>,
+whose page reports a last update of June 11, 2018.
+
+- a PNG 128×128 icon;
+- at least one (up to five) square-cornered, full-bleed 1280×800 or 640×400
+  screenshot showing the actual user experience;
+- a 440×280 small promotional tile that fills the region and avoids text;
+- optionally, a 1400×560 marquee.
+
+### v0.2.0 asset status
+
+| Asset | v0.2.0 status |
+| --- | --- |
+| Icons 16/32/48/128 | **Reusable.** Unchanged since v0.1.0; packaged in the v0.2.0 ZIP. |
+| `store-assets/peephole-promo-440x280.png` | **Reusable.** Derived only from the unchanged icon; no UI depicted. |
+| `store-assets/peephole-screenshot-01-1280x800.png` | **Must refresh.** It shows the v0.1.0 Side Panel, captured before GitHub theme synchronization, Branch Preview, structure/target selection, and deployment evidence existed. It no longer represents the current UI. |
+| Preferred v0.2.0 screenshot | **CANDIDATE (not yet committed or audited).** The owner's October 7, 2026 manual-smoke capture of the unpacked v0.2.0 build: Dark theme, frontend target selected, "Native preview compatible". Before upload it must be committed under `store-assets/` and audited as in v0.1.0 below (exactly 1280×800 or 640×400, full bleed, real UI, no session token, OAuth URL, DevTools, or personal data). It is not PASS until then. |
+| Other manual-smoke captures | **Not listing images.** The branch-blocked Dark capture (`feat/m10-generated-secret-fixture`, "Native preview blocked") and the Light capture showing the GitHub API rate-limit message are verification and error-handling evidence only; do not use the rate-limit capture as a listing image. |
+| Additional Light / Dark Dimmed screenshots | **Optional follow-up**, not a v0.2.0 blocker unless the live Dashboard requires them. |
+| Marquee 1400×560 | Optional; not present. |
+
+The v0.1.0 audit below is kept as the historical record.
 
 | Asset | Audit result | Status/action |
 | --- | --- | --- |
@@ -192,9 +285,9 @@ Official CWS guidance requires a PNG 128×128 icon, at least one full-bleed
 | Marquee tile | Not present | OPTIONAL: 1400×560 PNG/JPEG. |
 | `store-assets/peephole-screenshot-01-1280x800.png` | Real user-supplied capture in this task: exactly 1280×800 RGB PNG, 287,076 bytes, SHA-256 `1085d62ff0d5c5cbb10067a3a6e69cafdf1e91f3e58eac0ee21e6908f3423119` | PASS. See "Screenshot" below. |
 
-### Screenshot
+### Screenshot (v0.1.0 historical record)
 
-`SCREENSHOT = PASS`. The file was captured fresh by the user directly from a
+`SCREENSHOT = PASS` for v0.1.0 only (see the v0.2.0 status above). The file was captured fresh by the user directly from a
 real Chrome window running the extension against the `peephole-complex-fixture`
 GitHub repository — it was supplied natively at 1280×800, so no crop, resize,
 or other transformation was applied; the bytes committed are exactly the
@@ -249,6 +342,14 @@ with signed state and an S256 PKCE challenge. This verifies the current start
 endpoint allowlist only. It is not evidence that a user completed GitHub OAuth,
 that the session exchange succeeded, or that a preview build passed from the
 Web Store installation.
+
+On October 7, 2026, during the M11-E4/E5/E6 production acceptance runs, the
+**published v0.1.0** Web Store installation completed **Connect GitHub**
+repeatedly. Each issued Peephole session authenticated against the production
+API and was used for authenticated production previews. That is production
+evidence for the v0.1.0 package and the shared extension ID, not a v0.2.0
+package test. v0.2.0 keeps the same ID, so its own Connect GitHub check
+remains PENDING until the v0.2.0 package is published under that ID.
 
 For a future extension-ID change:
 
