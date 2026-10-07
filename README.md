@@ -5,6 +5,10 @@
 <h1 align="center">Peephole</h1>
 
 <p align="center">
+  English | <a href="./README.ko.md">한국어</a>
+</p>
+
+<p align="center">
   <strong>Preview a GitHub repository before you clone it.</strong>
 </p>
 
@@ -13,7 +17,7 @@
 </p>
 
 <p align="center">
-  <sub>The Chrome Web Store currently publishes 0.1.0. This repository's source is the 0.2.0 release candidate, which is not yet published; see the <a href="docs/RELEASE_V0.2.0.md">v0.2.0 release record</a>.</sub>
+  <sub>The Chrome Web Store currently publishes 0.1.0. Peephole <a href="https://github.com/The-peephole/peephole/releases/tag/v0.2.0">v0.2.0 is released on GitHub</a> and has been submitted to the Chrome Web Store for review; it is not yet available from the Store. See the <a href="docs/RELEASE_V0.2.0.md">v0.2.0 release record</a>.</sub>
 </p>
 
 <p align="center">
@@ -267,7 +271,7 @@ production-like malicious-script run.
 - [GitHub App authentication](docs/GITHUB_APP_AUTH.md)
 - [Privacy policy](PRIVACY.md)
 - [Chrome Web Store listing and release operations](docs/CHROME_WEB_STORE.md)
-- [v0.2.0 release-candidate record](docs/RELEASE_V0.2.0.md)
+- [v0.2.0 release record](docs/RELEASE_V0.2.0.md)
 - [v0.1.0 release record and remaining checks](docs/RELEASE_V0.1.0.md)
 - [Requester IP trust](docs/REQUESTER_IP_TRUST.md)
 - [Sandbox disk security](docs/SANDBOX_DISK_SECURITY.md)
