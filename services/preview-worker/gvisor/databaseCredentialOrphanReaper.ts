@@ -25,8 +25,10 @@ export interface DatabaseCredentialOrphanReaperOptions {
  * A narrow C3 primitive mirroring `GeneratedSecretOrphanReaper`'s lifecycle
  * discipline, scoped only to `/run/peephole/db-credentials`. It never
  * recursively removes an arbitrary caller path, and -- like its M10
- * counterpart -- is not wired into `services/production/server.ts` by this
- * change; production startup/maintenance composition is later work (M11-C4+).
+ * counterpart -- runs at every production startup (also while temporary
+ * databases are disabled, so a rollback still clears leftover credential
+ * files) and in periodic maintenance only while they are enabled
+ * (services/production/temporaryDatabaseRuntime.ts).
  */
 export class DatabaseCredentialOrphanReaper {
   private readonly rootDir: string

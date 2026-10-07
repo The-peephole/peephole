@@ -37,6 +37,11 @@ import { readProductionConfig } from "./config"
 import { createProductionFullStackRoutingInfrastructure } from "./fullStackRoutingInfrastructure"
 import { initializeProductionGeneratedSecretRuntime } from "./generatedSecretRuntime"
 import {
+  initializeProductionTemporaryDatabaseRuntime,
+  temporaryDatabaseBackendDependencies,
+  temporaryDatabaseMaintenanceTasks,
+} from "./temporaryDatabaseRuntime"
+import {
   ensureProductionDiskLayout,
   ensureProductionPreflight,
   ensureSandboxDiskCapability,
@@ -114,6 +119,22 @@ async function main(): Promise<void> {
     artifactStorageDir: productionConfig.artifactStorageDir,
     orphanReaperMaxAgeMs: productionConfig.orphanReaperMaxAgeMs,
   })
+  // M11 (default OFF): null unless PEEPHOLE_TEMPORARY_DATABASES=1. Even while
+  // disabled it clears leftover database-credential files and refuses startup
+  // on any non-terminal ownership row, without contacting the tenant. When
+  // enabled, tenant capability and both startup reapAll() passes complete
+  // here, before FullStack reconciliation and before any listener/worker;
+  // a failure aborts startup instead of running without database support.
+  const temporaryDatabases = await initializeProductionTemporaryDatabaseRuntime(
+    {
+      config: productionConfig.temporaryDatabases,
+      controlDatabase: database,
+      bundlesRootDir: productionConfig.bundlesRootDir,
+      artifactStorageDir: productionConfig.artifactStorageDir,
+      generatedSecretRootDir: productionConfig.generatedSecretRootDir,
+      orphanReaperMaxAgeMs: productionConfig.orphanReaperMaxAgeMs,
+    },
+  )
 
   const artifactStore = new PostgresProductionArtifactStore(database)
   const routing = createProductionFullStackRoutingInfrastructure({
@@ -185,6 +206,7 @@ async function main(): Promise<void> {
       liveRuntimeRegistry: routing.liveRuntimeRegistry,
       secretBroker: generatedSecrets.secretBroker,
       generatedSecretFilesystem: generatedSecrets.filesystem,
+      ...temporaryDatabaseBackendDependencies(temporaryDatabases),
     },
   )
   const fullStackSupervisor = new FullStackPreviewSupervisor(
@@ -286,6 +308,7 @@ async function main(): Promise<void> {
       networkOrphanReaper.reap(),
       generatedSecrets.orphanReaper.reap(),
       routing.artifactHost.reap(),
+      ...temporaryDatabaseMaintenanceTasks(temporaryDatabases),
     ])
       .then(() => undefined)
       .catch((error: unknown) =>
@@ -332,6 +355,9 @@ async function main(): Promise<void> {
     await api.stop()
     await routing.tlsAskServer.close()
     await routing.artifactHost.close()
+    // Workers and maintenance are finished, so no revoke/reap still needs
+    // either pool; the tenant pool closes before the control-plane pool.
+    await temporaryDatabases?.close()
     await database.close()
     process.exit(0)
   }

@@ -1,3 +1,6 @@
+import path from "node:path"
+
+import { TENANT_DATABASE_PORT } from "../../core/backendDatabase/databaseUrl"
 import { validateTrustedAppOrigin } from "./trustedOrigin"
 import {
   DEFAULT_HOST_DISK_RESERVE_BYTES,
@@ -43,7 +46,23 @@ export interface ProductionConfig {
   /** Operator-supplied site root; no public suffix inference is performed. */
   trustedRegistrableDomain: string
   trustedAppOrigin: string
+  /** M11 temporary PostgreSQL previews. Default OFF; see
+   * docs/TEMPORARY_DATABASES.md section 17 for the activation gate. */
+  temporaryDatabases: TemporaryDatabaseProductionConfig
 }
+
+/** The database-credential root is known in both modes: a rollback that
+ * disables temporary databases must still clean credential files an earlier
+ * enabled process left under the same (possibly non-default) root. */
+export type TemporaryDatabaseProductionConfig =
+  | { enabled: false; credentialRootDir: string }
+  | {
+      enabled: true
+      /** Server/operator-only tenant provisioning credential. Never logged,
+       * echoed in errors, persisted, or passed to a sandbox. */
+      provisioningUrl: string
+      credentialRootDir: string
+    }
 
 const DEFAULTS = {
   workerConcurrency: 1,
@@ -61,6 +80,7 @@ const DEFAULTS = {
   artifactBaseDomain: "peepholeusercontent.dev",
   trustedRegistrableDomain: "peephole.dev",
   trustedAppOrigin: "https://app.peephole.dev",
+  databaseCredentialRootDir: "/run/peephole/db-credentials",
 } as const
 
 export function readProductionConfig(
@@ -152,6 +172,7 @@ export function readProductionConfig(
       environment.PEEPHOLE_ARTIFACT_BASE_DOMAIN,
       DEFAULTS.artifactBaseDomain,
     ),
+    temporaryDatabases: readTemporaryDatabaseConfig(environment),
   }
   // Compare at label boundaries in both directions, including equality.
   if (
@@ -169,6 +190,84 @@ export function readProductionConfig(
     )
   }
   return config
+}
+
+/** Only the exact value "1" enables M11; unset, empty, or "0" disables it,
+ * and anything else is a configuration error rather than a guess. The
+ * credential root is read in both modes; the provisioning URL is read and
+ * required only while enabled. */
+function readTemporaryDatabaseConfig(
+  environment: NodeJS.ProcessEnv,
+): TemporaryDatabaseProductionConfig {
+  const flag = environment.PEEPHOLE_TEMPORARY_DATABASES?.trim() ?? ""
+  if (flag !== "" && flag !== "0" && flag !== "1") {
+    throw new Error("PEEPHOLE_TEMPORARY_DATABASES must be 0 or 1.")
+  }
+  const credentialRootDir = readAbsolutePath(
+    "PEEPHOLE_DATABASE_CREDENTIAL_ROOT",
+    environment.PEEPHOLE_DATABASE_CREDENTIAL_ROOT,
+    DEFAULTS.databaseCredentialRootDir,
+  )
+  if (flag !== "1") return { enabled: false, credentialRootDir }
+
+  const provisioningUrl = environment.PEEPHOLE_TENANT_DB_PROVISIONING_URL
+  // Messages below deliberately never include the configured value.
+  if (!provisioningUrl || !isProvisioningUrl(provisioningUrl)) {
+    throw new Error(
+      `PEEPHOLE_TENANT_DB_PROVISIONING_URL must be a Unix-socket PostgreSQL URL of the form postgresql://<user>:<password>@%2F<socket-dir>:${String(TENANT_DATABASE_PORT)}/<database> with no query string when PEEPHOLE_TEMPORARY_DATABASES=1.`,
+    )
+  }
+  if (provisioningUrl === environment.PEEPHOLE_DATABASE_URL) {
+    throw new Error(
+      "PEEPHOLE_TENANT_DB_PROVISIONING_URL must not reuse the control-plane PEEPHOLE_DATABASE_URL.",
+    )
+  }
+
+  return { enabled: true, provisioningUrl, credentialRootDir }
+}
+
+/**
+ * The provisioning connection must use the tenant cluster's local Unix-domain
+ * socket, never the sandbox-facing TCP listener or any network host
+ * (docs/TEMPORARY_DATABASES.md section 8). The one accepted form is the one
+ * node-postgres resolves to a socket directory: a percent-encoded absolute
+ * path as the URL host (`%2Frun%2Fpostgresql`), with the locked tenant port
+ * naming the socket file. Query strings are refused outright because
+ * node-postgres lets `?host=`/`?port=`/`?user=` override the URL itself.
+ */
+function isProvisioningUrl(value: string): boolean {
+  // Even an empty `?` or `#` is refused, so exactly one form is accepted.
+  if (value.includes("?") || value.includes("#")) return false
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  if (
+    (url.protocol !== "postgresql:" && url.protocol !== "postgres:") ||
+    url.username === "" ||
+    url.password === "" ||
+    url.pathname.length <= 1 ||
+    url.pathname.slice(1).includes("/") ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    url.port !== String(TENANT_DATABASE_PORT) ||
+    !/^%2f/i.test(url.hostname)
+  ) {
+    return false
+  }
+  let socketDirectory: string
+  try {
+    socketDirectory = decodeURIComponent(url.hostname)
+  } catch {
+    return false
+  }
+  return (
+    socketDirectory.length > 1 &&
+    path.posix.normalize(socketDirectory) === socketDirectory &&
+    !socketDirectory.endsWith("/")
+  )
 }
 
 function readPath(value: string | undefined, fallback: string): string {

@@ -297,3 +297,166 @@ describe("trusted production domains", () => {
     ).toBe("https://sslip.io")
   })
 })
+
+describe("readProductionConfig temporary databases (M11)", () => {
+  // Placeholder only; never a real credential.
+  const provisioningUrl =
+    "postgresql://m11_provisioner:placeholder-secret@%2Frun%2Fpostgresql:5433/tenant_admin"
+
+  it("is disabled when the flag is unset, empty, or 0, ignoring the provisioning URL but keeping the default credential root", () => {
+    for (const flag of [undefined, "", " ", "0"]) {
+      expect(
+        readProductionConfig({
+          PEEPHOLE_TEMPORARY_DATABASES: flag,
+          PEEPHOLE_TENANT_DB_PROVISIONING_URL: "not a url",
+        }).temporaryDatabases,
+      ).toEqual({
+        enabled: false,
+        credentialRootDir: "/run/peephole/db-credentials",
+      })
+    }
+  })
+
+  it("keeps a custom credential root while disabled so rollback cleanup reaches it", () => {
+    expect(
+      readProductionConfig({
+        PEEPHOLE_TEMPORARY_DATABASES: "0",
+        PEEPHOLE_DATABASE_CREDENTIAL_ROOT: "/run/custom/db-credentials",
+      }).temporaryDatabases,
+    ).toEqual({
+      enabled: false,
+      credentialRootDir: "/run/custom/db-credentials",
+    })
+  })
+
+  it("rejects a relative credential root even while disabled", () => {
+    for (const flag of [undefined, "0"]) {
+      expect(() =>
+        readProductionConfig({
+          PEEPHOLE_TEMPORARY_DATABASES: flag,
+          PEEPHOLE_DATABASE_CREDENTIAL_ROOT: "relative/path",
+        }),
+      ).toThrow(/PEEPHOLE_DATABASE_CREDENTIAL_ROOT must be an absolute path/)
+    }
+  })
+
+  it("rejects any flag value other than exactly 0 or 1", () => {
+    for (const flag of ["true", "yes", "on", "enabled", "01", "2"]) {
+      expect(() =>
+        readProductionConfig({
+          PEEPHOLE_TEMPORARY_DATABASES: flag,
+          PEEPHOLE_TENANT_DB_PROVISIONING_URL: provisioningUrl,
+        }),
+      ).toThrow(/PEEPHOLE_TEMPORARY_DATABASES must be 0 or 1/)
+    }
+  })
+
+  it("is enabled by exactly 1 with the default credential root", () => {
+    expect(
+      readProductionConfig({
+        PEEPHOLE_TEMPORARY_DATABASES: "1",
+        PEEPHOLE_TENANT_DB_PROVISIONING_URL: provisioningUrl,
+      }).temporaryDatabases,
+    ).toEqual({
+      enabled: true,
+      provisioningUrl,
+      credentialRootDir: "/run/peephole/db-credentials",
+    })
+  })
+
+  it("reads an absolute credential root override and rejects a relative one", () => {
+    expect(
+      readProductionConfig({
+        PEEPHOLE_TEMPORARY_DATABASES: "1",
+        PEEPHOLE_TENANT_DB_PROVISIONING_URL: provisioningUrl,
+        PEEPHOLE_DATABASE_CREDENTIAL_ROOT: "/run/custom/db-credentials",
+      }).temporaryDatabases,
+    ).toMatchObject({ credentialRootDir: "/run/custom/db-credentials" })
+    expect(() =>
+      readProductionConfig({
+        PEEPHOLE_TEMPORARY_DATABASES: "1",
+        PEEPHOLE_TENANT_DB_PROVISIONING_URL: provisioningUrl,
+        PEEPHOLE_DATABASE_CREDENTIAL_ROOT: "run/db-credentials",
+      }),
+    ).toThrow(/PEEPHOLE_DATABASE_CREDENTIAL_ROOT must be an absolute path/)
+  })
+
+  it("requires a well-formed provisioning URL when enabled, without echoing it", () => {
+    for (const candidate of [
+      undefined,
+      "",
+      "not a url",
+      "mysql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db",
+      "socket://user:placeholder-secret@/run/postgresql?db=db",
+      "postgresql://user@%2Frun%2Fpostgresql:5433/db",
+      "postgresql://:placeholder-secret@%2Frun%2Fpostgresql:5433/db",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db/extra",
+      // TCP endpoints: the sandbox-facing listener, loopback, names, other IPs.
+      "postgresql://user:placeholder-secret@192.168.253.1:5433/db",
+      "postgresql://user:placeholder-secret@127.0.0.1:5433/db",
+      "postgresql://user:placeholder-secret@localhost:5433/db",
+      "postgresql://user:placeholder-secret@[::1]:5433/db",
+      "postgresql://user:placeholder-secret@tenant-db.example.com:5433/db",
+      "postgresql://user:placeholder-secret@10.0.0.5:5433/db",
+      // Wrong or missing port: the port also names the socket file.
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5432/db",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql/db",
+      // Query strings can override host/port/user in node-postgres.
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db?host=192.168.253.1",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db?port=5432",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db?sslmode=disable",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db?",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db#fragment",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql:5433/db#",
+      // Non-canonical socket directories.
+      "postgresql://user:placeholder-secret@run%2Fpostgresql:5433/db",
+      "postgresql://user:placeholder-secret@%2Frun%2F..%2Fetc:5433/db",
+      "postgresql://user:placeholder-secret@%2Frun%2Fpostgresql%2F:5433/db",
+      "postgresql://user:placeholder-secret@%2F:5433/db",
+    ]) {
+      let message = ""
+      try {
+        readProductionConfig({
+          PEEPHOLE_TEMPORARY_DATABASES: "1",
+          PEEPHOLE_TENANT_DB_PROVISIONING_URL: candidate,
+        })
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error)
+      }
+      expect(message, String(candidate)).toMatch(
+        /PEEPHOLE_TENANT_DB_PROVISIONING_URL must be a Unix-socket PostgreSQL URL/,
+      )
+      expect(message).not.toContain("placeholder-secret")
+    }
+  })
+
+  it("accepts the canonical Unix-socket forms node-postgres resolves to a socket directory", () => {
+    for (const candidate of [
+      provisioningUrl,
+      "postgres://m11_provisioner:placeholder-secret@%2fvar%2frun%2fpostgresql:5433/tenant_admin",
+    ]) {
+      expect(
+        readProductionConfig({
+          PEEPHOLE_TEMPORARY_DATABASES: "1",
+          PEEPHOLE_TENANT_DB_PROVISIONING_URL: candidate,
+        }).temporaryDatabases,
+      ).toMatchObject({ enabled: true, provisioningUrl: candidate })
+    }
+  })
+
+  it("refuses to reuse the control-plane database URL, without echoing it", () => {
+    let message = ""
+    try {
+      readProductionConfig({
+        PEEPHOLE_TEMPORARY_DATABASES: "1",
+        PEEPHOLE_TENANT_DB_PROVISIONING_URL: provisioningUrl,
+        PEEPHOLE_DATABASE_URL: provisioningUrl,
+      })
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    expect(message).toMatch(/must not reuse the control-plane/)
+    expect(message).not.toContain("placeholder-secret")
+  })
+})
