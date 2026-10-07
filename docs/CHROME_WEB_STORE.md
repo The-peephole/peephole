@@ -266,7 +266,9 @@ whose page reports a last update of June 11, 2018.
 | Icons 16/32/48/128 | **Reusable.** Unchanged since v0.1.0; packaged in the v0.2.0 ZIP. |
 | `store-assets/peephole-promo-440x280.png` | **Reusable.** Derived only from the unchanged icon; no UI depicted. |
 | `store-assets/peephole-screenshot-01-1280x800.png` | **Must refresh.** It shows the v0.1.0 Side Panel, captured before GitHub theme synchronization, Branch Preview, structure/target selection, and deployment evidence existed. It no longer represents the current UI. |
-| Fresh v0.2.0 screenshots | **PENDING (not captured).** Needed: real 1280×800 full-bleed captures from the v0.2.0 build showing current repository analysis, Branch Preview (branch selector), and the Side Panel in Light, Dark, and Dark Dimmed. A structure/target selection view is useful if visually clear. No session token, OAuth URL, DevTools, or personal data may be in frame. No screenshot may be marked PASS until a real capture is committed and audited as in v0.1.0 below. |
+| Preferred v0.2.0 screenshot | **CANDIDATE (not yet committed or audited).** The owner's October 7, 2026 manual-smoke capture of the unpacked v0.2.0 build: Dark theme, frontend target selected, "Native preview compatible". Before upload it must be committed under `store-assets/` and audited as in v0.1.0 below (exactly 1280×800 or 640×400, full bleed, real UI, no session token, OAuth URL, DevTools, or personal data). It is not PASS until then. |
+| Other manual-smoke captures | **Not listing images.** The branch-blocked Dark capture (`feat/m10-generated-secret-fixture`, "Native preview blocked") and the Light capture showing the GitHub API rate-limit message are verification and error-handling evidence only; do not use the rate-limit capture as a listing image. |
+| Additional Light / Dark Dimmed screenshots | **Optional follow-up**, not a v0.2.0 blocker unless the live Dashboard requires them. |
 | Marquee 1400×560 | Optional; not present. |
 
 The v0.1.0 audit below is kept as the historical record.

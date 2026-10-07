@@ -131,11 +131,30 @@ The local development API `127.0.0.1:8787` does not appear.
 
 ## Unpacked extension verification
 
-| Item | Status | Evidence/action |
+The owner ran a manual smoke of the unpacked v0.2.0 build on October 7, 2026.
+The items below record exactly what was observed. Items not exercised in this
+session are marked **NOT_RUN** even where earlier implementation and test
+evidence exists.
+
+| Item | Status | Evidence |
 | --- | --- | --- |
-| Load v0.2.0 unpacked from `.output/peephole-0.2.0-unpacked/` (extracted from the audited ZIP) | PENDING (manual) | Not performed in this session; no browser-automation tool was available. |
-| GitHub action mount; Side Panel opens; analysis loads; default branch; alternate branch; rapid branch switching shows no stale result; SPA navigation resets; structure section; target selection; deployment presentation; Light / Dark / Dark Dimmed; theme switch with the panel open; no console/runtime errors | PENDING (manual) | Owner checklist. An unpacked load gets a different extension ID. |
-| Connect GitHub / authenticated preview from the v0.2.0 package | PENDING (post-publication) | The production OAuth allowlist must not be widened for a random unpacked ID. This can be tested only once v0.2.0 is published under `fieofkhijgngfoflgpkbghbkaidhdgel`. |
+| Load v0.2.0 unpacked | PASS | The extension loaded successfully as unpacked v0.2.0. |
+| GitHub repository action mounts | PASS | The Peephole action mounted on the repository page. |
+| Side Panel opens | PASS | The Chrome Side Panel opened correctly. |
+| Repository analysis renders | PASS | Analysis rendered correctly. |
+| Repository structure / multiple projects | PASS | On `The-peephole/peephole-fixture-fullstack`, the structure was detected as multiple projects, with frontend and backend candidates distinguished. |
+| Frontend target selection and re-analysis | PASS | Selecting the frontend re-analyzed it as React + Vite, npm, "Native build: Compatible", `npm ci`, `npm run build`, output `dist`. |
+| Backend analysis boundary | PASS | The backend candidate showed Express / Node.js / `pg` evidence. Backend execution remained explicitly "Not supported yet" and was not promoted into the static Build Preview path. |
+| Alternate branch selection | PASS | Switching away from `main` changed the resolved commit: `feat/m10-generated-secret-fixture` resolved to commit prefix `e10b081`, and the analysis changed to match. That branch's repository root correctly rendered "Native preview blocked". |
+| Dark theme | PASS | Rendered correctly. |
+| Live theme switch with the panel open | PASS (Dark → Light) | Switching GitHub to Light while the Side Panel stayed open switched Peephole to Light. Only this transition was observed. |
+| GitHub API rate-limit handling | PASS (error handling) | After repeated manual analysis, GitHub's unauthenticated limit was reached. Peephole showed "GitHub API rate limit reached. Try again after it resets." without crashing or corrupting the Side Panel. This is expected error handling, not a product failure. |
+| Dark Dimmed theme | NOT_RUN (covered by existing tests) | Not manually verified in this session. `tests/githubTheme.test.ts`, `tests/GitHubPageController.test.ts`, and `tests/SidePanelThemeController.test.ts` cover `dark_dimmed`. |
+| Rapid branch switching shows no stale result | NOT_RUN (covered by existing tests) | Not re-run in this session. |
+| GitHub SPA navigation resets the panel | NOT_RUN (covered by existing tests) | Not re-run in this session. |
+| Deployment evidence presentation | NOT_RUN | Not specifically observed in this session. |
+| Console/runtime errors | NOT_RUN (not recorded) | No crash was observed. A DevTools console review was not recorded. |
+| Connect GitHub / authenticated preview from the v0.2.0 package | NOT_RUN — PENDING (post-publication) | Not tested from the unpacked build because its extension ID differs. Production allowlists were not widened. This can be tested only once v0.2.0 is published under `fieofkhijgngfoflgpkbghbkaidhdgel`. |
 | Historical: Connect GitHub from the published v0.1.0 | PASS (v0.1.0 only) | On October 7, 2026, the published v0.1.0 installation completed Connect GitHub, and its sessions drove the authenticated M11-E4/E5/E6 production previews. This is not evidence for the v0.2.0 package. |
 
 ## Store assets and listing
@@ -145,7 +164,10 @@ The local development API `127.0.0.1:8787` does not appear.
 | Icons (16/32/48/128) | PASS (reuse) | Unchanged and packaged. CWS guidance suggests 96×96 artwork with 16 px transparent padding; the full-bleed 128 icon was accepted for v0.1.0 (optional future nicety). |
 | Small promo tile 440×280 | PASS (reuse) | Icon-only and unchanged. |
 | Screenshot `peephole-screenshot-01-1280x800.png` | MUST REFRESH | Shows the v0.1.0 UI, from before theme sync, Branch Preview, target selection, and deployment evidence. |
-| Fresh v0.2.0 screenshots (Light, Dark, Dark Dimmed, Branch Preview, analysis/structure) | PENDING | Must be real 1280×800 full-bleed captures of the v0.2.0 build, audited before use. None exist yet. |
+| Preferred v0.2.0 store screenshot candidate | CANDIDATE — not yet committed or audited | The owner's manual-smoke capture: Dark theme, frontend target selected, "Native preview compatible". Before upload, commit it under `store-assets/` and audit it as in v0.1.0: exactly 1280×800 (or 640×400), full bleed, real UI, and no token, OAuth URL, DevTools, or personal data in frame. |
+| Branch-blocked Dark capture | Verification evidence only | Shows `feat/m10-generated-secret-fixture` (`e10b081`) with "Native preview blocked". |
+| Light capture with GitHub API rate-limit error | Verification evidence only | Error-handling evidence. **Not** suitable as a primary listing image. |
+| Additional Light / Dark Dimmed store screenshots | Optional follow-up | Not a blocker for this release unless the live Dashboard requires them. |
 | Listing copy | PENDING (proposal only) | Proposed v0.2.0 description is in `docs/CHROME_WEB_STORE.md`; it has not been submitted. The single purpose is unchanged. |
 
 ## Publication gates
@@ -164,8 +186,8 @@ The local development API `127.0.0.1:8787` does not appear.
 
 1. Review and merge the release-candidate PR. Merging publishes the revised
    `PRIVACY.md`.
-2. Run the manual unpacked-extension checklist above and capture fresh v0.2.0
-   screenshots, then audit them.
+2. Commit and audit the preferred Dark screenshot candidate (dimensions, full
+   bleed, no sensitive content) before uploading it to the listing.
 3. Verify every Dashboard-only item in the live Developer Dashboard. Stop on
    any conflict.
 4. Rebuild from the merged commit if it differs in packaged inputs; never
