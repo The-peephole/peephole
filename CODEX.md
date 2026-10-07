@@ -62,7 +62,8 @@ Backend execution (`backend-v1`, see docs/PREVIEW_RUNTIME.md and D-030) is a
 wholly separate contract and pipeline from the static build path above: its
 own control plane, worker, gVisor runtime primitive, and ingress-only
 network policy. It supports exactly one adapter (`express-node-npm-v1`:
-Express + npm + a committed lockfile + no database dependency), whose
+Express + npm + a committed lockfile; no database dependency except M11's
+exact `pg` + `DATABASE_URL` shape for trusted `fullstack-v1` previews), whose
 `BackendRuntimePlan.platformEnvironment` is fixed to exactly
 `PORT`/`HOST`/`NODE_ENV` and never produces a public URL or a
 frontend/backend connection. Do not read its existence as "arbitrary Node
@@ -76,12 +77,21 @@ exactly four canonical server-*generated* names
 own `generatedSecretNames` path -- never through `platformEnvironment`,
 which stays exactly `PORT`/`HOST`/`NODE_ENV` -- and delivered outside the
 OCI `process.env`/`config.json` path via a tmpfs-backed bind mount and
-trusted bootstrap. Arbitrary or user-supplied secrets, arbitrary
-environment-variable management, and temporary database provisioning remain
-unsupported. Do not read M10's existence as "arbitrary secrets are
-supported." Temporary database provisioning (M11) has an architecture
-design locked in D-033/docs/TEMPORARY_DATABASES.md, but zero implementation
--- do not read that document's existence as "M11 is supported" either.
+trusted bootstrap. Arbitrary or user-supplied secrets and arbitrary
+environment-variable management remain unsupported. Do not read M10's
+existence as "arbitrary secrets are supported."
+
+M11 (see D-033 and docs/TEMPORARY_DATABASES.md, Accepted/production-verified
+as of 2026-10-07, enabled by `PEEPHOLE_TEMPORARY_DATABASES=1`) separately
+lets a trusted `fullstack-v1` preview whose backend declares exactly a `pg`
+dependency and `DATABASE_URL` receive one server-provisioned temporary
+PostgreSQL database and `pv_*` role in the host-local `18-tenant` cluster.
+`DATABASE_URL` is delivered through its own tmpfs file at
+`/run/secrets/database-url`, never through `platformEnvironment` or
+`generatedSecretNames`. Standalone `backend-v1` database admission stays
+denied. Do not read M11's existence as "arbitrary databases are supported":
+it is PostgreSQL + `pg` + `DATABASE_URL` only, one database per preview,
+with no user-supplied database credentials and no general backend egress.
 
 ## Architecture to Preserve
 
@@ -176,8 +186,9 @@ changes it:
 8. backend-v1 execution foundation -- implemented; production-verified in M9 (see D-030)
 9. frontend ↔ backend routing -- implemented; production-verified in M9 (see D-031)
 10. ephemeral env / generated secrets -- implemented; production-verified in M10 (see D-032)
-11. temporary database support -- architecture locked in D-033 /
-    docs/TEMPORARY_DATABASES.md; not implemented
+11. temporary database support -- implemented; production-verified in M11,
+    narrowly (PostgreSQL + `pg` + `DATABASE_URL`, trusted `fullstack-v1`
+    only; see D-033)
 
 Each stage must expose a reviewed contract and preserve earlier security
 boundaries. In particular, do not jump from a full-stack fixture to backend

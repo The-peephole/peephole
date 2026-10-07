@@ -59,9 +59,11 @@ production-verified in M10-C4B (see section 5's M10 generated-secret
 subsection and docs/EPHEMERAL_SECRETS.md). Temporary databases (roadmap stage
 11) have C1-C4 portable and PostgreSQL 18 integration coverage. M11-D1 adds a
 real-gVisor database harness, discovered and compiled in portable CI but
-skipped without its two exact privileged opt-ins; its real Linux execution is
-`NOT_RUN` until M11-D2. Production activation and acceptance are also
-`NOT_RUN` and remain M11-E work. See docs/TEMPORARY_DATABASES.md section 19.
+skipped without its two exact privileged opt-ins. Its real Linux execution
+(M11-D2) passed. Production acceptance (M11-E, 2026-10-07) passed in three
+independent fresh-preview runs: E4 normal lifecycle, E5 graceful stop, and
+E6 ungraceful server crash with startup reconciliation. See the M11 records
+in section 5 and docs/TEMPORARY_DATABASES.md section 19.
 
 ## 3. Portable Tests
 
@@ -690,13 +692,20 @@ exposing `/api/secret-check`. On 2026-09-28, against production SHA
 - normal `DELETE` cleanup of the preview, verified complete;
 - with a fresh M10 FullStack preview left in the `ready` state, an
   intentional `SIGKILL` of only the Peephole service's systemd `MainPID`
-  (not a graceful stop -- this does not exercise the trusted bootstrap's
+  (not a `systemctl stop` -- this does not exercise the trusted bootstrap's
   `SIGTERM` forwarding path, which is verified separately through the
   real-gVisor harness's normal `stop()` path; see
-  docs/EPHEMERAL_SECRETS.md), exercising real crash recovery: systemd's
-  existing `Restart=on-failure` brought the service back automatically;
-  generated secrets, runsc sandboxes, network namespaces, and disk state all
-  reconciled to zero residue on startup; the durable FullStack parent that
+  docs/EPHEMERAL_SECRETS.md). systemd's existing `Restart=on-failure` brought
+  the service back automatically; generated secrets, runsc sandboxes,
+  network namespaces, and disk state ended at zero residue (**2026-10-07
+  correction:** the `MainPID` was the tsx wrapper, so systemd's
+  `KillMode=control-group` sent the actual server `SIGTERM`, and its
+  graceful shutdown handler ran -- journal: `[peephole] received SIGTERM,
+  shutting down...` -- before the restart. Some of this cleanup may
+  therefore have come from that handler rather than from the startup
+  reapers, and this test is not evidence that no graceful handler ran. The
+  M11-E6 record below is the first pure ungraceful server-process crash);
+  the durable FullStack parent that
   had been `ready` came back `failed`/`ORCHESTRATION_UNAVAILABLE` after
   restart/reconciliation, with process-local backend coordinates and secrets
   never reconstructed; and its old backend route returned 404 afterward;
@@ -705,8 +714,9 @@ exposing `/api/secret-check`. On 2026-09-28, against production SHA
   still inside the smoke tool's unmodified default 15-minute log lookback
   window (`PEEPHOLE_SMOKE_LOG_SINCE`, not overridden), correctly reported
   **BLOCKED** on its "service errors" gate: it matched exactly the two
-  `worker loop error` lines produced by the intentional `MainPID` `SIGKILL`
-  boundary itself, and no other/new errors. Per the accepted acceptance
+  `worker loop error` lines produced at the intentional `MainPID` `SIGKILL`
+  boundary (emitted by the server's `SIGTERM` shutdown handler, per the
+  correction above), and no other/new errors. Per the accepted acceptance
   procedure, this BLOCKED result was recorded as-is and not promoted to a
   pass. Production was then left quiescent (no further crash test, no new
   preview, no config change) until both error timestamps had aged out of the
@@ -718,7 +728,7 @@ See docs/PRODUCTION_SMOKE.md for the complete command sequence and output
 record of both smoke runs. D-032 is Accepted and M10 is complete for the four
 canonical generated-secret names as of 2026-09-28.
 
-### M11 temporary-database real-host harness (M11-D1; implemented, not run)
+### M11 temporary-database real-host harness (M11-D1 implemented; M11-D2 PASS)
 
 `tests/realTemporaryDatabaseRuntime.test.ts` is the M11-D1 integrated C4
 verification harness. Portable CI discovers and typechecks it, runs its exact
@@ -754,9 +764,56 @@ default route/NAT; OCI/argv/runsc-state non-leakage; live and post-stop physical
 database/role state; backend `stopped` with no error; and exact-resource zero
 residue.
 
-Status is `HARNESS_IMPLEMENTED` / `REAL_HOST_NOT_RUN`. Actual privileged Linux
-execution belongs to M11-D2. Production activation/acceptance remains
-`NOT_RUN` and belongs to M11-E.
+Status: harness implemented (M11-D1). Privileged real-host execution (M11-D2)
+passed against real PostgreSQL 18, real Linux, and real gVisor, after two
+corrections the real host surfaced: #40 aligned firewall cleanup with
+iptables, and #41 asserts the database route inside the sandbox, because
+runsc imports the namespace's routes into its own netstack and the host-side
+`ip -n <ns> route` view is then empty.
+
+### M11 production acceptance (M11-E, 2026-10-07; complete)
+
+Three independent production acceptance classes ran against deployed revision
+`83f1d1b6392cfa04b36e087c6930ae5ab8ede25a`, with
+`PEEPHOLE_TEMPORARY_DATABASES=1`. They used the immutable fixture
+`The-peephole/peephole-fixture-fullstack@fecbe5976d6498e75e7a8455319097814457b472`
+after the capacity upsize and tenant infrastructure activation. Each class
+used its own **fresh** authenticated `fullstack-v1` preview, and no class's
+evidence was reused for another:
+
+1. **E4: normal authenticated DB-backed FullStack lifecycle.** The preview
+   reached `ready` and `/api/db-check` returned exactly `{"connected":true}`.
+   A real `pv_*` database and restricted role existed, and the credential
+   arrived via `/run/secrets/database-url` alongside M10's
+   `/run/secrets/env`. Raw `DATABASE_URL` was absent from OCI
+   config/argv/platform environment, and the exact DB network capability was
+   verified. `DELETE` moved ownership `provisioned` → `revoked`, residue was
+   zero, and smoke passed.
+2. **E5: graceful stop.** A fresh preview was stopped through normal
+   `DELETE`. A host sampler observed container/credential cleanup, then
+   network teardown, then ownership `revoked` and database/role removal,
+   then the parent `stopped`; durable timestamps confirm `revoked` precedes
+   `stopped`. The container exited inside the 5 s grace window, which is
+   consistent with the deployed `SIGTERM`-first `stop()`; the signal itself
+   was not traced. Residue was zero, and smoke passed.
+3. **E6: ungraceful production server crash with startup reconciliation.**
+   - `SIGKILL` went only to the verified server child process. The systemd
+     `MainPID` is the tsx wrapper and was deliberately not the target (see
+     the M10 correction above).
+   - No `received SIGTERM` line appeared. The wrapper exited `137`, the unit
+     failed, and `Restart=on-failure` restarted it about 5 s later with a new
+     `MainPID` and server PID.
+   - Startup reconciliation removed the remaining runsc, disk, secret,
+     network, credential, and database state, and moved ownership to
+     `revoked`. The parent then became `failed`/`ORCHESTRATION_UNAVAILABLE`,
+     and the listeners opened after that.
+   - The old origin returned `404`, and final residue was zero.
+   - The immediate, unchanged smoke passed; no 15-minute wait was needed.
+   - The gVisor-netstack `/32` route was not directly observed in E6.
+
+See docs/TEMPORARY_DATABASES.md section 19 for the full record and
+docs/PRODUCTION_SMOKE.md for the smoke summary. D-033 is Accepted as of
+2026-10-07.
 
 ### Production-host safety for privileged real-gVisor suites
 
@@ -883,23 +940,19 @@ Add coverage in the same order as product development:
     behavior, host tmpfs cleanup, and a real-host check that a backend
     printing a secret to stdout never reaches Peephole's own logs -- all
     passed, both portable and real-gVisor-gated)
-11. temporary database tenancy, credentials, lifecycle, and cleanup --
-    proceeding in stages (M11), integrated through an internal injectable
-    runtime path but not activated in production;
-    architecture designed and locked (D-033, still Proposed, not Accepted).
+11. temporary database tenancy, credentials, lifecycle, and cleanup (M11)
+    -- complete and production-verified (D-033, Accepted 2026-10-07).
     M11-C1 (portable admission/ownership), M11-C2 (PostgreSQL
-    provisioning/reconciliation, real PostgreSQL 18 integration-tested), and
+    provisioning/reconciliation, real PostgreSQL 18 integration-tested),
     M11-C3 (credential delivery + host-only network primitives), and M11-C4's
-    integrated FullStack lifecycle are complete with portable and
-    PostgreSQL-18-gated coverage -- see docs/TEMPORARY_DATABASES.md section
-    19. M11-D is current: its real-gVisor database harness is implemented, but
-    privileged real-host execution remains `NOT_RUN`. The current production
-    server deliberately supplies no tenant
-    provisioner/credential-filesystem pair, so a production database plan
-    still fails closed with `DATABASE_UNAVAILABLE` before sandbox allocation.
-    M11-E activation remains not started; no production tenant cluster,
-    `pphdb0`, provisioning credential, or production DB reaper wiring exists
-    yet
+    integrated FullStack lifecycle have portable and PostgreSQL-18-gated
+    coverage. M11-D's real-gVisor harness passed on a real host. M11-E1 wired
+    the tenant provisioner, credential filesystem, and startup/maintenance
+    reapers into production behind `PEEPHOLE_TEMPORARY_DATABASES=1`. With the
+    gate off, a database plan still fails closed with `DATABASE_UNAVAILABLE`.
+    M11-E4/E5/E6 passed as three independent production acceptance runs (see
+    the M11 production acceptance record in section 5 and
+    docs/TEMPORARY_DATABASES.md section 19)
 
 The full-stack fixture becomes eligible for these tests only as each required
 contract is actually implemented.
