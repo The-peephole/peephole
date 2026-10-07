@@ -1,13 +1,17 @@
 # Peephole Privacy Policy
 
-Effective date: September 16, 2026
+Effective date: October 7, 2026
 
 Peephole is a Chrome extension that analyzes public GitHub repositories and,
 when requested, builds supported static frontends in an isolated Peephole
 preview service so that you can inspect them before cloning.
 
-This policy describes the data handled by Peephole v0.1. Peephole does not use
-analytics, advertising, or tracking services, and it does not sell user data.
+This policy covers the data handled by the published Peephole extension
+versions and the Peephole preview service. Some features described below exist
+only in newer versions. Depending on the installed version and the feature you
+use, Peephole may perform only some of the operations described here. Peephole
+does not use analytics, advertising, or tracking services, and it does not sell
+user data.
 
 ## Data Peephole accesses
 
@@ -20,12 +24,44 @@ GitHub, including:
 
 - the repository owner, name, numeric repository ID, default branch, commit
   SHA, public/private flag, and declared homepage;
-- names, paths, types, and sizes of selected files in the repository root; and
+- names, paths, types, and sizes of selected files in the repository root;
 - bounded contents of selected public project files, such as `package.json`,
   `README.md`, lockfile/configuration indicators, Vite configuration, and
-  example environment-variable templates.
+  example environment-variable templates; and
+- depending on the installed version, the additional public repository data
+  described below.
 
-Peephole v0.1 rejects private repositories. It does not use your GitHub OAuth
+**Branch discovery.** Newer versions may list up to 100 of the repository's
+public branch names, together with each branch's current commit, through the
+GitHub API so that you can choose a branch. A selected branch is always
+resolved to one exact commit before Peephole analyzes or previews it. Branch
+names are public repository metadata. Peephole does not treat them as
+credentials and does not store them persistently.
+
+**Repository structure.** In newer versions, analysis is not limited to the
+repository root. To find candidate project directories, Peephole may read a
+bounded number of public directory listings (names, paths, types, and sizes)
+and a bounded set of selected public files under those candidate paths, such as
+nested `package.json` files, lockfile indicators, and example
+environment-variable templates. The number of listings and files, and the
+total bytes read, are capped. From example environment-variable templates,
+Peephole uses only the variable _names_. It does not keep or display template
+values, and it never reads real `.env` files.
+
+**Deployment evidence.** Newer versions may query the repository's public
+GitHub Deployments, and a bounded number of their status records, to show
+confirmed deployment evidence. Peephole keeps only bounded fields: the
+deployment ID, ref, commit, environment name and production flag, status
+state, environment URL, and timestamps. A deployment URL is shown to you as a
+link. Peephole does not fetch, crawl, or embed it.
+
+**GitHub theme.** To match the Side Panel to the GitHub page, newer versions
+read a bounded snapshot of the page's computed GitHub/Primer theme colors: the
+light or dark scheme plus a fixed set of color values. This snapshot is local
+user-interface state, not a credential or analytics. It is not sent to the
+Peephole service.
+
+Peephole rejects private repositories. It does not use your GitHub OAuth
 credential to fetch repository contents.
 
 ## GitHub authentication
@@ -55,8 +91,13 @@ key used by older builds.
 
 When you request a preview, the extension sends the public repository ID,
 owner, name, exact commit SHA, and preview contract version to the Peephole
-API. The server independently resolves and validates the build plan from the
-referenced public repository before creating the job. The worker then
+API. In newer versions, if you explicitly select a supported frontend target
+within the repository, the request also includes that target's repository
+path (its `sourceRoot`). The extension never sends a build command or plan.
+The server independently validates the requested target and resolves the
+build plan from the referenced public repository before creating the job. It
+accepts only a bounded, validated repository-relative path, not an arbitrary
+filesystem path or command. The worker then
 downloads the selected public commit and runs the supported build inside a
 resource-limited gVisor sandbox.
 
@@ -81,10 +122,13 @@ view it until it expires, so do not share the URL unnecessarily.
 
 ## Local and server-side storage
 
-The extension keeps repository analysis and metadata caches in the extension
-background process's memory. It does not persist those caches. The only current
-authentication credential stored by the extension is the short-lived Peephole
-session in `browser.storage.session`.
+The extension keeps repository analysis, branch, deployment, and metadata
+caches in the extension background process's memory. It does not persist those
+caches. The only authentication credential stored by the extension is the
+short-lived Peephole session in `browser.storage.session`. Newer versions also
+store the GitHub theme snapshot described above in `browser.storage.session`,
+keyed by browser tab. That snapshot is user-interface state, not a credential,
+and the browser clears session storage when the browser session ends.
 
 The production service stores preview job, queue, cache, quota, and artifact
 authorization metadata in PostgreSQL. It stores generated static artifacts on
@@ -129,7 +173,7 @@ isolated sandbox. They can access the public repository files and bounded
 public-Internet egress during installation, so a repository's own script may
 contact an external public service. Peephole blocks sandbox access to host,
 private, link-local, metadata, and other sandbox networks, but it does not
-operate an authenticated package proxy in v0.1.
+currently operate an authenticated package proxy.
 
 Peephole does not transfer data to advertising platforms or data brokers and
 does not use it for personalized advertising, lending, or credit decisions.
@@ -150,8 +194,8 @@ disk controls. Preview artifacts are served from a separate origin and are not
 given extension privileges.
 
 No system can guarantee absolute security. Do not use Peephole with a
-repository that contains confidential information; v0.1 is designed only for
-public repositories.
+repository that contains confidential information; Peephole is designed only
+for public repositories.
 
 ## Your choices
 
