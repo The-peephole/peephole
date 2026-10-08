@@ -1,13 +1,17 @@
-# Peephole v0.2.0 release-candidate record
+# Peephole v0.2.0 release record
 
-Peephole v0.2.0 is a **release candidate**. It has **not** been submitted to
-or published on the Chrome Web Store. The Web Store currently publishes v0.1.0
-under the unchanged extension ID `fieofkhijgngfoflgpkbghbkaidhdgel`. No
-`v0.2.0` tag or GitHub Release exists yet. The v0.1.0 record is kept unchanged
+| Channel | Status |
+| --- | --- |
+| GitHub release | **PUBLISHED.** Annotated tag `v0.2.0` on merged release commit `c0de1208c9273b8123c44d329823437cbc1edabd`; [GitHub Release v0.2.0](https://github.com/The-peephole/peephole/releases/tag/v0.2.0) with `peephole-0.2.0-chrome.zip` attached (218,512 bytes, SHA-256 `16f3fae202aef28d9803e831fed359cee0f429df6ef0d5c49b5370884b7583b0`). |
+| Chrome Web Store submission | **SUBMITTED / UNDER REVIEW.** The owner uploaded v0.2.0 and submitted it for review, with automatic publication after approval enabled. |
+| Chrome Web Store public version | **Still 0.1.0** under the unchanged extension ID `fieofkhijgngfoflgpkbghbkaidhdgel`. v0.2.0 is not yet confirmed published. |
+
+The sections below were written while v0.2.0 was a release candidate; their
+build and package evidence is unchanged. The v0.1.0 record is kept unchanged
 in [RELEASE_V0.1.0.md](RELEASE_V0.1.0.md).
 
 Status meanings:
-- **PASS:** the named fact was directly verified for this candidate.
+- **PASS:** the named fact was directly verified for this release.
 - **MANUAL:** requires the owner or the live Developer Dashboard.
 - **PENDING:** not yet done.
 - **N/A:** does not apply before publication.
@@ -62,6 +66,7 @@ the package contains no backend-runtime or full-stack endpoint path.
 | `npm test` | PASS | 120 files passed / 12 skipped; 1,942 tests passed / 69 skipped. The skipped tests are the environment-gated real-gVisor/PostgreSQL suites. |
 | `npm run build` | PASS | Exit 0; 589.86 kB unpacked. |
 | Release ZIP | PASS | `npm run zip` produced `.output/peephole-0.2.0-chrome.zip`: 218,512 bytes, SHA-256 `16f3fae202aef28d9803e831fed359cee0f429df6ef0d5c49b5370884b7583b0`. Re-running `npm run zip` produced a byte-identical ZIP (same SHA-256). The ZIP is git-ignored and not committed. |
+| Final release build | PASS | After PR #44 was squash-merged as `c0de1208c9273b8123c44d329823437cbc1edabd` (tree identical to the release-candidate head), a fresh clean-worktree run repeated `npm ci`, format, lint, typecheck, tests (1,942 passed / 69 skipped), build, and zip. It produced the same 218,512-byte ZIP with the same SHA-256. The manifest audit (only `version` differs from v0.1.0) and the secret scan (0 matches) were repeated on that ZIP. The asset attached to GitHub Release v0.2.0 was re-downloaded and matched the same SHA-256. |
 
 ### Package contents
 
@@ -123,11 +128,10 @@ The local development API `127.0.0.1:8787` does not appear.
 | --- | --- | --- |
 | Manifest V3, no remote code | PASS | All extension JavaScript is in the ZIP, and the CSP allows scripts only from `'self'`. Packaged source has no `eval`, `new Function`, `executeScript`, or `innerHTML`. Network targets in packaged code are `api.github.com`, `github.com`, and the production API. Preview artifacts load in a cross-origin HTTPS iframe with no extension privileges. |
 | Permissions minimal | PASS | Unchanged from v0.1.0 (see the comparison above). |
-| Privacy disclosures | PASS (repository) | `PRIVACY.md`, effective October 7, 2026, was rewritten version-neutrally (it stays accurate for the published v0.1.0) and adds the five behaviors introduced since v0.1.0: branch discovery, Deployments/status evidence, bounded nested structure/candidate files, the per-tab theme snapshot in `browser.storage.session` (never sent to a server; verified in source), and the selected `sourceRoot` in preview requests. `docs/CHROME_WEB_STORE.md` justifications, disclosures, and data-flow table were updated to match. The privacy URL tracks `main`, so the revision goes live when this PR merges. |
+| Privacy disclosures | PASS (repository) | `PRIVACY.md`, effective October 7, 2026, was rewritten version-neutrally (it stays accurate for the published v0.1.0) and adds the five behaviors introduced since v0.1.0: branch discovery, Deployments/status evidence, bounded nested structure/candidate files, the per-tab theme snapshot in `browser.storage.session` (never sent to a server; verified in source), and the selected `sourceRoot` in preview requests. `docs/CHROME_WEB_STORE.md` justifications, disclosures, and data-flow table were updated to match. The privacy URL tracks `main`; the revision went live when PR #44 merged. |
 | Connect GitHub / session flow vs `PRIVACY.md` | PASS (source) | Unchanged GitHub App OAuth with signed state and PKCE; a 30-minute session in `browser.storage.session`. |
-| New Dashboard data category | MANUAL | Working conclusion: none required. This is not certification. |
-| Dashboard privacy checkboxes, User activity, Location, remote-code declaration, category, certifications | MANUAL / PENDING | The owner must check the live Developer Dashboard immediately before submission. Stop if its wording conflicts with `docs/CHROME_WEB_STORE.md`. |
-| CWS account 2FA, distribution settings | MANUAL / PENDING | Owner-only. |
+| New Dashboard data category | MANUAL (owner-completed at submission) | Working conclusion before submission: none required. |
+| Dashboard privacy checkboxes, User activity, Location, remote-code declaration, category, certifications, account 2FA, distribution settings | MANUAL (owner-completed at submission; answers not recorded here) | The owner completed the Developer Dashboard and submitted v0.2.0 for review. The exact Dashboard answers are not recorded in this repository, so this record does not independently verify them against `docs/CHROME_WEB_STORE.md`. |
 
 ## Unpacked extension verification
 
@@ -163,37 +167,38 @@ evidence exists.
 | --- | --- | --- |
 | Icons (16/32/48/128) | PASS (reuse) | Unchanged and packaged. CWS guidance suggests 96×96 artwork with 16 px transparent padding; the full-bleed 128 icon was accepted for v0.1.0 (optional future nicety). |
 | Small promo tile 440×280 | PASS (reuse) | Icon-only and unchanged. |
-| Screenshot `peephole-screenshot-01-1280x800.png` | MUST REFRESH | Shows the v0.1.0 UI, from before theme sync, Branch Preview, target selection, and deployment evidence. |
-| Preferred v0.2.0 store screenshot candidate | CANDIDATE — not yet committed or audited | The owner's manual-smoke capture: Dark theme, frontend target selected, "Native preview compatible". Before upload, commit it under `store-assets/` and audit it as in v0.1.0: exactly 1280×800 (or 640×400), full bleed, real UI, and no token, OAuth URL, DevTools, or personal data in frame. |
+| Screenshot `peephole-screenshot-01-1280x800.png` | Superseded for v0.2.0 (repository copy) | Shows the v0.1.0 UI, from before theme sync, Branch Preview, target selection, and deployment evidence. |
+| Listing screenshot(s) used for the v0.2.0 submission | NOT RECORDED in repository | The submission was made from the Developer Dashboard. Which images were uploaded is not recorded here, and no v0.2.0 capture is committed under `store-assets/`. The preferred candidate was the owner's Dark capture with the frontend target selected and "Native preview compatible". If a v0.2.0 screenshot is later committed, audit it as in v0.1.0. |
 | Branch-blocked Dark capture | Verification evidence only | Shows `feat/m10-generated-secret-fixture` (`e10b081`) with "Native preview blocked". |
 | Light capture with GitHub API rate-limit error | Verification evidence only | Error-handling evidence. **Not** suitable as a primary listing image. |
 | Additional Light / Dark Dimmed store screenshots | Optional follow-up | Not a blocker for this release unless the live Dashboard requires them. |
-| Listing copy | PENDING (proposal only) | Proposed v0.2.0 description is in `docs/CHROME_WEB_STORE.md`; it has not been submitted. The single purpose is unchanged. |
+| Listing copy | Submitted with v0.2.0 (text not recorded here) | The proposed v0.2.0 description is in `docs/CHROME_WEB_STORE.md`. The exact text submitted in the Dashboard is not recorded in this repository. The single purpose is unchanged. |
 
 ## Publication gates
 
 | Item | Status |
 | --- | --- |
-| Release-candidate PR | Opened, not merged |
-| Git tag `v0.2.0` | PENDING (not created) |
-| GitHub Release with ZIP | PENDING (not created) |
-| Chrome Web Store upload/submission | PENDING (not done) |
-| Chrome Web Store review/publication | PENDING |
-| Published-installation checks (version 0.2.0 shown, Connect GitHub, authenticated static preview, production API and host smoke) | PENDING until published |
+| Release PR #44 | MERGED (squash `c0de1208c9273b8123c44d329823437cbc1edabd`) |
+| Git tag `v0.2.0` | PASS: annotated tag object `f18c4e57aa1f26648bf760255b9b344922d12e5e` on `c0de1208c9273b8123c44d329823437cbc1edabd`, pushed |
+| GitHub Release with ZIP | PUBLISHED: [v0.2.0](https://github.com/The-peephole/peephole/releases/tag/v0.2.0), not a draft or prerelease, with `peephole-0.2.0-chrome.zip` (218,512 bytes, SHA-256 `16f3fae2…83b0`, re-download verified) |
+| Chrome Web Store upload/submission | SUBMITTED / UNDER REVIEW (owner), with automatic publication after approval enabled |
+| Chrome Web Store review/publication | PENDING. The public version remains 0.1.0 until approval is observed. |
+| Published-installation checks (version 0.2.0 shown in Chrome/Store) | PENDING until published |
+| Connect GitHub from the published v0.2.0 (published-ID OAuth) | PENDING until published |
+| Authenticated static preview from the published v0.2.0 | PENDING until published |
+| Post-publication production API and host smoke | PENDING until published |
 | Post-release monitoring owner/window | MANUAL |
 
 ## Remaining controlled steps
 
-1. Review and merge the release-candidate PR. Merging publishes the revised
-   `PRIVACY.md`.
-2. Commit and audit the preferred Dark screenshot candidate (dimensions, full
-   bleed, no sensitive content) before uploading it to the listing.
-3. Verify every Dashboard-only item in the live Developer Dashboard. Stop on
-   any conflict.
-4. Rebuild from the merged commit if it differs in packaged inputs; never
-   reuse this hash for a changed package. Then tag `v0.2.0` and create the
-   GitHub Release with the audited ZIP.
-5. Upload and submit. After approval, verify the published v0.2.0 install,
-   Connect GitHub, an authenticated preview, and production smoke.
+1. Wait for the Chrome Web Store review result. Do not record v0.2.0 as
+   published on the Store until the public listing shows 0.2.0.
+2. After approval, confirm that the published installation reports 0.2.0.
+3. From the published v0.2.0 installation, complete Connect GitHub (published
+   ID) and an authenticated static preview.
+4. Run and retain the post-publication production API and host smoke.
+5. If review requires changes to extension source or packaged assets, rebuild
+   and re-audit. Never reuse this hash for a changed package.
 
-Release state: **release candidate — not published.**
+Release state: **GitHub release published; Chrome Web Store v0.2.0 submitted
+and under review; public Store version still 0.1.0.**

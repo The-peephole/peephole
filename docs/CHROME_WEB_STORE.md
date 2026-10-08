@@ -4,15 +4,20 @@ This document is the operator source of truth for the Peephole Chrome Web
 Store listing. The listing is public at
 [`fieofkhijgngfoflgpkbghbkaidhdgel`](https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel).
 
-- **Currently published version:** 0.1.0, updated September 14, 2026.
-- **Release candidate in this repository:** 0.2.0. It has not been submitted
-  or published; see [RELEASE_V0.2.0.md](RELEASE_V0.2.0.md).
+- **Chrome Web Store public version:** still 0.1.0, updated September 14,
+  2026.
+- **GitHub release:** v0.2.0 is published. See
+  [GitHub Release v0.2.0](https://github.com/The-peephole/peephole/releases/tag/v0.2.0)
+  and [RELEASE_V0.2.0.md](RELEASE_V0.2.0.md).
+- **Chrome Web Store submission:** v0.2.0 is submitted and under review,
+  with automatic publication after approval enabled. It is not yet confirmed
+  published.
 - The extension ID stays the same.
 
 Public listing fields can be checked without Dashboard access. Permissions,
-privacy answers, distribution, account, and policy prompts still require
-verification in the current Developer Dashboard immediately before the
-v0.2.0 submission. Official references:
+privacy answers, distribution, account, and policy prompts are Dashboard-only.
+The owner completed them for the v0.2.0 submission; the exact answers are not
+recorded in this repository. Official references:
 
 - [Privacy practices](https://developer.chrome.com/docs/webstore/cws-dashboard-privacy)
 - [User Data Policy](https://developer.chrome.com/docs/webstore/user_data)
@@ -37,10 +42,11 @@ v0.2.0 submission. Official references:
 
 > Developer Tools
 
-Category names can change. **NEEDS DASHBOARD VERIFICATION** before a listing
-update.
+Category names can change. **Owner-completed in the Dashboard for the v0.2.0
+submission** (the selected category is not independently recorded here);
+re-check against the live Dashboard before any future listing update.
 
-**Full English description (proposed for v0.2.0; not yet submitted)**
+**Full English description (proposed for v0.2.0; the exact text submitted in the Dashboard is not recorded here)**
 
 > Peephole lets you inspect a public GitHub repository before you clone it.
 >
@@ -159,7 +165,7 @@ to newer versions.
 
 The generated v0.1.0 manifest has no `activeTab`, `tabs`, `scripting`,
 `webRequest`, native messaging, downloads, cookies, or `<all_urls>` permission.
-The v0.2.0 release-candidate manifest has exactly the same permissions, host
+The released v0.2.0 manifest has exactly the same permissions, host
 permissions, content-script scope, web-accessible resources, and CSP as
 v0.1.0; only `version` differs. See RELEASE_V0.2.0.md for the field-by-field
 comparison.
@@ -170,7 +176,9 @@ Recommended answer:
 
 > No, I am not using remote code.
 
-**NEEDS DASHBOARD VERIFICATION.** All extension-privileged JavaScript is
+**Owner-completed in the Dashboard for the v0.2.0 submission** (the exact
+answer is not independently recorded here; re-check against the live
+Dashboard before any future submission). All extension-privileged JavaScript is
 bundled in the release ZIP and the MV3 extension-page CSP permits scripts only
 from `'self'`. GitHub and Peephole responses are treated as data, not evaluated
 as extension code. A completed preview can contain JavaScript built from the
@@ -193,7 +201,7 @@ the behavior; do not optimize for fewer disclosures.
 | Personally identifiable information / user identifier | Yes | The GitHub numeric user ID is converted to `github:<id>` and persisted as the preview requester ID. `services/preview-api/githubAppOAuth.ts`, `services/preview-api/previewSession.ts`, `services/preview-api/postgres/migrations/001_initial.sql`. |
 | Website content | Yes | Peephole reads the GitHub repository identity from the page. It fetches public repository metadata, branch names/commits, Deployments evidence, root and bounded nested directory listings, and selected public file contents. In v0.2.0 it also reads a bounded snapshot of the page's computed theme colors, which stays local. `entrypoints/github.content/githubDom.ts`, `entrypoints/github.content/githubTheme.ts`, `core/github/client.ts`, `core/github/knownFiles.ts`, `core/github/repositoryStructureLoader.ts`. |
 | Web history / browsing activity | Yes, conservatively | The extension processes the current GitHub repository URL for its visible user-facing feature. It does not collect general browser history. `entrypoints/github.content/index.tsx` and `utils/githubUrl.ts`. If the Dashboard distinguishes current-page website content from history, use its definitions and keep the public explanation explicit. |
-| User activity | Likely no | No clickstream, analytics, ad measurement, or behavioral profile is sent or stored. Preview button actions necessarily create requested jobs, but no separate activity analytics exists. **NEEDS DASHBOARD VERIFICATION** because the label definition may encompass service interactions. |
+| User activity | Likely no | No clickstream, analytics, ad measurement, or behavioral profile is sent or stored. Preview button actions necessarily create requested jobs, but no separate activity analytics exists. **Owner-completed in the Dashboard for the v0.2.0 submission** (the exact answer is not independently recorded here); because the label definition may encompass service interactions, re-check it against the live Dashboard before any future submission. |
 | Location | Yes in the published listing, conservatively | No geolocation API or location-inference feature exists. The service processes a requester IP for abuse quotas, so the published listing discloses location conservatively even though Peephole does not derive or store a location. `services/preview-api/requesterIp.ts`, `services/preview-api/postgres/quota.ts`. |
 | Financial, health, communications, or form data | No | Peephole has no such feature or permission. Public repositories could contain arbitrary public text, but the extension reads only the bounded analysis files and a requested build processes the public commit. |
 
@@ -205,9 +213,10 @@ Theme colors are local session UI state. None is financial, health,
 communications, form, advertising, tracking, or persistent-credential data.
 Every checkbox, the User activity and Location answers, the remote-code
 declaration, category, certifications, 2FA/account state, and distribution
-settings remain **MANUAL/PENDING**. The owner must check them in the live
-Developer Dashboard immediately before submission. If the live wording
-conflicts with this recommendation, stop before submission.
+settings are **MANUAL** Dashboard items. The owner completed them when
+submitting v0.2.0 for review; the exact answers are not recorded in this
+repository. Re-check them against this recommendation before any later
+submission.
 
 Certification statements should be accepted only while the implementation and
 published `PRIVACY.md` remain accurate:
@@ -265,8 +274,8 @@ whose page reports a last update of June 11, 2018.
 | --- | --- |
 | Icons 16/32/48/128 | **Reusable.** Unchanged since v0.1.0; packaged in the v0.2.0 ZIP. |
 | `store-assets/peephole-promo-440x280.png` | **Reusable.** Derived only from the unchanged icon; no UI depicted. |
-| `store-assets/peephole-screenshot-01-1280x800.png` | **Must refresh.** It shows the v0.1.0 Side Panel, captured before GitHub theme synchronization, Branch Preview, structure/target selection, and deployment evidence existed. It no longer represents the current UI. |
-| Preferred v0.2.0 screenshot | **CANDIDATE (not yet committed or audited).** The owner's October 7, 2026 manual-smoke capture of the unpacked v0.2.0 build: Dark theme, frontend target selected, "Native preview compatible". Before upload it must be committed under `store-assets/` and audited as in v0.1.0 below (exactly 1280×800 or 640×400, full bleed, real UI, no session token, OAuth URL, DevTools, or personal data). It is not PASS until then. |
+| `store-assets/peephole-screenshot-01-1280x800.png` | **Superseded for v0.2.0 (repository copy).** It shows the v0.1.0 Side Panel, captured before GitHub theme synchronization, Branch Preview, structure/target selection, and deployment evidence existed. |
+| v0.2.0 listing screenshot(s) | **Managed in the Dashboard; which images accompany the v0.2.0 submission is not recorded in the repository.** The preferred candidate was the owner's October 7, 2026 Dark capture of the unpacked v0.2.0 build (frontend target selected, "Native preview compatible"). No v0.2.0 capture is committed under `store-assets/`, so no repository audit applies yet. If one is committed later, audit it as in v0.1.0 below (exactly 1280×800 or 640×400, full bleed, real UI, no session token, OAuth URL, DevTools, or personal data). |
 | Other manual-smoke captures | **Not listing images.** The branch-blocked Dark capture (`feat/m10-generated-secret-fixture`, "Native preview blocked") and the Light capture showing the GitHub API rate-limit message are verification and error-handling evidence only; do not use the rate-limit capture as a listing image. |
 | Additional Light / Dark Dimmed screenshots | **Optional follow-up**, not a v0.2.0 blocker unless the live Dashboard requires them. |
 | Marquee 1400×560 | Optional; not present. |
@@ -348,8 +357,9 @@ On October 7, 2026, during the M11-E4/E5/E6 production acceptance runs, the
 repeatedly. Each issued Peephole session authenticated against the production
 API and was used for authenticated production previews. That is production
 evidence for the v0.1.0 package and the shared extension ID, not a v0.2.0
-package test. v0.2.0 keeps the same ID, so its own Connect GitHub check
-remains PENDING until the v0.2.0 package is published under that ID.
+package test. v0.2.0 keeps the same ID and is submitted for review, so its
+own Connect GitHub check remains PENDING until the Store publishes v0.2.0
+under that ID.
 
 For a future extension-ID change:
 
