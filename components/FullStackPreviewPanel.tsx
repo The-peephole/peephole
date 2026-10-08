@@ -197,6 +197,24 @@ export function FullStackPreviewPanel({
         Runs a separate fullstack-v1 job for this exact commit. Static Build
         preview remains independent.
       </p>
+      <dl className="peephole__facts">
+        <div className="peephole__detail">
+          <dt>Frontend</dt>
+          <dd>
+            <code>{analysis.target.sourceRoot}</code>
+          </dd>
+        </div>
+        <div className="peephole__detail">
+          <dt>Backend</dt>
+          <dd>
+            {selectedBackend ? (
+              <code>{selectedBackend.sourceRoot}</code>
+            ) : (
+              "Choose a target"
+            )}
+          </dd>
+        </div>
+      </dl>
 
       {candidates.length > 1 && detectionIsComplete && (
         <div className="peephole__fullstack-target">
@@ -401,6 +419,10 @@ function FullStackPreviewState({
         </button>
       </section>
     )
+  }
+
+  if (preview.status === "stopping") {
+    return <FullStackProgress label={formatStatus(preview.status)} />
   }
 
   return (

@@ -85,6 +85,13 @@ describe("FullStackPreviewPanel", () => {
     const api = createApi({ create: vi.fn().mockResolvedValue(queued) })
     const container = await renderPanel(api, roots)
 
+    expect(
+      Array.from(
+        container.querySelectorAll("code"),
+        (node) => node.textContent,
+      ),
+    ).toEqual([".", "backend"])
+
     await act(async () =>
       getButton(container, "Run full-stack preview").click(),
     )
