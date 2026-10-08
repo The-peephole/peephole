@@ -42,8 +42,9 @@ recorded in this repository. Official references:
 
 > Developer Tools
 
-Category names can change. **NEEDS DASHBOARD VERIFICATION** before a listing
-update.
+Category names can change. **Owner-completed in the Dashboard for the v0.2.0
+submission** (the selected category is not independently recorded here);
+re-check against the live Dashboard before any future listing update.
 
 **Full English description (proposed for v0.2.0; the exact text submitted in the Dashboard is not recorded here)**
 
@@ -175,7 +176,9 @@ Recommended answer:
 
 > No, I am not using remote code.
 
-**NEEDS DASHBOARD VERIFICATION.** All extension-privileged JavaScript is
+**Owner-completed in the Dashboard for the v0.2.0 submission** (the exact
+answer is not independently recorded here; re-check against the live
+Dashboard before any future submission). All extension-privileged JavaScript is
 bundled in the release ZIP and the MV3 extension-page CSP permits scripts only
 from `'self'`. GitHub and Peephole responses are treated as data, not evaluated
 as extension code. A completed preview can contain JavaScript built from the
@@ -198,7 +201,7 @@ the behavior; do not optimize for fewer disclosures.
 | Personally identifiable information / user identifier | Yes | The GitHub numeric user ID is converted to `github:<id>` and persisted as the preview requester ID. `services/preview-api/githubAppOAuth.ts`, `services/preview-api/previewSession.ts`, `services/preview-api/postgres/migrations/001_initial.sql`. |
 | Website content | Yes | Peephole reads the GitHub repository identity from the page. It fetches public repository metadata, branch names/commits, Deployments evidence, root and bounded nested directory listings, and selected public file contents. In v0.2.0 it also reads a bounded snapshot of the page's computed theme colors, which stays local. `entrypoints/github.content/githubDom.ts`, `entrypoints/github.content/githubTheme.ts`, `core/github/client.ts`, `core/github/knownFiles.ts`, `core/github/repositoryStructureLoader.ts`. |
 | Web history / browsing activity | Yes, conservatively | The extension processes the current GitHub repository URL for its visible user-facing feature. It does not collect general browser history. `entrypoints/github.content/index.tsx` and `utils/githubUrl.ts`. If the Dashboard distinguishes current-page website content from history, use its definitions and keep the public explanation explicit. |
-| User activity | Likely no | No clickstream, analytics, ad measurement, or behavioral profile is sent or stored. Preview button actions necessarily create requested jobs, but no separate activity analytics exists. **NEEDS DASHBOARD VERIFICATION** because the label definition may encompass service interactions. |
+| User activity | Likely no | No clickstream, analytics, ad measurement, or behavioral profile is sent or stored. Preview button actions necessarily create requested jobs, but no separate activity analytics exists. **Owner-completed in the Dashboard for the v0.2.0 submission** (the exact answer is not independently recorded here); because the label definition may encompass service interactions, re-check it against the live Dashboard before any future submission. |
 | Location | Yes in the published listing, conservatively | No geolocation API or location-inference feature exists. The service processes a requester IP for abuse quotas, so the published listing discloses location conservatively even though Peephole does not derive or store a location. `services/preview-api/requesterIp.ts`, `services/preview-api/postgres/quota.ts`. |
 | Financial, health, communications, or form data | No | Peephole has no such feature or permission. Public repositories could contain arbitrary public text, but the extension reads only the bounded analysis files and a requested build processes the public commit. |
 
