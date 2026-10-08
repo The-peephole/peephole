@@ -341,11 +341,28 @@ a {
 }
 
 .peephole__preview-action,
+.peephole__fullstack,
 .peephole__job {
   background: var(--peephole-bg-subtle);
   border: 1px solid var(--peephole-border);
   border-radius: 8px;
   padding: 12px;
+}
+
+.peephole__fullstack {
+  display: grid;
+  gap: 10px;
+}
+
+.peephole__fullstack h3 {
+  color: var(--peephole-fg);
+  font-size: 13px;
+  margin: 0;
+}
+
+.peephole__fullstack-target {
+  display: grid;
+  gap: 6px;
 }
 
 .peephole__preview-action {
@@ -444,5 +461,11 @@ a {
 @keyframes peephole-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .peephole__spinner {
+    animation-duration: 1.6s;
   }
 }

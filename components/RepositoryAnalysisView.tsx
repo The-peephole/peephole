@@ -37,6 +37,9 @@ interface RepositoryAnalysisViewProps {
   renderPreviewControls?: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
   ) => ReactNode
+  renderFullStackPreviewControls?: (
+    analysis: BuildTargetAnalysis & RepositoryAnalysis,
+  ) => ReactNode
   /**
    * Rendered only for a candidate `resolveBackendExecutionSupport` reports
    * as supported -- an unsupported candidate always keeps the plain
@@ -78,6 +81,7 @@ function RepositoryAnalysisSession({
   loadRepositoryBranches,
   loadRepositoryLiveDeployment = unavailableLiveDeploymentLoader,
   renderPreviewControls,
+  renderFullStackPreviewControls,
   renderBackendRuntimeControls,
 }: RepositoryAnalysisViewProps) {
   const [analysisState, setAnalysisState] = useState<AnalysisState>({
@@ -210,6 +214,7 @@ function RepositoryAnalysisSession({
         analysisState={analysisState}
         onRetry={() => setAnalysisRequestVersion((version) => version + 1)}
         renderPreviewControls={renderPreviewControls}
+        renderFullStackPreviewControls={renderFullStackPreviewControls}
         renderBackendRuntimeControls={renderBackendRuntimeControls}
         loadBuildTargetAnalysis={loadBuildTargetAnalysis}
         selectedBranch={selectedBranch}
@@ -326,6 +331,7 @@ function AnalysisContent({
   analysisState,
   onRetry,
   renderPreviewControls,
+  renderFullStackPreviewControls,
   renderBackendRuntimeControls,
   loadBuildTargetAnalysis,
   selectedBranch,
@@ -333,6 +339,9 @@ function AnalysisContent({
   analysisState: AnalysisState
   onRetry: () => void
   renderPreviewControls?: (
+    analysis: BuildTargetAnalysis & RepositoryAnalysis,
+  ) => ReactNode
+  renderFullStackPreviewControls?: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
   ) => ReactNode
   renderBackendRuntimeControls?: (input: {
@@ -370,6 +379,7 @@ function AnalysisContent({
             key={`${preservedAnalysis.repository.repositoryId}:${preservedAnalysis.repository.commitSha}:${selectedBranch}`}
             loadBuildTargetAnalysis={loadBuildTargetAnalysis}
             renderPreviewControls={renderPreviewControls}
+            renderFullStackPreviewControls={renderFullStackPreviewControls}
             renderBackendRuntimeControls={renderBackendRuntimeControls}
           />
         </div>
@@ -382,11 +392,15 @@ function AnalysisResults({
   analysis,
   loadBuildTargetAnalysis,
   renderPreviewControls,
+  renderFullStackPreviewControls,
   renderBackendRuntimeControls,
 }: {
   analysis: RepositoryAnalysis
   loadBuildTargetAnalysis: BuildTargetAnalysisLoader
   renderPreviewControls?: (
+    analysis: BuildTargetAnalysis & RepositoryAnalysis,
+  ) => ReactNode
+  renderFullStackPreviewControls?: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
   ) => ReactNode
   renderBackendRuntimeControls?: (input: {
@@ -482,6 +496,10 @@ function AnalysisResults({
         <>
           <PreviewStatus mode={targetAnalysis.preview.mode} />
           {renderPreviewControls?.({ ...analysis, ...targetAnalysis })}
+          {renderFullStackPreviewControls?.({
+            ...analysis,
+            ...targetAnalysis,
+          })}
 
           <section className="peephole__section">
             <h3>Stack</h3>

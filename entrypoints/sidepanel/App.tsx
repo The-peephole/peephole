@@ -1,7 +1,9 @@
 import { RepositoryAnalysisView } from "../../components/RepositoryAnalysisView"
 import { BackendRuntimeControl } from "../../components/BackendRuntimeControl"
+import { FullStackPreviewPanel } from "../../components/FullStackPreviewPanel"
 import { PreviewJobPanel } from "../../components/PreviewJobPanel"
 import type { BackendRuntimeApi } from "../../core/backendRuntime/apiClient"
+import type { FullStackPreviewApi } from "../../core/fullstack/apiClient"
 import type { PreviewApi } from "../../core/preview/apiClient"
 import type {
   BuildTargetAnalysisLoader,
@@ -27,6 +29,10 @@ interface SidePanelAppProps {
   /** Backend-v1 is intentionally opt-in until production wires and verifies
    * its separate control plane and worker on a real gVisor host. */
   backendRuntimeEnabled?: boolean
+  fullStackPreviewApi?: FullStackPreviewApi | null
+  /** Separate from backend-v1. Kept build-time opt-in until production E2E
+   * has been explicitly approved and completed for the extension build. */
+  fullStackPreviewEnabled?: boolean
 }
 
 export function SidePanelApp({
@@ -41,6 +47,8 @@ export function SidePanelApp({
   previewArtifactBaseDomain = null,
   backendRuntimeApi = null,
   backendRuntimeEnabled = false,
+  fullStackPreviewApi = null,
+  fullStackPreviewEnabled = false,
 }: SidePanelAppProps) {
   return (
     <main className="peephole-panel">
@@ -67,6 +75,20 @@ export function SidePanelApp({
                     connectGitHub={connectGitHub}
                     key={`${repo.repositoryId}:${repo.commitSha}:${candidate.sourceRoot}`}
                     repository={repo}
+                  />
+                )
+              : undefined
+          }
+          renderFullStackPreviewControls={
+            fullStackPreviewEnabled
+              ? (analysis) => (
+                  <FullStackPreviewPanel
+                    analysis={analysis}
+                    configurationError={previewConfigurationError}
+                    connectGitHub={connectGitHub}
+                    fullStackPreviewApi={fullStackPreviewApi}
+                    key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
+                    previewArtifactBaseDomain={previewArtifactBaseDomain}
                   />
                 )
               : undefined

@@ -200,6 +200,11 @@ describe("RepositoryAnalysisView", () => {
         renderPreviewControls: (value) => (
           <span data-testid="selected-target">{value.target.sourceRoot}</span>
         ),
+        renderFullStackPreviewControls: (value) => (
+          <span data-testid="selected-fullstack-target">
+            {value.target.sourceRoot}
+          </span>
+        ),
       },
     )
     const select = container.querySelector<HTMLSelectElement>(
@@ -223,6 +228,10 @@ describe("RepositoryAnalysisView", () => {
     )
     expect(
       container.querySelector('[data-testid="selected-target"]')?.textContent,
+    ).toBe("apps/web")
+    expect(
+      container.querySelector('[data-testid="selected-fullstack-target"]')
+        ?.textContent,
     ).toBe("apps/web")
   })
 
@@ -1258,6 +1267,9 @@ async function renderView(
     renderPreviewControls?: (
       analysis: BuildTargetAnalysis & RepositoryAnalysis,
     ) => ReactNode
+    renderFullStackPreviewControls?: (
+      analysis: BuildTargetAnalysis & RepositoryAnalysis,
+    ) => ReactNode
     renderBackendRuntimeControls?: (input: {
       candidate: BackendCandidate
       repository: RepositoryMetadata
@@ -1280,6 +1292,7 @@ async function renderView(
           (() => Promise.resolve(notDetectedDeployment))
         }
         renderPreviewControls={options.renderPreviewControls}
+        renderFullStackPreviewControls={options.renderFullStackPreviewControls}
         renderBackendRuntimeControls={options.renderBackendRuntimeControls}
         repository={options.repository ?? { owner: "react", repo: "react" }}
       />,

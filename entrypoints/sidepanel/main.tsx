@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client"
 import { createRepositoryAnalysisMessageLoader } from "../../core/analyzer/messages"
 import { createBuildTargetAnalysisMessageLoader } from "../../core/analyzer/targetMessages"
 import { BackendRuntimeApiClient } from "../../core/backendRuntime/apiClient"
+import { FullStackPreviewApiClient } from "../../core/fullstack/apiClient"
 import { createRepositoryBranchesMessageLoader } from "../../core/github/branchMessages"
 import { createLiveDeploymentMessageLoader } from "../../core/github/liveDeploymentMessages"
 import { PreviewApiClient } from "../../core/preview/apiClient"
@@ -44,6 +45,7 @@ const loadRepositoryLiveDeployment = createLiveDeploymentMessageLoader({
 })
 let previewApi: PreviewApiClient | null = null
 let backendRuntimeApi: BackendRuntimeApiClient | null = null
+let fullStackPreviewApi: FullStackPreviewApiClient | null = null
 let reconnectGitHub: (() => Promise<void>) | null = null
 let previewArtifactBaseDomain: string | null = null
 let previewConfigurationError: string | null = null
@@ -52,6 +54,8 @@ let previewConfigurationError: string | null = null
 // unwired /v1/backend-runtimes endpoint.
 const backendRuntimeEnabled =
   import.meta.env.WXT_BACKEND_RUNTIME_ENABLED === "true"
+const fullStackPreviewEnabled =
+  import.meta.env.WXT_FULLSTACK_PREVIEW_ENABLED === "true"
 
 try {
   const previewApiBaseUrl = parsePreviewApiBaseUrl(
@@ -72,6 +76,13 @@ try {
   backendRuntimeApi =
     backendRuntimeEnabled && previewApiBaseUrl
       ? new BackendRuntimeApiClient(previewApiBaseUrl, {
+          getSession: getStoredPreviewSession,
+          clearSession: clearStoredPreviewSession,
+        })
+      : null
+  fullStackPreviewApi =
+    fullStackPreviewEnabled && previewApiBaseUrl
+      ? new FullStackPreviewApiClient(previewApiBaseUrl, {
           getSession: getStoredPreviewSession,
           clearSession: clearStoredPreviewSession,
         })
@@ -125,6 +136,8 @@ createRoot(root).render(
       loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
       backendRuntimeApi={backendRuntimeApi}
       backendRuntimeEnabled={backendRuntimeEnabled}
+      fullStackPreviewApi={fullStackPreviewApi}
+      fullStackPreviewEnabled={fullStackPreviewEnabled}
       connectGitHub={reconnectGitHub}
       previewApi={previewApi}
       previewArtifactBaseDomain={previewArtifactBaseDomain}

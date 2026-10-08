@@ -88,6 +88,8 @@ export function getPreviewFrameSrc(baseDomain?: string | null): string {
 // Same rule as services/artifactServing/staticFile.ts ARTIFACT_ID_SOURCE.
 // Keep server filesystem/Node imports out of the extension bundle.
 const ARTIFACT_ID_PATTERN = /^artifact-[a-f\d]{8}-[a-f\d-]{27}$/
+const FULLSTACK_ID_PATTERN =
+  /^fullstack-[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/
 
 /** Local loopback HTTP or exactly one authorized production artifact label. */
 export function isTrustedPreviewArtifactUrl(
@@ -131,4 +133,52 @@ export function isTrustedPreviewArtifactUrl(
   if (!url.hostname.endsWith(suffix)) return false
   const artifactId = url.hostname.slice(0, -suffix.length)
   return ARTIFACT_ID_PATTERN.test(artifactId)
+}
+
+/** Exactly one HTTPS full-stack preview label under the configured domain. */
+export function isTrustedFullStackPreviewUrl(
+  value: string,
+  productionBaseDomain?: string | null,
+): boolean {
+  if (!productionBaseDomain) return false
+
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.port ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash ||
+    url.toString() !== value ||
+    /[\s\\?#]/.test(value)
+  ) {
+    return false
+  }
+
+  const authority = /^https:\/\/([a-z\d.-]+)(?:\/[^?#]*)?$/i.exec(value)
+  let domain: string | null
+  try {
+    domain = parsePreviewArtifactBaseDomain(productionBaseDomain)
+  } catch {
+    return false
+  }
+  if (
+    !authority ||
+    !domain ||
+    url.hostname !== authority[1]?.toLowerCase() ||
+    url.hostname.length > 253
+  ) {
+    return false
+  }
+
+  const suffix = `.${domain}`
+  if (!url.hostname.endsWith(suffix)) return false
+  return FULLSTACK_ID_PATTERN.test(url.hostname.slice(0, -suffix.length))
 }
