@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   resolveBackendExecutionSupport,
+  resolveFullStackBackendCandidateSupport,
   resolveBackendRuntimePlan,
 } from "../core/analyzer/backendRuntimeAdapter"
 import type { BackendCandidate, BackendFramework } from "../types/backend"
@@ -531,4 +532,36 @@ describe("resolveBackendExecutionSupport", () => {
       ).toBe(true)
     },
   )
+})
+
+describe("resolveFullStackBackendCandidateSupport", () => {
+  it("keeps exact pg + DATABASE_URL eligible only for trusted full-stack admission", () => {
+    const databaseCandidate = candidate({
+      databaseDependencies: ["pg"],
+      environmentRequirements: [
+        requirement({
+          name: "DATABASE_URL",
+          requirementKind: "database-requirement",
+        }),
+      ],
+    })
+
+    expect(resolveBackendExecutionSupport(databaseCandidate).supported).toBe(
+      false,
+    )
+    expect(
+      resolveFullStackBackendCandidateSupport(databaseCandidate),
+    ).toMatchObject({
+      supported: true,
+      adapterId: "express-node-npm-v1",
+    })
+  })
+
+  it("does not promote a backend rejected by the shared narrow plan", () => {
+    expect(
+      resolveFullStackBackendCandidateSupport(
+        candidate({ framework: "fastify" }),
+      ),
+    ).toMatchObject({ supported: false, adapterId: null })
+  })
 })

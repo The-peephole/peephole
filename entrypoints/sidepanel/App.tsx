@@ -1,3 +1,5 @@
+import { useState } from "react"
+
 import { RepositoryAnalysisView } from "../../components/RepositoryAnalysisView"
 import { BackendRuntimeControl } from "../../components/BackendRuntimeControl"
 import { FullStackPreviewPanel } from "../../components/FullStackPreviewPanel"
@@ -10,6 +12,7 @@ import type {
   RepositoryAnalysisLoader,
 } from "../../types/analysis"
 import type { RepositoryLiveDeploymentLoader } from "../../types/deployment"
+import type { FullStackPreview } from "../../types/fullstackPreview"
 import type {
   RepositoryBranchesLoader,
   RepositoryIdentity,
@@ -50,6 +53,9 @@ export function SidePanelApp({
   fullStackPreviewApi = null,
   fullStackPreviewEnabled = false,
 }: SidePanelAppProps) {
+  const [retainedFullStackPreview, setRetainedFullStackPreview] =
+    useState<FullStackPreview | null>(null)
+
   return (
     <main className="peephole-panel">
       <header className="peephole__header">
@@ -88,7 +94,9 @@ export function SidePanelApp({
                     connectGitHub={connectGitHub}
                     fullStackPreviewApi={fullStackPreviewApi}
                     key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
+                    onRetainedPreviewChange={setRetainedFullStackPreview}
                     previewArtifactBaseDomain={previewArtifactBaseDomain}
+                    retainedPreview={retainedFullStackPreview}
                   />
                 )
               : undefined

@@ -138,7 +138,8 @@ export function isTrustedPreviewArtifactUrl(
 /** Exactly one HTTPS full-stack preview label under the configured domain. */
 export function isTrustedFullStackPreviewUrl(
   value: string,
-  productionBaseDomain?: string | null,
+  productionBaseDomain: string | null | undefined,
+  expectedPreviewId: string,
 ): boolean {
   if (!productionBaseDomain) return false
 
@@ -180,5 +181,9 @@ export function isTrustedFullStackPreviewUrl(
 
   const suffix = `.${domain}`
   if (!url.hostname.endsWith(suffix)) return false
-  return FULLSTACK_ID_PATTERN.test(url.hostname.slice(0, -suffix.length))
+  const previewId = url.hostname.slice(0, -suffix.length)
+  return (
+    FULLSTACK_ID_PATTERN.test(previewId) &&
+    previewId.toLowerCase() === expectedPreviewId.toLowerCase()
+  )
 }

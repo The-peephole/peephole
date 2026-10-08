@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react"
+import { act, useState } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -139,6 +139,45 @@ describe("FullStackPreviewPanel", () => {
     )
   })
 
+  it("locks backend selection during create and keeps control of the active job", async () => {
+    let resolveCreate!: (preview: FullStackPreview) => void
+    const create = vi.fn(
+      () =>
+        new Promise<FullStackPreview>((resolve) => {
+          resolveCreate = resolve
+        }),
+    )
+    const api = createApi({ create })
+    const second = { ...databaseBackend, sourceRoot: "services/api" }
+    const container = await renderPanel(
+      api,
+      roots,
+      createAnalysis([databaseBackend, second]),
+    )
+    const select = container.querySelector<HTMLSelectElement>(
+      'select[name="fullstack-backend-target"]',
+    )!
+
+    await act(async () => setSelectValue(select, "backend"))
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+
+    expect(select.disabled).toBe(true)
+    await act(async () => setSelectValue(select, "services/api"))
+    await act(async () => resolveCreate(queued))
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ backendSourceRoot: "backend" }),
+      expect.anything(),
+    )
+    expect(container.textContent).toContain(queued.id)
+    await act(async () =>
+      getButton(container, "Cancel full-stack preview").click(),
+    )
+    expect(api.stop).toHaveBeenCalledWith(queued.id, expect.anything())
+  })
+
   it("does not offer execution for an unsupported frontend or missing backend", async () => {
     const unsupportedFrontend = {
       ...analysis,
@@ -167,6 +206,28 @@ describe("FullStackPreviewPanel", () => {
     expect(
       findButton(backendContainer, "Run full-stack preview"),
     ).toBeUndefined()
+  })
+
+  it("explains an obviously unsupported backend without offering Run", async () => {
+    const unsupportedBackend: BackendCandidate = {
+      ...databaseBackend,
+      framework: "fastify",
+      databaseDependencies: [],
+      environmentRequirements: [],
+    }
+    const container = await renderPanel(
+      createApi(),
+      roots,
+      createAnalysis([unsupportedBackend]),
+    )
+
+    expect(container.textContent).toContain(
+      "fastify execution is not supported yet",
+    )
+    expect(container.textContent).toContain(
+      "No detected backend candidate matches the narrow fullstack-v1 shape",
+    )
+    expect(findButton(container, "Run full-stack preview")).toBeUndefined()
   })
 
   it("polls to ready, embeds only the approved origin, then stops", async () => {
@@ -222,6 +283,83 @@ describe("FullStackPreviewPanel", () => {
 
     expect(container.querySelector("iframe")).toBeNull()
     expect(container.textContent).toContain("not approved for embedding")
+  })
+
+  it("blocks a trusted-origin URL whose full-stack ID does not match", async () => {
+    const otherId = "fullstack-87654321-4321-4321-4321-cba987654321"
+    const api = createApi({
+      create: vi.fn().mockResolvedValue({
+        ...queued,
+        status: "ready",
+        url: `https://${otherId}.preview.example/`,
+      }),
+    })
+    const container = await renderPanel(api, roots)
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+
+    expect(container.querySelector("iframe")).toBeNull()
+    expect(container.textContent).toContain("not approved for embedding")
+  })
+
+  it("removes a ready iframe when its server-provided expiry passes locally", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.parse(queued.createdAt))
+    const ready: FullStackPreview = {
+      ...queued,
+      status: "ready",
+      url: `https://${queued.id}.preview.example/`,
+      expiresAt: "2026-10-08T00:00:00.050Z",
+    }
+    const container = await renderPanel(
+      createApi({ create: vi.fn().mockResolvedValue(ready) }),
+      roots,
+      analysis,
+      1_000,
+    )
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+    expect(container.querySelector("iframe")).not.toBeNull()
+
+    await act(async () => vi.advanceTimersByTimeAsync(50))
+
+    expect(container.querySelector("iframe")).toBeNull()
+    expect(container.querySelector('a[target="_blank"]')).toBeNull()
+    expect(container.textContent).toContain("Preview access expired locally")
+    expect(container.textContent).toContain("Server status")
+  })
+
+  it("hides an expired ready preview even after polling fails", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.parse(queued.createdAt))
+    const ready: FullStackPreview = {
+      ...queued,
+      status: "ready",
+      url: `https://${queued.id}.preview.example/`,
+      expiresAt: "2026-10-08T00:00:00.050Z",
+    }
+    const api = createApi({
+      create: vi.fn().mockResolvedValue(ready),
+      get: vi.fn().mockRejectedValue(new Error("poll unavailable")),
+    })
+    const container = await renderPanel(api, roots, analysis, 10)
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+    expect(container.querySelector("iframe")).not.toBeNull()
+
+    await act(async () => vi.advanceTimersByTimeAsync(10))
+    expect(container.textContent).toContain("poll unavailable")
+    await act(async () => vi.advanceTimersByTimeAsync(40))
+
+    expect(container.querySelector("iframe")).toBeNull()
+    expect(container.querySelector('a[target="_blank"]')).toBeNull()
+    expect(container.textContent).toContain(
+      "Preview access has expired based on the server-provided time",
+    )
+    expect(findButton(container, "Stop full-stack preview")).toBeDefined()
   })
 
   it("removes a ready iframe when the server reports expiry", async () => {
@@ -309,6 +447,38 @@ describe("FullStackPreviewPanel", () => {
 
     expect(firstSignal?.aborted).toBe(true)
     expect(container.textContent).toContain("Run full-stack preview")
+  })
+
+  it("retains an active preview across frontend and branch remounts", async () => {
+    const api = createApi()
+    const { container, root } = await renderRetainedPanelHarness(
+      api,
+      roots,
+      analysis,
+    )
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+    expect(container.textContent).toContain(queued.id)
+
+    const nextAnalysis = {
+      ...analysis,
+      repository: {
+        ...analysis.repository,
+        commitSha: "abcdef0123456789abcdef0123456789abcdef01",
+      },
+      target: { ...analysis.target, sourceRoot: "apps/web" },
+    }
+    await act(async () => {
+      root.render(<RetainedPanelHarness analysis={nextAnalysis} api={api} />)
+    })
+
+    expect(container.textContent).toContain(queued.id)
+    expect(container.textContent).toContain("previously started preview")
+    await act(async () =>
+      getButton(container, "Cancel full-stack preview").click(),
+    )
+    expect(api.stop).toHaveBeenCalledWith(queued.id, expect.anything())
   })
 
   it("reuses the GitHub reconnect flow when no valid session exists", async () => {
@@ -409,6 +579,43 @@ async function renderPanelWithRoot(
         previewArtifactBaseDomain="preview.example"
       />,
     )
+  })
+  return { container, root }
+}
+
+function RetainedPanelHarness({
+  analysis: value,
+  api,
+}: {
+  analysis: BuildTargetAnalysis & RepositoryAnalysis
+  api: FullStackPreviewApi
+}) {
+  const [retainedPreview, setRetainedPreview] =
+    useState<FullStackPreview | null>(null)
+  return (
+    <FullStackPreviewPanel
+      analysis={value}
+      fullStackPreviewApi={api}
+      getSession={() => Promise.resolve(session)}
+      key={`${value.repository.commitSha}:${value.target.sourceRoot}`}
+      onRetainedPreviewChange={setRetainedPreview}
+      previewArtifactBaseDomain="preview.example"
+      retainedPreview={retainedPreview}
+    />
+  )
+}
+
+async function renderRetainedPanelHarness(
+  api: FullStackPreviewApi,
+  roots: Root[],
+  value: BuildTargetAnalysis & RepositoryAnalysis,
+): Promise<{ container: HTMLDivElement; root: Root }> {
+  const container = document.createElement("div")
+  document.body.append(container)
+  const root = createRoot(container)
+  roots.push(root)
+  await act(async () => {
+    root.render(<RetainedPanelHarness analysis={value} api={api} />)
   })
   return { container, root }
 }

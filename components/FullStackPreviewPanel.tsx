@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useId,
   useMemo,
@@ -9,6 +10,7 @@ import {
   type SetStateAction,
 } from "react"
 
+import { resolveFullStackBackendCandidateSupport } from "../core/analyzer/backendRuntimeAdapter"
 import {
   FullStackPreviewApiError,
   createFullStackPreviewRequest,
@@ -37,14 +39,12 @@ type AuthenticationStatus = "checking" | "authenticated" | "unauthenticated"
 type FullStackPreviewUiState =
   | { status: "idle" }
   | { status: "creating" }
-  | { status: "preview"; preview: FullStackPreview }
-  | { status: "stopping"; preview: FullStackPreview }
+  | { status: "stopping" }
   | { status: "authenticating" }
   | {
       status: "error"
       message: string
       requiresAuthentication: boolean
-      preview?: FullStackPreview
     }
 
 export interface FullStackPreviewPanelProps {
@@ -56,6 +56,8 @@ export interface FullStackPreviewPanelProps {
   getSession?: () => Promise<StoredPreviewSession | null>
   clearSession?: () => Promise<void>
   pollIntervalMs?: number
+  retainedPreview?: FullStackPreview | null
+  onRetainedPreviewChange?: (preview: FullStackPreview | null) => void
 }
 
 export function FullStackPreviewPanel({
@@ -67,15 +69,28 @@ export function FullStackPreviewPanel({
   getSession = getStoredPreviewSession,
   clearSession = clearStoredPreviewSession,
   pollIntervalMs = 2_000,
+  retainedPreview,
+  onRetainedPreviewChange,
 }: FullStackPreviewPanelProps) {
   const candidates = analysis.backend.candidates
+  const candidateOptions = useMemo(
+    () =>
+      candidates.map((candidate) => ({
+        candidate,
+        support: resolveFullStackBackendCandidateSupport(candidate),
+      })),
+    [candidates],
+  )
+  const supportedCandidates = candidateOptions
+    .filter(({ support }) => support.supported)
+    .map(({ candidate }) => candidate)
   const backendSelectionId = useId()
   const backendSelectionHelpId = useId()
   const [backendSourceRoot, setBackendSourceRoot] = useState(
-    candidates.length === 1 &&
+    supportedCandidates.length === 1 &&
       analysis.backend.complete &&
       !analysis.backend.truncated
-      ? candidates[0]!.sourceRoot
+      ? supportedCandidates[0]!.sourceRoot
       : "",
   )
   const [state, setState] = useState<FullStackPreviewUiState>({
@@ -85,6 +100,19 @@ export function FullStackPreviewPanel({
     useState<AuthenticationStatus>("checking")
   const activeRequest = useRef<AbortController | null>(null)
   const createKey = useRef<string | null>(null)
+  const [localPreview, setLocalPreview] = useState<FullStackPreview | null>(
+    null,
+  )
+  const [locallyExpired, setLocallyExpired] = useState(false)
+  const usesLocalPreview = retainedPreview === undefined
+  const preview = usesLocalPreview ? localPreview : retainedPreview
+  const setRetainedPreview = useCallback(
+    (nextPreview: FullStackPreview | null) => {
+      if (usesLocalPreview) setLocalPreview(nextPreview)
+      onRetainedPreviewChange?.(nextPreview)
+    },
+    [onRetainedPreviewChange, usesLocalPreview],
+  )
   const repository = useMemo(
     () => ({
       repositoryId: analysis.repository.repositoryId,
@@ -95,7 +123,7 @@ export function FullStackPreviewPanel({
     [analysis.repository],
   )
   const requestIdentity = `${repository.repositoryId}:${repository.commitSha}:${analysis.target.sourceRoot}:${backendSourceRoot}`
-  const selectedBackend = candidates.find(
+  const selectedBackend = supportedCandidates.find(
     (candidate) => candidate.sourceRoot === backendSourceRoot,
   )
   const detectionIsComplete =
@@ -138,8 +166,9 @@ export function FullStackPreviewPanel({
   useEffect(() => {
     if (
       !fullStackPreviewApi ||
-      state.status !== "preview" ||
-      TERMINAL_STATUSES.has(state.preview.status)
+      !preview ||
+      state.status !== "idle" ||
+      TERMINAL_STATUSES.has(preview.status)
     ) {
       return
     }
@@ -147,16 +176,16 @@ export function FullStackPreviewPanel({
     const abortController = new AbortController()
     const timeout = window.setTimeout(() => {
       void fullStackPreviewApi
-        .get(state.preview.id, { signal: abortController.signal })
+        .get(preview.id, { signal: abortController.signal })
         .then(
-          (preview) => {
+          (nextPreview) => {
             if (!abortController.signal.aborted) {
-              setState({ status: "preview", preview })
+              setRetainedPreview(nextPreview)
             }
           },
           (error: unknown) => {
             if (!abortController.signal.aborted) {
-              setState(createErrorState(error, state.preview))
+              setState(createErrorState(error))
               if (isAuthenticationError(error)) {
                 setAuthenticationStatus("unauthenticated")
               }
@@ -169,7 +198,42 @@ export function FullStackPreviewPanel({
       window.clearTimeout(timeout)
       abortController.abort()
     }
-  }, [fullStackPreviewApi, pollIntervalMs, requestIdentity, state])
+  }, [
+    fullStackPreviewApi,
+    pollIntervalMs,
+    preview,
+    requestIdentity,
+    setRetainedPreview,
+    state.status,
+  ])
+
+  useEffect(() => {
+    if (!preview || preview.status !== "ready") {
+      setLocallyExpired(false)
+      return
+    }
+
+    const expiresAt = Date.parse(preview.expiresAt)
+    if (!Number.isFinite(expiresAt)) {
+      setLocallyExpired(true)
+      return
+    }
+
+    let timer: number | undefined
+    const checkExpiry = () => {
+      const remaining = expiresAt - Date.now()
+      if (remaining <= 0) {
+        setLocallyExpired(true)
+      } else {
+        setLocallyExpired(false)
+        timer = window.setTimeout(checkExpiry, Math.min(remaining, 60_000))
+      }
+    }
+    checkExpiry()
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [preview?.expiresAt, preview?.id, preview?.status])
 
   const start = () => {
     if (!fullStackPreviewApi || !selectedBackend) return
@@ -184,8 +248,14 @@ export function FullStackPreviewPanel({
       setState,
       createKey,
       setAuthenticationStatus,
+      setRetainedPreview,
     )
   }
+
+  const displayedFrontendSourceRoot =
+    preview?.frontendSourceRoot ?? analysis.target.sourceRoot
+  const displayedBackendSourceRoot =
+    preview?.backendSourceRoot ?? selectedBackend?.sourceRoot ?? null
 
   return (
     <section
@@ -201,22 +271,38 @@ export function FullStackPreviewPanel({
         <div className="peephole__detail">
           <dt>Frontend</dt>
           <dd>
-            <code>{analysis.target.sourceRoot}</code>
+            <code>{displayedFrontendSourceRoot}</code>
           </dd>
         </div>
         <div className="peephole__detail">
           <dt>Backend</dt>
           <dd>
-            {selectedBackend ? (
-              <code>{selectedBackend.sourceRoot}</code>
+            {displayedBackendSourceRoot ? (
+              <code>{displayedBackendSourceRoot}</code>
             ) : (
               "Choose a target"
             )}
           </dd>
         </div>
+        {preview && (
+          <div className="peephole__detail">
+            <dt>Commit</dt>
+            <dd>
+              <code title={preview.repository.commitSha}>
+                {preview.repository.commitSha.slice(0, 7)}
+              </code>
+            </dd>
+          </div>
+        )}
       </dl>
 
-      {candidates.length > 1 && detectionIsComplete && (
+      {preview &&
+        (preview.repository.commitSha !== analysis.repository.commitSha ||
+          preview.frontendSourceRoot !== analysis.target.sourceRoot) && (
+          <FullStackNotice message="These controls remain attached to the previously started preview. Stop or finish it before running the newly selected target." />
+        )}
+
+      {candidateOptions.length > 1 && detectionIsComplete && !preview && (
         <div className="peephole__fullstack-target">
           <label
             className="peephole__branch-label"
@@ -234,30 +320,56 @@ export function FullStackPreviewPanel({
           <select
             aria-describedby={backendSelectionHelpId}
             className="peephole__branch-select"
+            disabled={state.status === "creating"}
             id={backendSelectionId}
             name="fullstack-backend-target"
-            onChange={(event) =>
+            onChange={(event) => {
+              if (state.status === "creating") return
               setBackendSourceRoot(event.currentTarget.value)
-            }
+            }}
             value={backendSourceRoot}
           >
             <option value="">Choose a backend</option>
-            {candidates.map((candidate) => (
-              <option key={candidate.sourceRoot} value={candidate.sourceRoot}>
+            {candidateOptions.map(({ candidate, support }) => (
+              <option
+                disabled={!support.supported}
+                key={candidate.sourceRoot}
+                value={candidate.sourceRoot}
+              >
                 {formatCandidate(candidate)}
+                {support.supported ? "" : " — not eligible"}
               </option>
             ))}
           </select>
         </div>
       )}
 
-      {!frontendIsEligible ? (
+      {!preview &&
+        candidateOptions.some(({ support }) => !support.supported) && (
+          <ul
+            className="peephole__list"
+            aria-label="Unavailable backends"
+            role="list"
+          >
+            {candidateOptions
+              .filter(({ support }) => !support.supported)
+              .map(({ candidate, support }) => (
+                <li key={candidate.sourceRoot}>
+                  <code>{candidate.sourceRoot}</code>: {support.evidence[0]}
+                </li>
+              ))}
+          </ul>
+        )}
+
+      {!preview && !frontendIsEligible ? (
         <FullStackNotice message="The selected frontend does not qualify for a native build. Full-stack preview is unavailable." />
-      ) : !detectionIsComplete ? (
+      ) : !preview && !detectionIsComplete ? (
         <FullStackNotice message="Backend detection is incomplete or ambiguous. Re-run analysis before starting a full-stack preview." />
-      ) : candidates.length === 0 ? (
+      ) : !preview && candidates.length === 0 ? (
         <FullStackNotice message="No backend candidate was detected for this commit." />
-      ) : !selectedBackend ? (
+      ) : !preview && supportedCandidates.length === 0 ? (
+        <FullStackNotice message="No detected backend candidate matches the narrow fullstack-v1 shape. Server admission remains authoritative." />
+      ) : !preview && !selectedBackend ? (
         <FullStackNotice message="Choose an explicit backend target to continue." />
       ) : configurationError ? (
         <FullStackNotice message={configurationError} />
@@ -283,19 +395,15 @@ export function FullStackPreviewPanel({
                 void connectGitHub().then(
                   () => {
                     setAuthenticationStatus("authenticated")
-                    if (pendingError?.preview) {
-                      setState({
-                        status: "preview",
-                        preview: pendingError.preview,
-                      })
+                    if (preview) {
+                      setState({ status: "idle" })
                     } else if (pendingError) {
                       start()
                     } else {
                       setState({ status: "idle" })
                     }
                   },
-                  (error: unknown) =>
-                    setState(createErrorState(error, undefined, true)),
+                  (error: unknown) => setState(createErrorState(error, true)),
                 )
               }}
               type="button"
@@ -309,10 +417,6 @@ export function FullStackPreviewPanel({
             </p>
           </div>
         )
-      ) : state.status === "idle" ? (
-        <button className="peephole__primary" onClick={start} type="button">
-          Run full-stack preview
-        </button>
       ) : state.status === "creating" ? (
         <FullStackProgress label="Creating full-stack preview..." />
       ) : state.status === "authenticating" ? (
@@ -323,38 +427,65 @@ export function FullStackPreviewPanel({
         <section className="peephole__job peephole__job--error" role="alert">
           <strong>Full-stack preview request failed</strong>
           <p>{state.message}</p>
-          <button
-            className="peephole__secondary"
-            onClick={() => {
-              if (state.preview) {
-                setState({ status: "preview", preview: state.preview })
-              } else {
-                start()
-              }
-            }}
-            type="button"
-          >
-            {state.preview ? "Check status" : "Retry"}
-          </button>
+          {locallyExpired && preview && (
+            <p>
+              Preview access has expired based on the server-provided time.
+              Server status and cleanup remain authoritative.
+            </p>
+          )}
+          <div className="peephole__job-heading">
+            <button
+              className="peephole__secondary"
+              onClick={() => (preview ? setState({ status: "idle" }) : start())}
+              type="button"
+            >
+              {preview ? "Check status" : "Retry"}
+            </button>
+            {preview && !TERMINAL_STATUSES.has(preview.status) && (
+              <button
+                className="peephole__secondary"
+                onClick={() =>
+                  stopFullStackPreview(
+                    fullStackPreviewApi,
+                    preview,
+                    activeRequest,
+                    setState,
+                    setAuthenticationStatus,
+                    setRetainedPreview,
+                  )
+                }
+                type="button"
+              >
+                Stop full-stack preview
+              </button>
+            )}
+          </div>
         </section>
-      ) : (
+      ) : preview ? (
         <FullStackPreviewState
-          preview={state.preview}
+          locallyExpired={locallyExpired}
+          preview={preview}
           previewArtifactBaseDomain={previewArtifactBaseDomain}
           onReset={() => {
             createKey.current = null
+            setRetainedPreview(null)
             setState({ status: "idle" })
           }}
           onStop={() =>
             stopFullStackPreview(
               fullStackPreviewApi,
-              state.preview,
+              preview,
               activeRequest,
               setState,
               setAuthenticationStatus,
+              setRetainedPreview,
             )
           }
         />
+      ) : (
+        <button className="peephole__primary" onClick={start} type="button">
+          Run full-stack preview
+        </button>
       )}
     </section>
   )
@@ -362,19 +493,43 @@ export function FullStackPreviewPanel({
 
 function FullStackPreviewState({
   preview,
+  locallyExpired,
   previewArtifactBaseDomain,
   onReset,
   onStop,
 }: {
   preview: FullStackPreview
+  locallyExpired: boolean
   previewArtifactBaseDomain: string | null
   onReset: () => void
   onStop: () => void
 }) {
   if (preview.status === "ready") {
+    if (locallyExpired) {
+      return (
+        <section className="peephole__job" role="status">
+          <strong>Preview access expired locally</strong>
+          <p>
+            The server-provided expiration time has passed. Server status and
+            resource cleanup remain authoritative.
+          </p>
+          <button
+            className="peephole__secondary"
+            onClick={onStop}
+            type="button"
+          >
+            Stop full-stack preview
+          </button>
+        </section>
+      )
+    }
     const trusted =
       preview.url !== null &&
-      isTrustedFullStackPreviewUrl(preview.url, previewArtifactBaseDomain)
+      isTrustedFullStackPreviewUrl(
+        preview.url,
+        previewArtifactBaseDomain,
+        preview.id,
+      )
     return (
       <section className="peephole__job peephole__job--ready" role="status">
         <strong>Full-stack preview ready</strong>
@@ -461,6 +616,7 @@ function startFullStackPreview(
   setState: Dispatch<SetStateAction<FullStackPreviewUiState>>,
   createKey: MutableRefObject<string | null>,
   setAuthenticationStatus: Dispatch<SetStateAction<AuthenticationStatus>>,
+  setRetainedPreview: (preview: FullStackPreview | null) => void,
 ): void {
   if (activeRequest.current && !activeRequest.current.signal.aborted) return
   activeRequest.current?.abort()
@@ -478,7 +634,8 @@ function startFullStackPreview(
       (preview) => {
         if (!abortController.signal.aborted) {
           activeRequest.current = null
-          setState({ status: "preview", preview })
+          setRetainedPreview(preview)
+          setState({ status: "idle" })
         }
       },
       (error: unknown) => {
@@ -499,24 +656,26 @@ function stopFullStackPreview(
   activeRequest: MutableRefObject<AbortController | null>,
   setState: Dispatch<SetStateAction<FullStackPreviewUiState>>,
   setAuthenticationStatus: Dispatch<SetStateAction<AuthenticationStatus>>,
+  setRetainedPreview: (preview: FullStackPreview | null) => void,
 ): void {
   if (activeRequest.current && !activeRequest.current.signal.aborted) return
   activeRequest.current?.abort()
   const abortController = new AbortController()
   activeRequest.current = abortController
-  setState({ status: "stopping", preview })
+  setState({ status: "stopping" })
 
   void api.stop(preview.id, { signal: abortController.signal }).then(
     (stopped) => {
       if (!abortController.signal.aborted) {
         activeRequest.current = null
-        setState({ status: "preview", preview: stopped })
+        setRetainedPreview(stopped)
+        setState({ status: "idle" })
       }
     },
     (error: unknown) => {
       if (!abortController.signal.aborted) {
         activeRequest.current = null
-        setState(createErrorState(error, preview))
+        setState(createErrorState(error))
         if (isAuthenticationError(error)) {
           setAuthenticationStatus("unauthenticated")
         }
@@ -554,7 +713,6 @@ function isAuthenticationError(error: unknown): boolean {
 
 function createErrorState(
   error: unknown,
-  preview?: FullStackPreview,
   requiresAuthentication = isAuthenticationError(error),
 ): Extract<FullStackPreviewUiState, { status: "error" }> {
   return {
@@ -564,6 +722,5 @@ function createErrorState(
         ? error.message
         : "The full-stack preview service could not complete the request.",
     requiresAuthentication,
-    ...(preview ? { preview } : {}),
   }
 }

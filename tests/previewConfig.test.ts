@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  isTrustedFullStackPreviewUrl,
   isTrustedPreviewArtifactUrl,
   parsePreviewArtifactBaseDomain,
   getPreviewFrameSrc,
@@ -116,6 +117,28 @@ describe("production artifact URLs", () => {
         productionDomain,
       ),
     ).toBe(true)
+  })
+})
+
+describe("full-stack preview URLs", () => {
+  const previewId = "fullstack-12345678-1234-1234-1234-123456789abc"
+  const otherPreviewId = "fullstack-87654321-4321-4321-4321-cba987654321"
+
+  it("requires the hostname ID to match the returned preview ID", () => {
+    expect(
+      isTrustedFullStackPreviewUrl(
+        `https://${previewId}.${productionDomain}/`,
+        productionDomain,
+        previewId,
+      ),
+    ).toBe(true)
+    expect(
+      isTrustedFullStackPreviewUrl(
+        `https://${otherPreviewId}.${productionDomain}/`,
+        productionDomain,
+        previewId,
+      ),
+    ).toBe(false)
   })
 })
 

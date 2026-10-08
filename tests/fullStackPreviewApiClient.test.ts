@@ -180,7 +180,13 @@ describe("full-stack preview URL policy", () => {
       false,
     ],
   ])("validates %s", (url, expected) => {
-    expect(isTrustedFullStackPreviewUrl(url, "preview.example")).toBe(expected)
+    expect(
+      isTrustedFullStackPreviewUrl(
+        url,
+        "preview.example",
+        "fullstack-12345678-1234-1234-1234-123456789abc",
+      ),
+    ).toBe(expected)
   })
 })
 
