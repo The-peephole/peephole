@@ -10,7 +10,10 @@ import {
   type SetStateAction,
 } from "react"
 
-import { resolveFullStackBackendCandidateSupport } from "../core/analyzer/backendRuntimeAdapter"
+import {
+  resolveBackendExecutionSupport,
+  resolveBackendRuntimePlan,
+} from "../core/analyzer/backendRuntimeAdapter"
 import {
   FullStackPreviewApiError,
   createFullStackPreviewRequest,
@@ -24,7 +27,9 @@ import {
 } from "../core/preview/sessionStorage"
 import type { BuildTargetAnalysis, RepositoryAnalysis } from "../types/analysis"
 import type { BackendCandidate } from "../types/backend"
+import type { BackendExecutionSupport } from "../types/backendRuntime"
 import type { FullStackPreview } from "../types/fullstackPreview"
+import type { PreviewRepositoryRef } from "../types/preview"
 
 const TERMINAL_STATUSES = new Set<FullStackPreview["status"]>([
   "stopped",
@@ -72,14 +77,23 @@ export function FullStackPreviewPanel({
   retainedPreview,
   onRetainedPreviewChange,
 }: FullStackPreviewPanelProps) {
+  const repository = useMemo(
+    () => ({
+      repositoryId: analysis.repository.repositoryId,
+      owner: analysis.repository.owner,
+      name: analysis.repository.repo,
+      commitSha: analysis.repository.commitSha,
+    }),
+    [analysis.repository],
+  )
   const candidates = analysis.backend.candidates
   const candidateOptions = useMemo(
     () =>
       candidates.map((candidate) => ({
         candidate,
-        support: resolveFullStackBackendCandidateSupport(candidate),
+        support: resolveFullStackCandidateSupport(repository, candidate),
       })),
-    [candidates],
+    [candidates, repository],
   )
   const supportedCandidates = candidateOptions
     .filter(({ support }) => support.supported)
@@ -112,15 +126,6 @@ export function FullStackPreviewPanel({
       onRetainedPreviewChange?.(nextPreview)
     },
     [onRetainedPreviewChange, usesLocalPreview],
-  )
-  const repository = useMemo(
-    () => ({
-      repositoryId: analysis.repository.repositoryId,
-      owner: analysis.repository.owner,
-      name: analysis.repository.repo,
-      commitSha: analysis.repository.commitSha,
-    }),
-    [analysis.repository],
   )
   const requestIdentity = `${repository.repositoryId}:${repository.commitSha}:${analysis.target.sourceRoot}:${backendSourceRoot}`
   const selectedBackend = supportedCandidates.find(
@@ -688,6 +693,25 @@ function formatCandidate(candidate: BackendCandidate): string {
   const framework =
     candidate.framework === "unknown" ? "Node.js" : candidate.framework
   return `${candidate.sourceRoot} (${framework})`
+}
+
+function resolveFullStackCandidateSupport(
+  repository: PreviewRepositoryRef,
+  candidate: BackendCandidate,
+): BackendExecutionSupport {
+  const standaloneSupport = resolveBackendExecutionSupport(candidate)
+  if (standaloneSupport.supported) return standaloneSupport
+
+  const trustedPlan = resolveBackendRuntimePlan(repository, candidate)
+  return trustedPlan?.databaseRequirement
+    ? {
+        supported: true,
+        adapterId: trustedPlan.adapterId,
+        evidence: [
+          "The exact pg + DATABASE_URL shape is eligible for trusted full-stack admission; the server will verify the exact commit.",
+        ],
+      }
+    : standaloneSupport
 }
 
 function formatStatus(status: FullStackPreview["status"]): string {

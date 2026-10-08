@@ -67,29 +67,6 @@ export function resolveBackendExecutionSupport(
 }
 
 /**
- * Detection-only hint for the separate fullstack-v1 UI. It intentionally
- * shares the server plan's narrow rejection policy instead of copying it
- * into a component, but never authorizes execution: production admission
- * independently re-resolves the exact commit and remains authoritative.
- * Unlike standalone backend-v1 support, the exact pg + DATABASE_URL shape
- * is eligible here because trusted FullStack orchestration owns its database.
- */
-export function resolveFullStackBackendCandidateSupport(
-  candidate: BackendCandidate,
-): BackendExecutionSupport {
-  const rejection = findUnsupportedPlanReason(candidate)
-  return rejection
-    ? { supported: false, adapterId: null, evidence: [rejection] }
-    : {
-        supported: true,
-        adapterId: "express-node-npm-v1",
-        evidence: [
-          "Detected metadata matches the narrow fullstack-v1 backend candidate shape; server admission will verify the exact commit.",
-        ],
-      }
-}
-
-/**
  * Independently re-derives the plan a job would run with -- never accepts
  * one from a client. Returns null for anything not covered by
  * `express-node-npm-v1`; callers must treat null as "unsupported", not
