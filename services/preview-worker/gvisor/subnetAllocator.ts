@@ -280,9 +280,12 @@ export class NetworkLeaseManager {
     })
   }
 
+  /** Holds the allocation lock so a concurrent `release()` cannot remove a
+   * lease between `readdir` and its per-entry validation. Must not be called
+   * from inside `withAllocationLock` (the lock is not reentrant). */
   async listOwnedLeases(): Promise<NetworkLease[]> {
     const root = await this.getLeaseRoot()
-    return this.listOwnedLeasesUnlocked(root)
+    return this.withAllocationLock(() => this.listOwnedLeasesUnlocked(root))
   }
 
   async requireOwnedLease(candidate: string): Promise<NetworkLease> {

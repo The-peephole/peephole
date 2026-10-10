@@ -4,11 +4,12 @@ import {
   readFile,
   readdir,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   NetworkOrphanReaper,
@@ -605,6 +606,7 @@ describe("NetworkOrphanReaper maintenance vs. normal Stop", () => {
   })
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     await rm(root, { recursive: true, force: true })
   })
 
@@ -624,6 +626,50 @@ describe("NetworkOrphanReaper maintenance vs. normal Stop", () => {
       await action()
     }
   }
+
+  /**
+   * Starts `stop` once, between lease enumeration's `readdir` and its first
+   * per-entry read. If enumeration does not hold the allocation lock, the
+   * Stop's release can finish first -- the production interleaving -- so it
+   * is awaited; if it does, the release must queue behind enumeration.
+   */
+  function duringLeaseEnumeration(stop: () => Promise<void>) {
+    const lockDir = path.join(root, ".peephole-network-allocation.lock")
+    const requireOwnedLease = manager.requireOwnedLease.bind(manager)
+    let started: Promise<void> | undefined
+    vi.spyOn(manager, "requireOwnedLease").mockImplementationOnce(
+      async (candidate) => {
+        started = stop()
+        const lockHeld = await stat(lockDir).then(
+          () => true,
+          () => false,
+        )
+        if (!lockHeld) await started
+        return requireOwnedLease(candidate)
+      },
+    )
+    return () => started
+  }
+
+  it("enumerates leases consistently while a Stop releases one", async () => {
+    const lease = await allocate(manager)
+    const release = duringLeaseEnumeration(() => manager.release(lease))
+
+    await expect(manager.listOwnedLeases()).resolves.toEqual([lease])
+    await expect(release()).resolves.toBeUndefined()
+    expect(await manager.listOwnedLeases()).toEqual([])
+  })
+
+  it("survives a Stop that releases its lease during maintenance enumeration", async () => {
+    const handle = await provisioner.create(allocationId, ["172.31.0.2"])
+    const stop = duringLeaseEnumeration(() => handle.teardown())
+
+    await expect(maintenanceReaper.reap()).resolves.toBeUndefined()
+    await expect(stop()).resolves.toBeUndefined()
+
+    expect(await manager.listOwnedLeases()).toEqual([])
+    expectHostClean()
+  })
 
   it("accepts a lease that a normal Stop fully released right after the snapshot", async () => {
     const handle = await provisioner.create(allocationId, ["172.31.0.2"])
