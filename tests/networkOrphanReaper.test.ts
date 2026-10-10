@@ -39,8 +39,22 @@ class FakeNetworkHost implements ProcessRunner {
   namespaceRoutes = new Map<string, unknown[]>()
   fail: ((command: string, args: string[]) => boolean) | undefined
   ignoreDeletes = false
+  /** Deterministic interleaving points: before a command reads host state,
+   * and after it has read state but before its caller resumes. */
+  beforeCommand:
+    ((command: string, args: string[]) => Promise<void> | void) | undefined
+  afterCommand:
+    ((command: string, args: string[]) => Promise<void> | void) | undefined
+  onNamespaceDeleted: ((namespace: string) => void) | undefined
 
   async run(command: string, args: string[]): Promise<ProcessRunResult> {
+    await this.beforeCommand?.(command, args)
+    const output = this.dispatch(command, args)
+    await this.afterCommand?.(command, args)
+    return output
+  }
+
+  private dispatch(command: string, args: string[]): ProcessRunResult {
     if (this.fail?.(command, args)) return result(1, "", "injected")
     if (command === "ip") return this.runIp(args)
     if (command === "iptables") return this.runTable(args, false)
@@ -99,6 +113,24 @@ class FakeNetworkHost implements ProcessRunner {
         [...this.links]
           .map((name, index) => `${index + 1}: ${name}: <UP>\n`)
           .join(""),
+      )
+    }
+    if (
+      ((args[0] === "-j" && args[1] === "addr") ||
+        (args[0] === "-d" && args[1] === "-j" && args[2] === "link")) &&
+      !this.links.has(args.at(-1) ?? "")
+    ) {
+      return result(1, "", `Device "${args.at(-1) ?? ""}" does not exist.`)
+    }
+    if (
+      args[0] === "netns" &&
+      args[1] === "exec" &&
+      !this.namespaces.has(args[2] ?? "")
+    ) {
+      return result(
+        255,
+        "",
+        `Cannot open network namespace "${args[2] ?? ""}": No such file or directory`,
       )
     }
     if (args[0] === "-j" && args[1] === "addr") {
@@ -196,7 +228,10 @@ class FakeNetworkHost implements ProcessRunner {
       return result(0)
     }
     if (args[0] === "netns" && args[1] === "delete") {
-      if (!this.ignoreDeletes) this.namespaces.delete(args[2] ?? "")
+      if (!this.ignoreDeletes) {
+        this.namespaces.delete(args[2] ?? "")
+        this.onNamespaceDeleted?.(args[2] ?? "")
+      }
       return result(0)
     }
     return result(1, "", "unexpected ip command")
@@ -519,6 +554,194 @@ describe("NetworkOrphanReaper", () => {
     })
     await reaper.reap()
     expect(await readdir(leaseDirPath)).toEqual(["lease.json"])
+  })
+})
+
+/** Records when a lease mutex is requested while another holder runs. */
+class ObservedAllocationRegistry extends NetworkAllocationRegistry {
+  private readonly held = new Set<string>()
+  readonly contended: string[] = []
+
+  override runExclusive<T>(
+    allocationId: string,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    if (this.held.has(allocationId)) this.contended.push(allocationId)
+    return super.runExclusive(allocationId, async () => {
+      this.held.add(allocationId)
+      try {
+        return await action()
+      } finally {
+        this.held.delete(allocationId)
+      }
+    })
+  }
+}
+
+describe("NetworkOrphanReaper maintenance vs. normal Stop", () => {
+  const allocationId = "e".repeat(32)
+  let root: string
+  let manager: NetworkLeaseManager
+  let host: FakeNetworkHost
+  let activity: ObservedAllocationRegistry
+  let provisioner: VethNatNetworkProvisioner
+  let maintenanceReaper: NetworkOrphanReaper
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), "peephole-network-race-"))
+    manager = managerFor(root, true)
+    host = new FakeNetworkHost()
+    activity = new ObservedAllocationRegistry()
+    provisioner = new VethNatNetworkProvisioner({
+      leaseManager: manager,
+      processRunner: host,
+      activityRegistry: activity,
+    })
+    maintenanceReaper = new NetworkOrphanReaper({
+      leaseManager: manager,
+      processRunner: host,
+      activityRegistry: activity,
+    })
+  })
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  function expectHostClean() {
+    expect(host.namespaces).toEqual(new Set())
+    expect(host.links).toEqual(new Set())
+    expect(host.ipv4).toEqual([])
+    expect(host.ipv6).toEqual([])
+    expect(host.nat).toEqual([])
+  }
+
+  /** Runs `action` once, right after the reaper's first full host snapshot. */
+  function afterFirstSnapshot(action: () => Promise<void>) {
+    host.afterCommand = async (command, args) => {
+      if (command !== "ip6tables" || !args.includes("-S")) return
+      host.afterCommand = undefined
+      await action()
+    }
+  }
+
+  it("accepts a lease that a normal Stop fully released right after the snapshot", async () => {
+    const handle = await provisioner.create(allocationId, ["172.31.0.2"])
+    afterFirstSnapshot(() => handle.teardown())
+
+    await expect(maintenanceReaper.reap()).resolves.toBeUndefined()
+
+    expect(await manager.listOwnedLeases()).toEqual([])
+    expectHostClean()
+  })
+
+  it("serializes a Stop that begins while the reaper inspects the namespace", async () => {
+    const handle = await provisioner.create(allocationId, ["172.31.0.2"])
+    let resolveDeleted!: () => void
+    const namespaceDeleted = new Promise<void>((resolve) => {
+      resolveDeleted = resolve
+    })
+    host.onNamespaceDeleted = () => resolveDeleted()
+    let stop: Promise<void> | undefined
+    host.beforeCommand = async (command, args) => {
+      if (command !== "ip" || args[1] !== "exec" || !args.includes("addr")) {
+        return
+      }
+      host.beforeCommand = undefined
+      stop = handle.teardown()
+      // Without the lease mutex the Stop runs to namespace deletion before
+      // this inspection reads host state -- the production interleaving.
+      if (activity.contended.length === 0) await namespaceDeleted
+    }
+
+    await expect(maintenanceReaper.reap()).resolves.toBeUndefined()
+    await expect(stop).resolves.toBeUndefined()
+
+    expect(activity.contended).toContain(allocationId)
+    expect(await manager.listOwnedLeases()).toEqual([])
+    expectHostClean()
+  })
+
+  it("fails closed when a released lease's namespace is gone but its other resources remain", async () => {
+    const lease = await allocate(manager)
+    host.install(lease, "full")
+    afterFirstSnapshot(async () => {
+      host.namespaces.delete(lease.namespace)
+      await manager.release(lease)
+    })
+
+    await expect(maintenanceReaper.reap()).rejects.toThrow(
+      /remain after cleanup/,
+    )
+
+    expect(host.links).toContain(lease.hostVeth)
+    expect(host.ipv4).toContainEqual(["-N", lease.egressChain])
+    expect(host.nat).toHaveLength(1)
+  })
+
+  it("refuses a lease path that a different allocation re-took after the snapshot", async () => {
+    const old = await allocate(manager)
+    host.install(old, "full")
+    const replacementId = "9".repeat(32)
+    afterFirstSnapshot(async () => {
+      // A valid marker for a different, active allocation at the same path.
+      const markerPath = path.join(old.leaseDir, "lease.json")
+      const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<
+        string,
+        unknown
+      >
+      Object.assign(marker, {
+        allocationId: replacementId,
+        ...deriveNetworkNames(replacementId, old.index),
+      })
+      await writeFile(markerPath, JSON.stringify(marker))
+      activity.activate(replacementId)
+    })
+
+    await expect(maintenanceReaper.reap()).rejects.toThrow(/changed identity/)
+
+    const [replacement] = await manager.listOwnedLeases()
+    expect(replacement?.allocationId).toBe(replacementId)
+    expect(host.namespaces).toContain(old.namespace)
+    expect(host.links).toContain(old.hostVeth)
+    expect(host.nat).toHaveLength(1)
+  })
+
+  it("fails closed when a listed lease marker becomes unreadable", async () => {
+    const lease = await allocate(manager)
+    host.install(lease, "full")
+    afterFirstSnapshot(() =>
+      writeFile(path.join(lease.leaseDir, "lease.json"), "{"),
+    )
+
+    await expect(maintenanceReaper.reap()).rejects.toThrow(/malformed/)
+
+    expect(host.namespaces).toContain(lease.namespace)
+    expect(host.links).toContain(lease.hostVeth)
+  })
+
+  it("still reclaims a stale lease left by a failed teardown", async () => {
+    const handle = await provisioner.create(allocationId, ["172.31.0.2"])
+    host.fail = (command, args) => command === "iptables" && args.includes("-D")
+    await expect(handle.teardown()).rejects.toThrow(/failed/)
+    host.fail = undefined
+
+    await expect(maintenanceReaper.reap()).resolves.toBeUndefined()
+
+    expect(await manager.listOwnedLeases()).toEqual([])
+    expectHostClean()
+  })
+
+  it("still fails closed when a namespace that exists cannot be inspected", async () => {
+    const lease = await allocate(manager)
+    host.install(lease, "full")
+    host.fail = (command, args) =>
+      command === "ip" && args[1] === "exec" && args.includes("route")
+
+    await expect(maintenanceReaper.reap()).rejects.toThrow(/injected/)
+
+    expect(await manager.listOwnedLeases()).toHaveLength(1)
+    expect(host.namespaces).toContain(lease.namespace)
   })
 })
 
