@@ -6,9 +6,16 @@ import type {
 import type { PreviewRepositoryRef } from "../../types/preview"
 import { isRepositoryRelativeDirectoryPath } from "./repositoryPath"
 import { isRepositoryBranchName } from "./repositoryRef"
+import {
+  GitHubRequestCache,
+  type GitHubRequestCacheOptions,
+} from "./requestCache"
 
 const DEFAULT_API_BASE_URL = "https://api.github.com"
 const GITHUB_API_VERSION = "2026-03-10"
+const DEFAULT_MUTABLE_RESPONSE_TTL_MS = 60_000
+const DEFAULT_MISSING_CONTENT_TTL_MS = 15_000
+const DEFAULT_SECONDARY_RATE_LIMIT_BACKOFF_MS = 60_000
 export const MAX_REPOSITORY_BRANCHES = 100
 /** Bounded, single-page deployment list; never paginated further. */
 export const MAX_REPOSITORY_DEPLOYMENTS = 10
@@ -123,17 +130,46 @@ export interface GitHubClientOptions {
    */
   getToken?: () =>
     string | null | undefined | Promise<string | null | undefined>
+  /**
+   * Enables the process-local response cache and in-flight deduplication.
+   * The extension opts in; server clients remain unchanged unless a caller
+   * deliberately enables this after a separate cache-policy review.
+   */
+  requestCache?: GitHubRequestCacheOptions
+  mutableResponseTtlMs?: number
+  missingContentTtlMs?: number
+  now?: () => number
+}
+
+interface RequestCachePolicy {
+  ttlMs: number | null
 }
 
 export class GitHubClient {
   private readonly apiBaseUrl: string
   private readonly fetcher: typeof fetch
   private readonly getToken: () => Promise<string | null | undefined>
+  private readonly requestCache: GitHubRequestCache | null
+  private readonly mutableResponseTtlMs: number
+  private readonly missingContentTtlMs: number
+  private readonly now: () => number
+  private rateLimitRetryAt: Date | null = null
 
   constructor(options: GitHubClientOptions = {}) {
     this.apiBaseUrl = options.apiBaseUrl ?? DEFAULT_API_BASE_URL
     this.fetcher = (options.fetcher ?? globalThis.fetch).bind(globalThis)
     this.getToken = async () => options.getToken?.()
+    this.now = options.now ?? Date.now
+    this.requestCache = options.requestCache
+      ? new GitHubRequestCache({
+          ...options.requestCache,
+          now: options.requestCache.now ?? this.now,
+        })
+      : null
+    this.mutableResponseTtlMs =
+      options.mutableResponseTtlMs ?? DEFAULT_MUTABLE_RESPONSE_TTL_MS
+    this.missingContentTtlMs =
+      options.missingContentTtlMs ?? DEFAULT_MISSING_CONTENT_TTL_MS
   }
 
   async getRepositoryMetadata(
@@ -145,6 +181,7 @@ export class GitHubClient {
       repositoryPath,
       isGitHubRepositoryResponse,
       signal,
+      { ttlMs: this.mutableResponseTtlMs },
     )
 
     if (details.private) {
@@ -159,6 +196,7 @@ export class GitHubClient {
       `${repositoryPath}/branches/${encodeURIComponent(details.default_branch)}`,
       isGitHubBranchResponse,
       signal,
+      { ttlMs: this.mutableResponseTtlMs },
     )
 
     return {
@@ -188,6 +226,7 @@ export class GitHubClient {
       repositoryPath,
       isGitHubRepositoryResponse,
       signal,
+      { ttlMs: this.mutableResponseTtlMs },
     )
 
     if (details.private) {
@@ -205,6 +244,7 @@ export class GitHubClient {
         `${repositoryPath}/branches/${encodeURIComponent(branchName)}`,
         isGitHubBranchResponse,
         signal,
+        { ttlMs: this.mutableResponseTtlMs },
       )
     } catch (error) {
       if (error instanceof GitHubApiError && error.code === "not-found") {
@@ -236,6 +276,7 @@ export class GitHubClient {
       repositoryPath,
       isGitHubRepositoryResponse,
       signal,
+      { ttlMs: this.mutableResponseTtlMs },
     )
 
     if (details.private) {
@@ -250,6 +291,7 @@ export class GitHubClient {
       `${repositoryPath}/branches?per_page=${MAX_REPOSITORY_BRANCHES}&page=1`,
       isGitHubBranchListResponse,
       signal,
+      { ttlMs: this.mutableResponseTtlMs },
     )
     const uniqueNames = Array.from(new Set(page.map((branch) => branch.name)))
     const withoutDefault = uniqueNames.filter(
@@ -278,6 +320,7 @@ export class GitHubClient {
       repositoryPath,
       isGitHubRepositoryResponse,
       signal,
+      { ttlMs: this.mutableResponseTtlMs },
     )
 
     if (
@@ -297,6 +340,7 @@ export class GitHubClient {
       `${repositoryPath}/commits/${encodeURIComponent(repository.commitSha)}`,
       isGitHubCommitResponse,
       signal,
+      { ttlMs: null },
     )
 
     if (commit.sha.toLowerCase() !== repository.commitSha.toLowerCase()) {
@@ -354,6 +398,7 @@ export class GitHubClient {
       `${repositoryPath}/contents${suffix}?ref=${encodeURIComponent(repository.commitSha)}`,
       isGitHubContentEntriesResponse,
       signal,
+      { ttlMs: null },
     )
   }
 
@@ -368,6 +413,10 @@ export class GitHubClient {
       `${repositoryPath}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(repository.commitSha)}`,
       isGitHubFileContentResponse,
       signal,
+      {
+        ttlMs: (value) => (value === null ? this.missingContentTtlMs : null),
+        validateValue: (value) => assertValidBase64(value.content, path),
+      },
     )
 
     if (!response) {
@@ -401,6 +450,7 @@ export class GitHubClient {
       `${repositoryPath}/deployments?per_page=${MAX_REPOSITORY_DEPLOYMENTS}&page=1`,
       isGitHubDeploymentListResponse,
       signal,
+      { ttlMs: 0 },
     )
 
     return {
@@ -439,6 +489,7 @@ export class GitHubClient {
       `${repositoryPath}/deployments/${deploymentId}/statuses?per_page=${MAX_DEPLOYMENT_STATUSES_PER_PAGE}&page=1`,
       isGitHubDeploymentStatusListResponse,
       signal,
+      { ttlMs: 0 },
     )
 
     return {
@@ -465,57 +516,97 @@ export class GitHubClient {
     path: string,
     validate: (value: unknown) => value is T,
     signal?: AbortSignal,
+    cachePolicy: RequestCachePolicy = { ttlMs: 0 },
   ): Promise<T> {
-    let response: Response
+    return this.loadRequest(
+      `json:${path}`,
+      async (sharedSignal) => {
+        const response = await this.fetch(path, sharedSignal)
 
-    try {
-      response = await this.fetcher(`${this.apiBaseUrl}${path}`, {
-        headers: await this.buildHeaders(),
+        if (!response.ok) throw createResponseError(response, this.now)
+
+        let payload: unknown
+
+        try {
+          payload = await response.json()
+        } catch {
+          throw new GitHubApiError(
+            "invalid-response",
+            "GitHub returned an unreadable response.",
+            response.status,
+          )
+        }
+
+        if (!validate(payload)) {
+          throw new GitHubApiError(
+            "invalid-response",
+            "GitHub returned repository data in an unexpected format.",
+            response.status,
+          )
+        }
+
+        return payload
+      },
+      {
         signal,
-      })
-    } catch (error) {
-      if (isAbortError(error)) {
-        throw error
-      }
-
-      throw new GitHubApiError(
-        "network",
-        "GitHub could not be reached. Check your connection and try again.",
-      )
-    }
-
-    if (!response.ok) {
-      throw createResponseError(response)
-    }
-
-    let payload: unknown
-
-    try {
-      payload = await response.json()
-    } catch {
-      throw new GitHubApiError(
-        "invalid-response",
-        "GitHub returned an unreadable response.",
-        response.status,
-      )
-    }
-
-    if (!validate(payload)) {
-      throw new GitHubApiError(
-        "invalid-response",
-        "GitHub returned repository data in an unexpected format.",
-        response.status,
-      )
-    }
-
-    return payload
+        ttlMs: cachePolicy.ttlMs,
+        sizeOf: estimateJsonBytes,
+      },
+    )
   }
 
   private async requestOptionalJson<T>(
     path: string,
     validate: (value: unknown) => value is T,
     signal?: AbortSignal,
+    cachePolicy: {
+      ttlMs: number | null | ((value: unknown) => number | null)
+      validateValue?: (value: T) => void
+    } = { ttlMs: 0 },
   ): Promise<T | null> {
+    return this.loadRequest(
+      `optional:${path}`,
+      async (sharedSignal) => {
+        const response = await this.fetch(path, sharedSignal)
+
+        if (response.status === 404) return null
+        if (!response.ok) throw createResponseError(response, this.now)
+
+        let payload: unknown
+
+        try {
+          payload = await response.json()
+        } catch {
+          throw new GitHubApiError(
+            "invalid-response",
+            "GitHub returned an unreadable file response.",
+            response.status,
+          )
+        }
+
+        if (!validate(payload)) {
+          throw new GitHubApiError(
+            "invalid-response",
+            "GitHub returned file data in an unexpected format.",
+            response.status,
+          )
+        }
+
+        cachePolicy.validateValue?.(payload)
+
+        return payload
+      },
+      {
+        signal,
+        ttlMs: cachePolicy.ttlMs,
+        sizeOf: estimateJsonBytes,
+      },
+    )
+  }
+
+  private async fetch(path: string, signal: AbortSignal): Promise<Response> {
+    this.throwIfRateLimited()
+
     let response: Response
 
     try {
@@ -524,49 +615,68 @@ export class GitHubClient {
         signal,
       })
     } catch (error) {
-      if (isAbortError(error)) {
-        throw error
-      }
-
+      if (isAbortError(error)) throw error
       throw new GitHubApiError(
         "network",
         "GitHub could not be reached. Check your connection and try again.",
       )
     }
 
-    if (response.status === 404) {
-      return null
+    const retryAt = getRetryAt(response.headers, this.now)
+    if (
+      response.headers.get("x-ratelimit-remaining") === "0" &&
+      retryAt &&
+      retryAt.getTime() > this.now()
+    ) {
+      this.rateLimitRetryAt = retryAt
     }
 
     if (!response.ok) {
-      throw createResponseError(response)
+      const error = createResponseError(response, this.now)
+      if (error.code === "rate-limited" && error.retryAt) {
+        this.rateLimitRetryAt = error.retryAt
+      }
     }
 
-    let payload: unknown
+    return response
+  }
 
-    try {
-      payload = await response.json()
-    } catch {
-      throw new GitHubApiError(
-        "invalid-response",
-        "GitHub returned an unreadable file response.",
-        response.status,
-      )
+  private loadRequest<T>(
+    key: string,
+    loader: (signal: AbortSignal) => Promise<T>,
+    options: {
+      signal?: AbortSignal
+      ttlMs: number | null | ((value: unknown) => number | null)
+      sizeOf: (value: unknown) => number
+    },
+  ): Promise<T> {
+    if (this.requestCache) {
+      return this.requestCache.load(key, loader, options)
     }
 
-    if (!validate(payload)) {
-      throw new GitHubApiError(
-        "invalid-response",
-        "GitHub returned file data in an unexpected format.",
-        response.status,
-      )
+    return loader(options.signal ?? new AbortController().signal)
+  }
+
+  private throwIfRateLimited(): void {
+    if (!this.rateLimitRetryAt) return
+    if (this.rateLimitRetryAt.getTime() <= this.now()) {
+      this.rateLimitRetryAt = null
+      return
     }
 
-    return payload
+    throw new GitHubApiError(
+      "rate-limited",
+      formatRateLimitMessage(this.rateLimitRetryAt),
+      429,
+      this.rateLimitRetryAt,
+    )
   }
 }
 
-function createResponseError(response: Response): GitHubApiError {
+function createResponseError(
+  response: Response,
+  now: () => number = Date.now,
+): GitHubApiError {
   if (response.status === 404) {
     return new GitHubApiError(
       "not-found",
@@ -582,11 +692,14 @@ function createResponseError(response: Response): GitHubApiError {
         response.headers.has("retry-after")))
 
   if (isRateLimited) {
+    const retryAt =
+      getRetryAt(response.headers, now) ??
+      new Date(now() + DEFAULT_SECONDARY_RATE_LIMIT_BACKOFF_MS)
     return new GitHubApiError(
       "rate-limited",
-      "GitHub API rate limit reached. Try again after it resets.",
+      formatRateLimitMessage(retryAt),
       response.status,
-      getRetryAt(response.headers),
+      retryAt,
     )
   }
 
@@ -597,15 +710,21 @@ function createResponseError(response: Response): GitHubApiError {
   )
 }
 
-function getRetryAt(headers: Headers): Date | null {
+function getRetryAt(
+  headers: Headers,
+  now: () => number = Date.now,
+): Date | null {
   const retryAfter = headers.get("retry-after")
 
   if (retryAfter) {
     const seconds = Number(retryAfter)
 
     if (Number.isFinite(seconds) && seconds >= 0) {
-      return new Date(Date.now() + seconds * 1000)
+      return new Date(now() + seconds * 1000)
     }
+
+    const retryDate = new Date(retryAfter)
+    if (!Number.isNaN(retryDate.getTime())) return retryDate
   }
 
   const reset = headers.get("x-ratelimit-reset")
@@ -619,6 +738,20 @@ function getRetryAt(headers: Headers): Date | null {
   }
 
   return null
+}
+
+function formatRateLimitMessage(retryAt: Date | null): string {
+  return retryAt
+    ? `GitHub API rate limit reached. Try again after ${retryAt.toISOString()}.`
+    : "GitHub API rate limit reached. Try again after it resets."
+}
+
+function estimateJsonBytes(value: unknown): number {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength
+  } catch {
+    return Number.POSITIVE_INFINITY
+  }
 }
 
 function normalizeHomepage(value: string | null): string | null {
@@ -783,6 +916,22 @@ function decodeBase64Utf8(
 
     return new TextDecoder().decode(bytes)
   } catch {
+    throw new GitHubApiError(
+      "invalid-response",
+      `${path} could not be decoded as repository text.`,
+    )
+  }
+}
+
+function assertValidBase64(content: string, path: string): void {
+  const normalized = content.replace(/\s/g, "")
+  const valid =
+    normalized.length % 4 === 0 &&
+    /^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/.test(
+      normalized,
+    )
+
+  if (!valid) {
     throw new GitHubApiError(
       "invalid-response",
       `${path} could not be decoded as repository text.`,

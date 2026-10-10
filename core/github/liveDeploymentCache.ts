@@ -6,6 +6,7 @@ import type { RepositoryIdentity } from "../../types/repository"
 import { getRepositoryKey } from "../../utils/githubUrl"
 
 const DEFAULT_LIVE_DEPLOYMENT_TTL_MS = 45_000
+const DEFAULT_MAX_LIVE_DEPLOYMENTS = 64
 
 interface LiveDeploymentCacheEntry {
   value: RepositoryLiveDeployment
@@ -21,6 +22,7 @@ interface LiveDeploymentSource {
 
 export interface RepositoryLiveDeploymentCacheOptions {
   ttlMs?: number
+  maxEntries?: number
   now?: () => number
 }
 
@@ -36,6 +38,7 @@ export interface RepositoryLiveDeploymentCacheOptions {
 export class RepositoryLiveDeploymentCache {
   private readonly entries = new Map<string, LiveDeploymentCacheEntry>()
   private readonly ttlMs: number
+  private readonly maxEntries: number
   private readonly now: () => number
 
   constructor(
@@ -43,6 +46,7 @@ export class RepositoryLiveDeploymentCache {
     options: RepositoryLiveDeploymentCacheOptions = {},
   ) {
     this.ttlMs = options.ttlMs ?? DEFAULT_LIVE_DEPLOYMENT_TTL_MS
+    this.maxEntries = options.maxEntries ?? DEFAULT_MAX_LIVE_DEPLOYMENTS
     this.now = options.now ?? Date.now
   }
 
@@ -54,11 +58,19 @@ export class RepositoryLiveDeploymentCache {
     const cached = this.entries.get(key)
 
     if (cached && cached.expiresAt > this.now()) {
+      this.entries.delete(key)
+      this.entries.set(key, cached)
       return cached.value
     }
 
     const value = await this.source.load(repository, options.signal)
+    this.entries.delete(key)
     this.entries.set(key, { value, expiresAt: this.now() + this.ttlMs })
+    while (this.entries.size > this.maxEntries) {
+      const oldestKey = this.entries.keys().next().value as string | undefined
+      if (oldestKey === undefined) break
+      this.entries.delete(oldestKey)
+    }
     return value
   }
 
