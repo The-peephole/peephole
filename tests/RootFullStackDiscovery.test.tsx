@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { FullStackPreviewPanel } from "../components/FullStackPreviewPanel"
 import { RepositoryAnalysisView } from "../components/RepositoryAnalysisView"
-import { RootFullStackDiscovery } from "../components/RootFullStackDiscovery"
+import {
+  RootFullStackDiscovery,
+  type FullStackPreviewRenderOptions,
+} from "../components/RootFullStackDiscovery"
 import type { FullStackPreviewApi } from "../core/fullstack/apiClient"
 import type {
   BuildTargetAnalysis,
@@ -180,6 +183,80 @@ describe("RootFullStackDiscovery", () => {
     expect(
       container.querySelector('[data-testid="discovered-target"]')?.textContent,
     ).toBe("apps/admin")
+  })
+
+  it("locks the frontend selection while create is pending and keeps the original request attached", async () => {
+    const analysis = createRootAnalysis({
+      frontendRoots: ["frontend", "apps/admin"],
+    })
+    const pendingCreate = createDeferred<FullStackPreview>()
+    let createSignal: AbortSignal | undefined
+    const api: FullStackPreviewApi = {
+      create: vi.fn((_request, options) => {
+        createSignal = options?.signal
+        return pendingCreate.promise
+      }),
+      get: vi.fn(),
+      stop: vi.fn(),
+    }
+    const container = await renderDiscovery(
+      analysis,
+      vi.fn<BuildTargetAnalysisLoader>(async (_repository, target) =>
+        createTargetAnalysis(analysis, target.sourceRoot),
+      ),
+      roots,
+      (value, options) => (
+        <FullStackPreviewPanel
+          analysis={value}
+          fullStackPreviewApi={api}
+          getSession={() =>
+            Promise.resolve({
+              token: "test-session",
+              expiresAt: "2099-01-01T00:00:00.000Z",
+            })
+          }
+          onCreatePendingChange={options?.onCreatePendingChange}
+        />
+      ),
+    )
+    const select = container.querySelector<HTMLSelectElement>(
+      'select[name="fullstack-frontend-target"]',
+    )
+
+    await act(async () => {
+      if (!select) throw new Error("frontend selector missing")
+      setSelectValue(select, "frontend")
+    })
+    await act(async () => {
+      getButton(container, "Run full-stack preview").click()
+    })
+
+    expect(select?.disabled).toBe(true)
+    expect(api.create).toHaveBeenCalledWith(
+      expect.objectContaining({ frontendTarget: { sourceRoot: "frontend" } }),
+      expect.objectContaining({ signal: createSignal }),
+    )
+    await act(async () => {
+      if (!select) throw new Error("frontend selector missing")
+      setSelectValue(select, "apps/admin")
+    })
+    expect(select?.value).toBe("frontend")
+    expect(createSignal?.aborted).toBe(false)
+
+    await act(async () => {
+      pendingCreate.resolve(
+        createPreview(analysis, {
+          frontendSourceRoot: "frontend",
+          status: "queued",
+        }),
+      )
+    })
+
+    expect(select?.disabled).toBe(false)
+    expect(container.textContent).toContain(
+      "fullstack-12345678-1234-1234-1234-123456789abc",
+    )
+    expect(createSignal?.aborted).toBe(false)
   })
 
   it("keeps multiple backend candidates explicit and submits the selected source roots", async () => {
@@ -521,12 +598,40 @@ function createTargetAnalysis(
   }
 }
 
+function createPreview(
+  analysis: RepositoryAnalysis,
+  options: {
+    frontendSourceRoot?: string
+    status?: FullStackPreview["status"]
+  } = {},
+): FullStackPreview {
+  return {
+    id: "fullstack-12345678-1234-1234-1234-123456789abc",
+    repository: {
+      repositoryId: analysis.repository.repositoryId,
+      owner: analysis.repository.owner,
+      name: analysis.repository.repo,
+      commitSha: analysis.repository.commitSha,
+    },
+    frontendSourceRoot: options.frontendSourceRoot ?? "frontend",
+    backendSourceRoot: "backend",
+    status: options.status ?? "queued",
+    url: null,
+    errorCode: null,
+    errorMessage: null,
+    createdAt: "2026-10-10T00:00:00.000Z",
+    updatedAt: "2026-10-10T00:00:00.000Z",
+    expiresAt: "2026-10-10T00:15:00.000Z",
+  }
+}
+
 async function renderDiscovery(
   analysis: RepositoryAnalysis,
   loadBuildTargetAnalysis: BuildTargetAnalysisLoader,
   roots: Root[],
   renderControls: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
+    options?: FullStackPreviewRenderOptions,
   ) => ReactNode,
   onRetryStructure = () => undefined,
 ): Promise<HTMLDivElement> {

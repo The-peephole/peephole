@@ -58,6 +58,7 @@ export interface FullStackPreviewPanelProps {
   pollIntervalMs?: number
   retainedPreview?: FullStackPreview | null
   onRetainedPreviewChange?: (preview: FullStackPreview | null) => void
+  onCreatePendingChange?: (pending: boolean) => void
 }
 
 export function FullStackPreviewPanel({
@@ -71,6 +72,7 @@ export function FullStackPreviewPanel({
   pollIntervalMs = 2_000,
   retainedPreview,
   onRetainedPreviewChange,
+  onCreatePendingChange,
 }: FullStackPreviewPanelProps) {
   const repository = useMemo(
     () => ({
@@ -156,12 +158,18 @@ export function FullStackPreviewPanel({
   }, [clearSession, getSession])
 
   useEffect(() => {
+    const hadActiveRequest = activeRequest.current !== null
     activeRequest.current?.abort()
     activeRequest.current = null
+    if (hadActiveRequest) onCreatePendingChange?.(false)
     createKey.current = null
     setState({ status: "idle" })
-    return () => activeRequest.current?.abort()
-  }, [requestIdentity])
+    return () => {
+      const hasActiveRequest = activeRequest.current !== null
+      activeRequest.current?.abort()
+      if (hasActiveRequest) onCreatePendingChange?.(false)
+    }
+  }, [onCreatePendingChange, requestIdentity])
 
   useEffect(() => {
     if (
@@ -249,6 +257,7 @@ export function FullStackPreviewPanel({
       createKey,
       setAuthenticationStatus,
       setRetainedPreview,
+      onCreatePendingChange,
     )
   }
 
@@ -617,12 +626,14 @@ function startFullStackPreview(
   createKey: MutableRefObject<string | null>,
   setAuthenticationStatus: Dispatch<SetStateAction<AuthenticationStatus>>,
   setRetainedPreview: (preview: FullStackPreview | null) => void,
+  onCreatePendingChange?: (pending: boolean) => void,
 ): void {
   if (activeRequest.current && !activeRequest.current.signal.aborted) return
   activeRequest.current?.abort()
   const abortController = new AbortController()
   activeRequest.current = abortController
   setState({ status: "creating" })
+  onCreatePendingChange?.(true)
   createKey.current ??= `fullstack-request-${crypto.randomUUID()}`
 
   void api
@@ -634,6 +645,7 @@ function startFullStackPreview(
       (preview) => {
         if (!abortController.signal.aborted) {
           activeRequest.current = null
+          onCreatePendingChange?.(false)
           setRetainedPreview(preview)
           setState({ status: "idle" })
         }
@@ -641,6 +653,7 @@ function startFullStackPreview(
       (error: unknown) => {
         if (!abortController.signal.aborted) {
           activeRequest.current = null
+          onCreatePendingChange?.(false)
           setState(createErrorState(error))
           if (isAuthenticationError(error)) {
             setAuthenticationStatus("unauthenticated")

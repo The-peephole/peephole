@@ -4,7 +4,10 @@ import { resolveBackendExecutionSupport } from "../core/analyzer/backendRuntimeA
 import { isSafeExternalUrl } from "../core/github/externalUrlPolicy"
 import { DEFAULT_REPOSITORY_REF } from "../core/github/repositoryRef"
 import { toRootBuildTargetAnalysis } from "../core/preview/buildAdapters"
-import { RootFullStackDiscovery } from "./RootFullStackDiscovery"
+import {
+  RootFullStackDiscovery,
+  type FullStackPreviewRenderOptions,
+} from "./RootFullStackDiscovery"
 import type {
   BuildTargetAnalysis,
   BuildTargetAnalysisLoader,
@@ -40,7 +43,9 @@ interface RepositoryAnalysisViewProps {
   ) => ReactNode
   renderFullStackPreviewControls?: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
+    options?: FullStackPreviewRenderOptions,
   ) => ReactNode
+  hasRetainedFullStackPreview?: boolean
   /**
    * Rendered only for a candidate `resolveBackendExecutionSupport` reports
    * as supported -- an unsupported candidate always keeps the plain
@@ -83,6 +88,7 @@ function RepositoryAnalysisSession({
   loadRepositoryLiveDeployment = unavailableLiveDeploymentLoader,
   renderPreviewControls,
   renderFullStackPreviewControls,
+  hasRetainedFullStackPreview = false,
   renderBackendRuntimeControls,
 }: RepositoryAnalysisViewProps) {
   const [analysisState, setAnalysisState] = useState<AnalysisState>({
@@ -216,6 +222,7 @@ function RepositoryAnalysisSession({
         onRetry={() => setAnalysisRequestVersion((version) => version + 1)}
         renderPreviewControls={renderPreviewControls}
         renderFullStackPreviewControls={renderFullStackPreviewControls}
+        hasRetainedFullStackPreview={hasRetainedFullStackPreview}
         renderBackendRuntimeControls={renderBackendRuntimeControls}
         loadBuildTargetAnalysis={loadBuildTargetAnalysis}
         selectedBranch={selectedBranch}
@@ -333,6 +340,7 @@ function AnalysisContent({
   onRetry,
   renderPreviewControls,
   renderFullStackPreviewControls,
+  hasRetainedFullStackPreview,
   renderBackendRuntimeControls,
   loadBuildTargetAnalysis,
   selectedBranch,
@@ -344,7 +352,9 @@ function AnalysisContent({
   ) => ReactNode
   renderFullStackPreviewControls?: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
+    options?: FullStackPreviewRenderOptions,
   ) => ReactNode
+  hasRetainedFullStackPreview: boolean
   renderBackendRuntimeControls?: (input: {
     candidate: BackendCandidate
     repository: RepositoryMetadata
@@ -382,6 +392,7 @@ function AnalysisContent({
             onRetryRepositoryAnalysis={onRetry}
             renderPreviewControls={renderPreviewControls}
             renderFullStackPreviewControls={renderFullStackPreviewControls}
+            hasRetainedFullStackPreview={hasRetainedFullStackPreview}
             renderBackendRuntimeControls={renderBackendRuntimeControls}
           />
         </div>
@@ -395,6 +406,7 @@ function AnalysisResults({
   loadBuildTargetAnalysis,
   renderPreviewControls,
   renderFullStackPreviewControls,
+  hasRetainedFullStackPreview,
   renderBackendRuntimeControls,
   onRetryRepositoryAnalysis,
 }: {
@@ -405,7 +417,9 @@ function AnalysisResults({
   ) => ReactNode
   renderFullStackPreviewControls?: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
+    options?: FullStackPreviewRenderOptions,
   ) => ReactNode
+  hasRetainedFullStackPreview: boolean
   renderBackendRuntimeControls?: (input: {
     candidate: BackendCandidate
     repository: RepositoryMetadata
@@ -505,10 +519,16 @@ function AnalysisResults({
             targetAnalysis.preview.mode !== "native-static-build" ? (
               <RootFullStackDiscovery
                 analysis={analysis}
+                hasRetainedFullStackPreview={hasRetainedFullStackPreview}
                 loadBuildTargetAnalysis={loadBuildTargetAnalysis}
                 onRetryStructure={onRetryRepositoryAnalysis}
                 renderControls={renderFullStackPreviewControls}
               />
+            ) : hasRetainedFullStackPreview ? (
+              <p className="peephole__muted">
+                An existing full-stack preview remains available in the active
+                job controls. Stop or finish it before running a new target.
+              </p>
             ) : (
               renderFullStackPreviewControls({
                 ...analysis,

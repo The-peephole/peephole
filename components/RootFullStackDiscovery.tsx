@@ -12,11 +12,17 @@ import type { RepositoryProjectCandidate } from "../types/structure"
 
 interface RootFullStackDiscoveryProps {
   analysis: RepositoryAnalysis
+  hasRetainedFullStackPreview?: boolean
   loadBuildTargetAnalysis: BuildTargetAnalysisLoader
   onRetryStructure: () => void
   renderControls: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
+    options?: FullStackPreviewRenderOptions,
   ) => ReactNode
+}
+
+export interface FullStackPreviewRenderOptions {
+  onCreatePendingChange?: (pending: boolean) => void
 }
 
 type CandidateResult =
@@ -36,6 +42,7 @@ type DiscoveryState =
 
 export function RootFullStackDiscovery({
   analysis,
+  hasRetainedFullStackPreview = false,
   loadBuildTargetAnalysis,
   onRetryStructure,
   renderControls,
@@ -57,6 +64,7 @@ export function RootFullStackDiscovery({
   const [requestVersion, setRequestVersion] = useState(0)
   const [state, setState] = useState<DiscoveryState>({ status: "loading" })
   const [selectedSourceRoot, setSelectedSourceRoot] = useState("")
+  const [createPending, setCreatePending] = useState(false)
   const structureIsComplete =
     analysis.structure.complete && !analysis.structure.truncated
 
@@ -245,11 +253,13 @@ export function RootFullStackDiscovery({
           <select
             aria-describedby={selectHelpId}
             className="peephole__branch-select"
+            disabled={createPending}
             id={selectId}
             name="fullstack-frontend-target"
-            onChange={(event) =>
+            onChange={(event) => {
+              if (createPending) return
               setSelectedSourceRoot(event.currentTarget.value)
-            }
+            }}
             value={selectedSourceRoot}
           >
             <option value="">Choose a frontend</option>
@@ -301,7 +311,12 @@ export function RootFullStackDiscovery({
         </p>
       )}
 
-      {!backendDiscoveryIsComplete ? (
+      {hasRetainedFullStackPreview ? (
+        <p className="peephole__muted">
+          An existing full-stack preview remains available in the active job
+          controls. Stop or finish it before running a new combination.
+        </p>
+      ) : !backendDiscoveryIsComplete ? (
         <p className="peephole__muted">
           Backend detection is incomplete or truncated. Peephole will not
           suggest a runnable combination.
@@ -335,7 +350,10 @@ export function RootFullStackDiscovery({
             Detection does not start a job. The server remains authoritative,
             and a preview runs only after you press the button below.
           </p>
-          {renderControls({ ...analysis, ...selectedFrontend.value })}
+          {renderControls(
+            { ...analysis, ...selectedFrontend.value },
+            { onCreatePendingChange: setCreatePending },
+          )}
         </>
       )}
     </section>
