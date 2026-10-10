@@ -34,8 +34,6 @@ const MISSING_TTL_MS = 15_000
 const CREDENTIAL_GUARD_TTL_MS = 10 * 60_000
 const CREDENTIAL_GUARD_FAILURE_TTL_MS = 60_000
 const DEFAULT_SECONDARY_BACKOFF_MS = 60_000
-/** Classic-PAT scopes that cannot read private repository data. */
-const PUBLIC_ONLY_SCOPES = new Set(["public_repo", "read:user", "user:email"])
 
 export interface GitHubGatewayLimits {
   /** Gateway requests per subject per window. */
@@ -377,9 +375,9 @@ export class GitHubGateway {
 
   /**
    * Fails closed unless the configured credential provably cannot read
-   * private repository data: a classic PAT whose X-OAuth-Scopes are all
-   * public-only, which also lists zero private repositories (defense in
-   * depth). Re-checked periodically.
+   * private repository data: a classic PAT whose X-OAuth-Scopes header is
+   * present and empty, which also lists zero private repositories (defense
+   * in depth). Re-checked periodically.
    */
   private async credentialIsPublicOnly(): Promise<boolean> {
     if (this.guard && this.guard.expiresAt > this.now()) return this.guard.ok
@@ -415,14 +413,11 @@ export class GitHubGateway {
         },
       )
       this.recordQuota(response.headers)
+      // Least privilege: only a classic token with no scope at all ("read-
+      // only access to public information"). Any scope -- even public_repo,
+      // which can write -- or a missing header disables the gateway.
       const scopes = response.headers.get("x-oauth-scopes")
-      const scopesArePublicOnly =
-        scopes !== null &&
-        scopes
-          .split(",")
-          .map((scope) => scope.trim())
-          .filter(Boolean)
-          .every((scope) => PUBLIC_ONLY_SCOPES.has(scope))
+      const scopesArePublicOnly = scopes !== null && scopes.trim() === ""
       const body = response.ok ? await readBoundedJson(response) : null
       ok =
         response.status === 200 &&

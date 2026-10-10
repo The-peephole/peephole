@@ -42,7 +42,8 @@ function liveSession(subject = "alice"): StoredPreviewSession {
  */
 function environment(
   options: {
-    gatewayResponse?: () => Response
+    /** Overrides the gateway answer; returning undefined uses the real one. */
+    gatewayResponse?: () => Response | undefined
     visibilityTtlMs?: number
   } = {},
 ) {
@@ -70,7 +71,8 @@ function environment(
       const authorization = new Headers(init?.headers).get("authorization")
       const body = JSON.parse(String(init?.body)) as unknown
       gatewayCalls.push({ body, authorization })
-      if (options.gatewayResponse) return options.gatewayResponse()
+      const override = options.gatewayResponse?.()
+      if (override) return override
       const requester = {
         subject: `github:${authorization ?? "anonymous"}`,
         ip: "203.0.113.9",
@@ -304,6 +306,72 @@ describe("extension GitHub gateway fetcher", () => {
       client.listRepositoryBranches(repository),
     ).rejects.toMatchObject({ code: "rate-limited" })
     expect(env.direct.fetcher.mock.calls.length).toBe(directCalls)
+  })
+
+  describe("fallback responses keep the cooldown on the path that produced them", () => {
+    const directLimit = () =>
+      new Response("{}", { status: 429, headers: { "retry-after": "600" } })
+    const disabled = () =>
+      new Response("{}", {
+        status: 503,
+        headers: { [GITHUB_GATEWAY_HEADER]: "disabled" },
+      })
+    const sessionRejected = () =>
+      new Response('{"error":{"code":"UNAUTHORIZED"}}', { status: 401 })
+
+    it.each([
+      ["the gateway is disabled", disabled],
+      ["the session is rejected", sessionRejected],
+    ])(
+      "a direct 429 after falling back because %s never blocks a working gateway",
+      async (_label, fallbackCause) => {
+        let gatewayDown = true
+        const env = environment({
+          gatewayResponse: () => (gatewayDown ? fallbackCause() : undefined),
+        })
+        const { client, setSession } = env.extension(liveSession())
+        env.direct.fetcher.mockImplementationOnce(async () => directLimit())
+
+        await expect(
+          client.getRepositoryMetadata(repository),
+        ).rejects.toMatchObject({ code: "rate-limited" })
+
+        gatewayDown = false
+        setSession(liveSession())
+        await expect(
+          client.getRepositoryMetadata(repository),
+        ).resolves.toMatchObject({ repositoryId: 7 })
+      },
+    )
+
+    it.each([
+      ["the gateway is disabled", disabled],
+      ["the session is rejected", sessionRejected],
+    ])(
+      "the direct cooldown still holds for direct requests after %s",
+      async (_label, fallbackCause) => {
+        const env = environment({ gatewayResponse: fallbackCause })
+        const { client, setSession } = env.extension(liveSession())
+        env.direct.fetcher.mockImplementationOnce(async () => directLimit())
+        await expect(
+          client.getRepositoryMetadata(repository),
+        ).rejects.toMatchObject({ code: "rate-limited" })
+        const directCalls = env.direct.fetcher.mock.calls.length
+
+        // Signed out: plain direct path.
+        setSession(null)
+        await expect(
+          client.listRepositoryBranches(repository),
+        ).rejects.toMatchObject({ code: "rate-limited" })
+        // Signed in but still falling back: also no direct request.
+        setSession(liveSession())
+        await expect(
+          client.listRepositoryBranches(repository),
+        ).rejects.toMatchObject({ code: "rate-limited" })
+
+        expect(env.direct.fetcher.mock.calls.length).toBe(directCalls)
+      },
+    )
   })
 
   it("keeps cancelled gateway requests out of the extension cache", async () => {

@@ -1161,9 +1161,10 @@ become a channel to private data, so:
   cannot recall data a browser already cached, and immediate enforcement is
   not claimed;
 - a credential guard keeps the gateway disabled unless the token is a classic
-  PAT whose `X-OAuth-Scopes` are public-only and which lists no private
-  repositories. Fine-grained PATs and GitHub App/OAuth credentials are
-  refused because their grant cannot be proven public-only;
+  PAT (`ghp_`) whose `X-OAuth-Scopes` header is present and empty and which
+  lists no private repositories. Any scope, fine-grained PATs, and GitHub
+  App/OAuth credentials are refused; preview admission only reads public
+  data, so a scope-less token also serves it;
 - only the extension's fixed operations are accepted; the upstream URL is
   rebuilt from validated fields; redirects are refused; responses are reduced
   to the fields the client reads;

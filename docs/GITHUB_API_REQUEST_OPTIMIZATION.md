@@ -144,12 +144,13 @@ extension GitHubClient (cache, validation, cooldown -- unchanged)
 2. **Credential guard:** the gateway serves only with a classic personal
    access token (`ghp_`) whose grant it can read back. Before serving, and
    every 10 minutes, it calls `GET /user/repos?visibility=private&per_page=1`
-   and stays enabled only if the response carries `X-OAuth-Scopes`, every
-   listed scope is `public_repo`, `read:user`, or `user:email`, and the body
-   is `[]`. GitHub documents that `X-OAuth-Scopes` "lists the scopes your
-   token has authorized" and that a scope-less token has "read-only access to
-   public information"; `repo`, `repo:status`, and `repo_deployment` reach
-   private repositories and are refused.
+   and stays enabled only if the response carries an `X-OAuth-Scopes` header
+   whose value is empty and the body is `[]`. GitHub documents that
+   `X-OAuth-Scopes` "lists the scopes your token has authorized" and that a
+   token with no scope has "read-only access to public information". Every
+   non-empty scope is refused: `repo`, `repo:status`, and `repo_deployment`
+   reach private repositories, and even `public_repo` (write access to public
+   repositories), `read:user`, and `user:email` exceed what the gateway needs.
    - **Fine-grained PATs (`github_pat_`) are refused.** They return no
      `X-OAuth-Scopes`, and their repository grant cannot be read back through
      the API; an empty private-repository list is evidence, not proof (an
@@ -221,7 +222,7 @@ transition exposure"):
 | --- | --- |
 | Signed out or session expired locally | Direct unauthenticated request (unchanged) |
 | Session rejected (401) | Clears the session (as preview clients do), continues unauthenticated |
-| Rate limit on one path | Cooldown applies to that path only (`rateLimitScope`: `direct` vs. `gateway`); signing in or out switches to the other path's own state |
+| Rate limit on one path | Cooldown applies to the path that produced the limited response (`rateLimitScope.of`: `gateway` only for a gateway answer). A fallback to direct (gateway disabled, session 401) is recorded as direct and is itself withheld during the direct cooldown, so neither path blocks or bypasses the other |
 | Gateway `disabled` or route missing (older server) | Direct unauthenticated request |
 | GitHub 404 / 429 / upstream failure via gateway | Same `GitHubApiError` as a direct call; never silently retried directly |
 | Preview API unreachable or infrastructure error | `network` / `unavailable` error |

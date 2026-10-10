@@ -313,6 +313,9 @@ describe("GitHubGateway", () => {
     it.each([
       ["a private-capable classic scope", { scopes: "repo" }],
       ["a deployment scope", { scopes: "public_repo, repo_deployment" }],
+      ["the public_repo scope", { scopes: "public_repo" }],
+      ["the read:user scope", { scopes: "read:user" }],
+      ["the user:email scope", { scopes: "user:email" }],
       ["a visible private repository", { privateRepos: [{ id: 9 }] }],
     ])("disables the gateway for %s", async (_label, state) => {
       const { gateway, upstreamPaths, log } = setup(state)

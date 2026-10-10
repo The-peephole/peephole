@@ -140,12 +140,19 @@ export interface GitHubClientOptions {
   missingContentTtlMs?: number
   now?: () => number
   /**
-   * Names the transport the next request will use when one client can reach
-   * GitHub through more than one quota (the extension's direct path vs. the
-   * signed-in gateway). Rate-limit cooldowns are tracked per scope so one
-   * path's limit never blocks the other. Omitted: one shared scope.
+   * For a client that reaches GitHub through more than one quota (the
+   * extension's direct path vs. the signed-in gateway): `current()` names the
+   * path the next request is expected to take, and is checked before it is
+   * sent; `of(response)` names the path that actually produced a response,
+   * which may differ when the transport falls back, and receives any
+   * cooldown. One path's limit never blocks the other. Omitted: one scope.
    */
-  rateLimitScope?: () => string | Promise<string>
+  rateLimitScope?: RateLimitScope
+}
+
+export interface RateLimitScope {
+  current(): string | Promise<string>
+  of(response: Response): string
 }
 
 interface RequestCachePolicy {
@@ -160,7 +167,7 @@ export class GitHubClient {
   private readonly mutableResponseTtlMs: number
   private readonly missingContentTtlMs: number
   private readonly now: () => number
-  private readonly rateLimitScope: () => Promise<string>
+  private readonly rateLimitScope: RateLimitScope
   private readonly rateLimitRetryAt = new Map<string, Date>()
 
   constructor(options: GitHubClientOptions = {}) {
@@ -168,8 +175,10 @@ export class GitHubClient {
     this.fetcher = (options.fetcher ?? globalThis.fetch).bind(globalThis)
     this.getToken = async () => options.getToken?.()
     this.now = options.now ?? Date.now
-    this.rateLimitScope = async () =>
-      (await options.rateLimitScope?.()) ?? "default"
+    this.rateLimitScope = options.rateLimitScope ?? {
+      current: () => "default",
+      of: () => "default",
+    }
     this.requestCache = options.requestCache
       ? new GitHubRequestCache({
           ...options.requestCache,
@@ -615,11 +624,7 @@ export class GitHubClient {
   }
 
   private async fetch(path: string, signal: AbortSignal): Promise<Response> {
-    // A cooldown is recorded under the scope chosen before the request. If
-    // the transport then falls back to the other path, at most one extra
-    // already-limited request can follow; no path's limit is skipped.
-    const scope = await this.rateLimitScope()
-    this.throwIfRateLimited(scope)
+    this.throwIfRateLimited(await this.rateLimitScope.current())
 
     let response: Response
 
@@ -636,20 +641,9 @@ export class GitHubClient {
       )
     }
 
-    const retryAt = getRetryAt(response.headers, this.now)
-    if (
-      response.headers.get("x-ratelimit-remaining") === "0" &&
-      retryAt &&
-      retryAt.getTime() > this.now()
-    ) {
-      this.rateLimitRetryAt.set(scope, retryAt)
-    }
-
-    if (!response.ok) {
-      const error = createResponseError(response, this.now)
-      if (error.code === "rate-limited" && error.retryAt) {
-        this.rateLimitRetryAt.set(scope, error.retryAt)
-      }
+    const cooldown = getRateLimitCooldown(response, this.now)
+    if (cooldown) {
+      this.rateLimitRetryAt.set(this.rateLimitScope.of(response), cooldown)
     }
 
     return response
@@ -686,6 +680,27 @@ export class GitHubClient {
       retryAt,
     )
   }
+}
+
+/**
+ * The instant until which this response says no further request should be
+ * sent: a rate-limited error's retry time, or an exhausted-quota success's
+ * reset. Null when the response imposes no cooldown.
+ */
+export function getRateLimitCooldown(
+  response: Response,
+  now: () => number = Date.now,
+): Date | null {
+  if (!response.ok) {
+    const error = createResponseError(response, now)
+    if (error.code === "rate-limited" && error.retryAt) return error.retryAt
+  }
+  const retryAt = getRetryAt(response.headers, now)
+  return response.headers.get("x-ratelimit-remaining") === "0" &&
+    retryAt &&
+    retryAt.getTime() > now()
+    ? retryAt
+    : null
 }
 
 function createResponseError(
