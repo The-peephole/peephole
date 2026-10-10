@@ -3,7 +3,15 @@ import type { AddressInfo } from "node:net"
 
 import type { PreviewRequester } from "../../types/preview"
 import type { PreviewControlPlane } from "./controlPlane"
-import { createPreviewHttpHandler } from "./http"
+import {
+  createPreviewHttpHandler,
+  type PreviewHttpRequest,
+  type PreviewHttpResponse,
+} from "./http"
+import {
+  GITHUB_GATEWAY_PATH,
+  disabledGitHubGatewayResponse,
+} from "./githubGateway"
 import { NodePreviewApiServer } from "./nodeHttpServer"
 import type { IssuedPreviewSession } from "./previewSession"
 import type { PreviewApiServerConfig } from "./serverConfig"
@@ -16,6 +24,9 @@ import {
 export interface StartNodePreviewApiOptions {
   controlPlane: PreviewControlPlane
   fullStackControlPlane?: FullStackPreviewControlPlane
+  /** Session-authenticated public GitHub read gateway; when absent the
+   * route answers "disabled" so the extension keeps its direct path. */
+  githubGateway?: (request: PreviewHttpRequest) => Promise<PreviewHttpResponse>
   config: PreviewApiServerConfig
   resolveRequester: (
     request: IncomingMessage,
@@ -42,10 +53,16 @@ export async function startNodePreviewApi(
     ? createFullStackPreviewHttpHandler(options.fullStackControlPlane)
     : undefined
   const server = new NodePreviewApiServer({
-    handlePreviewRequest: (request) =>
-      handleFullStackRequest && isFullStackPreviewHttpPath(request.path)
+    handlePreviewRequest: (request) => {
+      if (request.path === GITHUB_GATEWAY_PATH) {
+        return options.githubGateway
+          ? options.githubGateway(request)
+          : Promise.resolve(disabledGitHubGatewayResponse())
+      }
+      return handleFullStackRequest && isFullStackPreviewHttpPath(request.path)
         ? handleFullStackRequest(request)
-        : handlePreviewRequest(request),
+        : handlePreviewRequest(request)
+    },
     resolveRequester: options.resolveRequester,
     beginGitHubAuth: options.beginGitHubAuth,
     completeGitHubAuth: options.completeGitHubAuth,

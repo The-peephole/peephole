@@ -770,7 +770,7 @@ function normalizeHomepage(value: string | null): string | null {
   }
 }
 
-function isGitHubRepositoryResponse(
+export function isGitHubRepositoryResponse(
   value: unknown,
 ): value is GitHubRepositoryResponse {
   if (!isObject(value) || !isObject(value.owner)) {
@@ -787,7 +787,7 @@ function isGitHubRepositoryResponse(
   )
 }
 
-function isGitHubBranchListResponse(
+export function isGitHubBranchListResponse(
   value: unknown,
 ): value is GitHubBranchListEntry[] {
   return (
@@ -801,7 +801,9 @@ function isGitHubBranchListResponse(
   )
 }
 
-function isGitHubBranchResponse(value: unknown): value is GitHubBranchResponse {
+export function isGitHubBranchResponse(
+  value: unknown,
+): value is GitHubBranchResponse {
   return (
     isObject(value) &&
     isObject(value.commit) &&
@@ -818,7 +820,7 @@ function isGitHubCommitResponse(value: unknown): value is GitHubCommitResponse {
   )
 }
 
-function isGitHubDeploymentListResponse(
+export function isGitHubDeploymentListResponse(
   value: unknown,
 ): value is GitHubDeploymentResponse[] {
   return Array.isArray(value) && value.every(isGitHubDeploymentResponse)
@@ -845,7 +847,7 @@ function isGitHubDeploymentResponse(
   )
 }
 
-function isGitHubDeploymentStatusListResponse(
+export function isGitHubDeploymentStatusListResponse(
   value: unknown,
 ): value is GitHubDeploymentStatusResponse[] {
   return Array.isArray(value) && value.every(isGitHubDeploymentStatusResponse)
@@ -867,7 +869,7 @@ function isGitHubDeploymentStatusResponse(
   )
 }
 
-function isGitHubContentEntriesResponse(
+export function isGitHubContentEntriesResponse(
   value: unknown,
 ): value is GitHubContentEntry[] {
   return Array.isArray(value) && value.every(isGitHubContentEntry)
@@ -884,7 +886,7 @@ function isGitHubContentEntry(value: unknown): value is GitHubContentEntry {
   )
 }
 
-function isGitHubFileContentResponse(
+export function isGitHubFileContentResponse(
   value: unknown,
 ): value is GitHubFileContentResponse {
   return (
