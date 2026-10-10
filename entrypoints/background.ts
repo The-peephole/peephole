@@ -3,7 +3,7 @@ import { RepositoryAnalysisService } from "../core/analyzer/repositoryAnalysisSe
 import { BuildTargetAnalysisService } from "../core/analyzer/buildTargetAnalysisService"
 import { createBuildTargetAnalysisMessageHandler } from "../core/analyzer/targetMessages"
 import { GitHubClient } from "../core/github/client"
-import { createGitHubGatewayFetcher } from "../core/github/gatewayFetcher"
+import { createGitHubGatewayTransport } from "../core/github/gatewayFetcher"
 import { BackendCandidateLoader } from "../core/github/backendCandidateLoader"
 import { createRepositoryBranchesMessageHandler } from "../core/github/branchMessages"
 import { KnownRepositoryFilesLoader } from "../core/github/knownFiles"
@@ -27,7 +27,7 @@ export default defineBackground(() => {
   void clearLegacyStoredGitHubToken()
   const githubClient = new GitHubClient({
     requestCache: {},
-    fetcher: createGitHubFetcher(),
+    ...createGitHubTransport(),
   })
   const metadataCache = new RepositoryMetadataCache(githubClient)
   const analysisService = new RepositoryAnalysisService(
@@ -79,21 +79,22 @@ export default defineBackground(() => {
  * (server-owned credential, shared cache); everyone else keeps the direct
  * unauthenticated path. Off unless WXT_GITHUB_GATEWAY_ENABLED is "true".
  */
-function createGitHubFetcher(): typeof fetch | undefined {
-  if (import.meta.env.WXT_GITHUB_GATEWAY_ENABLED !== "true") return undefined
+function createGitHubTransport():
+  ReturnType<typeof createGitHubGatewayTransport> | Record<string, never> {
+  if (import.meta.env.WXT_GITHUB_GATEWAY_ENABLED !== "true") return {}
   let previewApiBaseUrl: string | null
   try {
     previewApiBaseUrl = parsePreviewApiBaseUrl(
       import.meta.env.WXT_PREVIEW_API_BASE_URL,
     )
   } catch {
-    return undefined
+    return {}
   }
   return previewApiBaseUrl
-    ? createGitHubGatewayFetcher({
+    ? createGitHubGatewayTransport({
         previewApiBaseUrl,
         getSession: getStoredPreviewSession,
         clearSession: clearStoredPreviewSession,
       })
-    : undefined
+    : {}
 }

@@ -111,7 +111,7 @@ the already-public API base URL. None may use a `WXT_` prefix except
 | `PEEPHOLE_GITHUB_OAUTH_STATE_SECRET` | Yes | HMAC key for redirect, nonce, PKCE challenge, and expiry state |
 | `PEEPHOLE_SESSION_SIGNING_SECRET` | Yes | HMAC key for short-lived Peephole access sessions |
 | `WXT_PREVIEW_API_BASE_URL` | No | Public Preview API origin compiled into the extension |
-| `PEEPHOLE_GITHUB_TOKEN` | Yes | Server-owned public-only GitHub credential (admission and the read gateway) |
+| `PEEPHOLE_GITHUB_TOKEN` | Yes | Server-owned GitHub credential for admission; the read gateway additionally requires a scope-less classic PAT |
 | `PEEPHOLE_GITHUB_GATEWAY_ENABLED` | No | `true` enables `POST /v1/github/rest`; unset answers `disabled` |
 | `WXT_GITHUB_GATEWAY_ENABLED` | No | `true` builds the extension to use the gateway when signed in |
 

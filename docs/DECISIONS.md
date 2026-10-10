@@ -1156,17 +1156,23 @@ repositories. Option A needs no new secret, but the shared token must not
 become a channel to private data, so:
 
 - every operation re-checks `private === false && visibility === "public"`
-  (30 s TTL) before returning anything, including immutable cached content;
-- a credential guard keeps the gateway disabled unless the token lists no
-  private repositories and carries no private-capable classic scope;
+  (30 s TTL) before returning anything, including immutable cached content.
+  This bounds new exposure after a Public → Private change to that TTL; it
+  cannot recall data a browser already cached, and immediate enforcement is
+  not claimed;
+- a credential guard keeps the gateway disabled unless the token is a classic
+  PAT whose `X-OAuth-Scopes` are public-only and which lists no private
+  repositories. Fine-grained PATs and GitHub App/OAuth credentials are
+  refused because their grant cannot be proven public-only;
 - only the extension's fixed operations are accepted; the upstream URL is
   rebuilt from validated fields; redirects are refused; responses are reduced
   to the fields the client reads;
 - per-subject/per-IP limits, a concurrency cap, cooldown on GitHub limits,
   and a 500-call reserve protect admission's share of the token.
 
-The extension keeps `GitHubClient` unchanged and only swaps its transport, so
-PR #49's cache and error contracts hold. Signed-out users keep the direct
+The extension keeps `GitHubClient` and only swaps its transport, so PR #49's
+cache and error contracts hold; rate-limit cooldowns are tracked per
+transport so the direct and gateway quotas never block each other. Signed-out users keep the direct
 path. Both sides are off by default (`PEEPHOLE_GITHUB_GATEWAY_ENABLED`,
 `WXT_GITHUB_GATEWAY_ENABLED`). Private repositories remain out of scope. See
 `docs/GITHUB_API_REQUEST_OPTIMIZATION.md`.

@@ -4,7 +4,7 @@ import { BuildTargetAnalysisService } from "../core/analyzer/buildTargetAnalysis
 import { RepositoryAnalysisService } from "../core/analyzer/repositoryAnalysisService"
 import { BackendCandidateLoader } from "../core/github/backendCandidateLoader"
 import { GitHubApiError, GitHubClient } from "../core/github/client"
-import { createGitHubGatewayFetcher } from "../core/github/gatewayFetcher"
+import { createGitHubGatewayTransport } from "../core/github/gatewayFetcher"
 import { KnownRepositoryFilesLoader } from "../core/github/knownFiles"
 import { RepositoryLiveDeploymentCache } from "../core/github/liveDeploymentCache"
 import { RepositoryMetadataCache } from "../core/github/repositoryMetadataCache"
@@ -42,15 +42,17 @@ function liveSession(subject = "alice"): StoredPreviewSession {
  */
 function environment(
   options: {
-    gateway?: GitHubGateway
     gatewayResponse?: () => Response
+    visibilityTtlMs?: number
   } = {},
 ) {
   const upstream = createGitHubFixture()
   const direct = createGitHubFixture()
-  const gateway =
-    options.gateway ??
-    new GitHubGateway({ token: SERVER_TOKEN, fetcher: upstream.fetcher })
+  const gateway = new GitHubGateway({
+    token: SERVER_TOKEN,
+    fetcher: upstream.fetcher,
+    visibilityTtlMs: options.visibilityTtlMs,
+  })
   const gatewayCalls: Array<{ body: unknown; authorization: string | null }> =
     []
 
@@ -83,16 +85,19 @@ function environment(
         }),
       )
     })
-    const fetcher = createGitHubGatewayFetcher({
+    const transport = createGitHubGatewayTransport({
       previewApiBaseUrl: API_BASE,
       getSession: async () => current,
       clearSession,
       directFetch: network,
     })
     return {
-      client: new GitHubClient({ fetcher, requestCache: {} }),
+      client: new GitHubClient({ ...transport, requestCache: {} }),
       clearSession,
       network,
+      setSession: (next: StoredPreviewSession | null) => {
+        current = next
+      },
     }
   }
 
@@ -230,6 +235,77 @@ describe("extension GitHub gateway fetcher", () => {
     expect(infra.direct.fetcher).not.toHaveBeenCalled()
   })
 
+  it("does not let a direct-path cooldown block the gateway after sign-in", async () => {
+    const env = environment()
+    const { client, setSession } = env.extension(null)
+    env.direct.fetcher.mockImplementationOnce(
+      async () =>
+        new Response("{}", { status: 429, headers: { "retry-after": "600" } }),
+    )
+
+    await expect(
+      client.getRepositoryMetadata(repository),
+    ).rejects.toMatchObject({ code: "rate-limited" })
+    setSession(liveSession())
+
+    await expect(
+      client.getRepositoryMetadata(repository),
+    ).resolves.toMatchObject({ repositoryId: 7 })
+    expect(env.gatewayCalls.length).toBeGreaterThan(0)
+  })
+
+  it("does not let a gateway cooldown block the direct path after sign-out", async () => {
+    let limited = true
+    const env = environment()
+    const gateway = env.gateway
+    const { client, setSession, network } = env.extension(liveSession())
+    const base = network.getMockImplementation()!
+    network.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input))
+      if (url.origin !== "https://api.github.com" && limited) {
+        limited = false
+        return new Response("{}", {
+          status: 429,
+          headers: { [GITHUB_GATEWAY_HEADER]: "1", "retry-after": "600" },
+        })
+      }
+      return base(input, init)
+    })
+    void gateway
+
+    await expect(
+      client.getRepositoryMetadata(repository),
+    ).rejects.toMatchObject({ code: "rate-limited" })
+    setSession(null)
+
+    await expect(
+      client.getRepositoryMetadata(repository),
+    ).resolves.toMatchObject({ repositoryId: 7 })
+    expect(env.direct.fetcher).toHaveBeenCalled()
+  })
+
+  it("keeps each path's own cooldown in force", async () => {
+    const env = environment()
+    const { client, setSession } = env.extension(null)
+    env.direct.fetcher.mockImplementationOnce(
+      async () =>
+        new Response("{}", { status: 429, headers: { "retry-after": "600" } }),
+    )
+    await expect(
+      client.getRepositoryMetadata(repository),
+    ).rejects.toMatchObject({ code: "rate-limited" })
+    const directCalls = env.direct.fetcher.mock.calls.length
+
+    setSession(liveSession())
+    await client.getRepositoryMetadata(repository)
+    setSession(null)
+
+    await expect(
+      client.listRepositoryBranches(repository),
+    ).rejects.toMatchObject({ code: "rate-limited" })
+    expect(env.direct.fetcher.mock.calls.length).toBe(directCalls)
+  })
+
   it("keeps cancelled gateway requests out of the extension cache", async () => {
     const pending: Array<(response: Response) => void> = []
     const env = environment({
@@ -315,8 +391,11 @@ describe("GitHub request counts: direct vs. gateway", () => {
     }
   }
 
-  async function measure(session: StoredPreviewSession | null) {
-    const env = environment()
+  async function measure(
+    session: StoredPreviewSession | null,
+    visibilityTtlMs?: number,
+  ) {
+    const env = environment({ visibilityTtlMs })
     const counts: Record<
       string,
       { direct: number; gateway: number; upstream: number }
@@ -380,6 +459,112 @@ describe("GitHub request counts: direct vs. gateway", () => {
       "5-second-user-cold": { direct: 0, gateway: 41, upstream: 29 },
       "6-concurrent-two-users": { direct: 0, gateway: 69, upstream: 30 },
     })
+  })
+
+  // Cost of the rejected "re-check visibility on every request" policy.
+  it("measures re-checking visibility on every gateway request", async () => {
+    expect(await measure(liveSession(), 0)).toEqual({
+      "1-cold": { direct: 0, gateway: 14, upstream: 26 },
+      "2-warm": { direct: 0, gateway: 14, upstream: 26 },
+      "3-root-frontend-root": { direct: 0, gateway: 16, upstream: 30 },
+      "4-branch-change": { direct: 0, gateway: 27, upstream: 52 },
+      "5-second-user-cold": { direct: 0, gateway: 41, upstream: 65 },
+      "6-concurrent-two-users": { direct: 0, gateway: 69, upstream: 78 },
+    })
+  })
+})
+
+describe("Public -> Private transition exposure", () => {
+  it("bounds new exposure by the server visibility TTL; delivered data stays in that browser", async () => {
+    let time = Date.parse("2026-10-10T00:00:00Z")
+    const now = () => time
+    const upstream = createGitHubFixture()
+    const gateway = new GitHubGateway({
+      token: SERVER_TOKEN,
+      fetcher: upstream.fetcher,
+      now,
+    })
+    const user = (subject: string) => {
+      const network = vi.fn<typeof fetch>(async (_input, init) =>
+        toResponse(
+          await gateway.handle({
+            method: "POST",
+            path: GITHUB_GATEWAY_PATH,
+            headers: {},
+            body: JSON.parse(String(init?.body)) as unknown,
+            requester: { subject, ip: `198.51.100.${subject.length}` },
+          }),
+        ),
+      )
+      const transport = createGitHubGatewayTransport({
+        previewApiBaseUrl: API_BASE,
+        getSession: async () => ({
+          token: subject,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        }),
+        clearSession: async () => undefined,
+        directFetch: network,
+        now,
+      })
+      return {
+        client: new GitHubClient({ ...transport, requestCache: {}, now }),
+        network,
+      }
+    }
+    const metadata = {
+      repositoryId: 7,
+      owner: "acme",
+      repo: "fullstack",
+      defaultBranch: "main",
+      commitSha: SHA_A,
+      homepage: null,
+    }
+    const path = "frontend/package.json"
+    const fileUpstreamCalls = () =>
+      upstream.fetcher.mock.calls.filter(([input]) =>
+        String(input).includes("/contents/frontend/package.json"),
+      ).length
+    const alice = user("alice")
+
+    // 1-2. A reads a public file; the server cache now holds it.
+    await expect(
+      alice.client.getRepositoryTextFile(metadata, path, 4096),
+    ).resolves.toContain("frontend")
+    expect(fileUpstreamCalls()).toBe(1)
+
+    // 3. The repository turns private.
+    upstream.fixture.private = true
+    upstream.fixture.visibility = "private"
+
+    // 4. B, who never saw it, still receives it inside the 30 s window.
+    time += 29_000
+    const bob = user("bob")
+    await expect(
+      bob.client.getRepositoryTextFile(metadata, path, 4096),
+    ).resolves.toContain("frontend")
+    expect(fileUpstreamCalls()).toBe(1)
+
+    // 5. After the visibility TTL nobody new receives it.
+    time += 1_001
+    const carol = user("carol")
+    await expect(
+      carol.client.getRepositoryTextFile(metadata, path, 4096),
+    ).resolves.toBeNull()
+    await expect(
+      carol.client.getRepositoryMetadata({ owner: "acme", repo: "fullstack" }),
+    ).rejects.toMatchObject({ code: "not-found" })
+
+    // 6. A's background cache keeps what A already received, with no
+    // request at all; any fresh repository lookup is refused.
+    time += 60 * 60_000
+    const aliceRequests = alice.network.mock.calls.length
+    await expect(
+      alice.client.getRepositoryTextFile(metadata, path, 4096),
+    ).resolves.toContain("frontend")
+    expect(alice.network.mock.calls.length).toBe(aliceRequests)
+    await expect(
+      alice.client.getRepositoryMetadata({ owner: "acme", repo: "fullstack" }),
+    ).rejects.toMatchObject({ code: "not-found" })
   })
 })
 

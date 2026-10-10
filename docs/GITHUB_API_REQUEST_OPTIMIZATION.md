@@ -141,15 +141,26 @@ extension GitHubClient (cache, validation, cooldown -- unchanged)
    proceeds only when `private === false` and `visibility === "public"`.
    Private, internal, missing-visibility, or absent repositories all answer
    404 with no repository data. CORS is not part of access control.
-2. **Credential guard:** before serving, and every 10 minutes, the gateway
-   calls `GET /user/repos?visibility=private&per_page=1` with the server
-   token. It stays enabled only if that returns `[]` and any classic
-   `X-OAuth-Scopes` are limited to `public_repo`, `read:user`, `user:email`.
-   Any other result, a failed check, or an upstream 401 disables it
-   (fail-closed, re-checked after one minute). Operators should configure a
-   classic token with no scopes or a fine-grained token limited to public
-   repositories (GitHub documents that a scope-less token "can only access
-   public information").
+2. **Credential guard:** the gateway serves only with a classic personal
+   access token (`ghp_`) whose grant it can read back. Before serving, and
+   every 10 minutes, it calls `GET /user/repos?visibility=private&per_page=1`
+   and stays enabled only if the response carries `X-OAuth-Scopes`, every
+   listed scope is `public_repo`, `read:user`, or `user:email`, and the body
+   is `[]`. GitHub documents that `X-OAuth-Scopes` "lists the scopes your
+   token has authorized" and that a scope-less token has "read-only access to
+   public information"; `repo`, `repo:status`, and `repo_deployment` reach
+   private repositories and are refused.
+   - **Fine-grained PATs (`github_pat_`) are refused.** They return no
+     `X-OAuth-Scopes`, and their repository grant cannot be read back through
+     the API; an empty private-repository list is evidence, not proof (an
+     "all repositories" grant also covers repositories made private later).
+   - **GitHub App / OAuth credentials** (`gho_`, `ghu_`, `ghs_`, `ghr_`) and
+     unrecognized values are refused without being sent anywhere.
+   - A failed check or an upstream 401 also disables the gateway
+     (fail-closed, re-checked after one minute).
+
+   Operators must therefore configure a **scope-less classic token** for the
+   gateway. Preview admission works with either token type.
 
 ### Cache policy (server)
 
@@ -162,12 +173,34 @@ extension GitHubClient (cache, validation, cooldown -- unchanged)
 
 The cache reuses `GitHubRequestCache` (in-flight dedup, independent
 cancellation, late-completion protection), bounded to 4,096 entries / 64 MiB.
-Because every request re-checks visibility, cached content of a repository
-that turns private stops being served within 30 seconds. The cache is
-process memory: a service restart empties it; there is no manual
+The cache is process memory: a service restart empties it; there is no manual
 invalidation. The extension cache (above) keeps its own role -- avoiding
 repeat calls from one browser -- while the server cache shares immutable
 reads across users.
+
+### What a Public → Private change does (and does not) guarantee
+
+Verified by `tests/githubGatewayFetcher.test.ts` ("Public -> Private
+transition exposure"):
+
+- **New recipients:** for up to the 30-second visibility TTL after the change
+  (plus GitHub's own propagation), the gateway can still return that
+  repository's data -- including content another user cached -- to any
+  signed-in caller. After the TTL every operation answers 404.
+- **Data already delivered stays delivered.** An extension that received a
+  file keeps it in its background memory cache (immutable, no request) until
+  the service worker is discarded; its next repository lookup is refused once
+  its own 60-second metadata TTL lapses. This matches the direct
+  unauthenticated path, and no server control can recall it.
+- **Immediate enforcement is not guaranteed.** Re-checking visibility on
+  every request (`visibilityTtlMs: 0`) narrows only the server window, still
+  leaves a check-then-fetch gap, and costs measurably more of the shared
+  token: in the fixture scenario upstream calls grow from 15 to 26 for one
+  cold analysis and from 30 to 78 across the full multi-user scenario.
+  Event-driven invalidation (GitHub `repository` "privatized" webhooks) would
+  need the GitHub App installed on each repository, which arbitrary public
+  repositories are not. The 30-second TTL is therefore kept and is the stated
+  bound.
 
 ### Rate-limit and quota policy
 
@@ -175,7 +208,9 @@ reads across users.
 - At most 8 concurrent upstream GitHub requests.
 - GitHub 429, or 403 with exhausted quota / `Retry-After`, starts a gateway
   cooldown; callers get 429 with `Retry-After`/`X-RateLimit-Reset` and no
-  further upstream call is made until it ends.
+  further upstream call is made until it ends. The retry instant uses the
+  client's own `getRetryAt` (`Retry-After` seconds or HTTP-date, then
+  `X-RateLimit-Reset`, otherwise GitHub's one-minute minimum).
 - The last 500 primary-quota calls (from `X-RateLimit-Remaining`) are held
   back for preview admission, which shares the server token.
 - Upstream timeout 10 s; upstream bodies over 4 MiB are rejected.
@@ -186,6 +221,7 @@ reads across users.
 | --- | --- |
 | Signed out or session expired locally | Direct unauthenticated request (unchanged) |
 | Session rejected (401) | Clears the session (as preview clients do), continues unauthenticated |
+| Rate limit on one path | Cooldown applies to that path only (`rateLimitScope`: `direct` vs. `gateway`); signing in or out switches to the other path's own state |
 | Gateway `disabled` or route missing (older server) | Direct unauthenticated request |
 | GitHub 404 / 429 / upstream failure via gateway | Same `GitHubApiError` as a direct call; never silently retried directly |
 | Preview API unreachable or infrastructure error | `network` / `unavailable` error |
@@ -198,7 +234,7 @@ reads across users.
 | `PEEPHOLE_GITHUB_TOKEN` | server secret | required for the gateway |
 | `WXT_GITHUB_GATEWAY_ENABLED` | extension build | unset (direct path only) |
 
-Before enabling in production: confirm the token type/scopes are public-only,
+Before enabling in production: confirm the token is a scope-less classic PAT,
 deploy the server with `PEEPHOLE_GITHUB_GATEWAY_ENABLED=true`, check the
 journal has no `GitHub gateway disabled` line after a first signed-in
 request, and then ship an extension built with `WXT_GITHUB_GATEWAY_ENABLED=true`.

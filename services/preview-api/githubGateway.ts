@@ -1,4 +1,5 @@
 import {
+  getRetryAt,
   isGitHubBranchListResponse,
   isGitHubBranchResponse,
   isGitHubContentEntriesResponse,
@@ -62,6 +63,8 @@ export interface GitHubGatewayOptions {
   fetcher?: typeof fetch
   now?: () => number
   limits?: Partial<GitHubGatewayLimits>
+  /** How long a public-visibility answer is reused (default 30 s). */
+  visibilityTtlMs?: number
   log?: (message: string) => void
 }
 
@@ -93,6 +96,7 @@ export class GitHubGateway {
   private readonly fetcher: typeof fetch
   private readonly now: () => number
   private readonly limits: GitHubGatewayLimits
+  private readonly visibilityTtlMs: number
   private readonly log: (message: string) => void
   private readonly cache: GitHubRequestCache
   private readonly subjectWindows = new FixedWindowLimiter()
@@ -111,6 +115,7 @@ export class GitHubGateway {
     this.fetcher = (options.fetcher ?? globalThis.fetch).bind(globalThis)
     this.now = options.now ?? Date.now
     this.limits = { ...DEFAULT_GITHUB_GATEWAY_LIMITS, ...options.limits }
+    this.visibilityTtlMs = options.visibilityTtlMs ?? VISIBILITY_TTL_MS
     this.log = options.log ?? ((message) => console.error(message))
     this.upstreamSlots = new Semaphore(this.limits.maxConcurrentUpstream)
     this.cache = new GitHubRequestCache({
@@ -214,8 +219,8 @@ export class GitHubGateway {
         signal,
         ttlMs: (value) =>
           (value as UpstreamResult).status === 404
-            ? MISSING_TTL_MS
-            : VISIBILITY_TTL_MS,
+            ? Math.min(MISSING_TTL_MS, this.visibilityTtlMs)
+            : this.visibilityTtlMs,
         sizeOf: estimateBytes,
       },
     )
@@ -372,8 +377,9 @@ export class GitHubGateway {
 
   /**
    * Fails closed unless the configured credential provably cannot read
-   * private repository data: no private-capable classic scope, and the
-   * token lists zero private repositories. Re-checked periodically.
+   * private repository data: a classic PAT whose X-OAuth-Scopes are all
+   * public-only, which also lists zero private repositories (defense in
+   * depth). Re-checked periodically.
    */
   private async credentialIsPublicOnly(): Promise<boolean> {
     if (this.guard && this.guard.expiresAt > this.now()) return this.guard.ok
@@ -386,6 +392,18 @@ export class GitHubGateway {
   private async checkCredential(): Promise<boolean> {
     let ok = false
     try {
+      // Only a classic PAT reports its grant (X-OAuth-Scopes). Fine-grained
+      // PATs (github_pat_) return no scope header and their repository grant
+      // cannot be read back, so public-only access cannot be proven; GitHub
+      // App and OAuth credentials (gho_/ghu_/ghs_/ghr_) are the wrong type.
+      if (!this.token.startsWith("ghp_")) {
+        this.log(
+          this.token.startsWith("github_pat_")
+            ? "[peephole] GitHub gateway disabled: fine-grained tokens cannot be proven public-only; use a scope-less classic token."
+            : "[peephole] GitHub gateway disabled: unsupported credential type; use a scope-less classic token.",
+        )
+        return this.recordGuard(false)
+      }
       this.upstreamRequestCount += 1
       const response = await this.fetcher(
         `${GITHUB_API_ORIGIN}/user/repos?visibility=private&per_page=1&page=1`,
@@ -399,7 +417,7 @@ export class GitHubGateway {
       this.recordQuota(response.headers)
       const scopes = response.headers.get("x-oauth-scopes")
       const scopesArePublicOnly =
-        scopes === null ||
+        scopes !== null &&
         scopes
           .split(",")
           .map((scope) => scope.trim())
@@ -421,6 +439,10 @@ export class GitHubGateway {
         "[peephole] GitHub gateway disabled: credential check could not complete.",
       )
     }
+    return this.recordGuard(ok)
+  }
+
+  private recordGuard(ok: boolean): boolean {
     this.guard = {
       ok,
       expiresAt:
@@ -565,18 +587,6 @@ function isRateLimitedResponse(response: Response): boolean {
       (response.headers.get("x-ratelimit-remaining") === "0" ||
         response.headers.has("retry-after")))
   )
-}
-
-function getRetryAt(headers: Headers, now: () => number): Date | null {
-  const retryAfter = Number(headers.get("retry-after"))
-  if (headers.has("retry-after") && Number.isFinite(retryAfter)) {
-    return new Date(now() + Math.max(0, retryAfter) * 1000)
-  }
-  const reset = Number(headers.get("x-ratelimit-reset"))
-  if (headers.has("x-ratelimit-reset") && Number.isFinite(reset) && reset > 0) {
-    return new Date(reset * 1000)
-  }
-  return null
 }
 
 function invalidResponse(): GatewayFailure {

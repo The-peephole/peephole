@@ -327,11 +327,54 @@ describe("GitHubGateway", () => {
       )
     })
 
-    it("accepts a fine-grained token (no scope header) that sees no private repositories", async () => {
-      const { gateway } = setup({ scopes: null })
+    it("accepts a scope-less classic token that sees no private repositories", async () => {
+      const { gateway } = setup({ scopes: "" })
 
       expect((await call(gateway, repoPath)).status).toBe(200)
     })
+
+    it("disables a classic token whose scope header is missing", async () => {
+      const { gateway } = setup({ scopes: null })
+
+      const response = await call(gateway, repoPath)
+
+      expect(response.status).toBe(503)
+      expect(response.headers[GITHUB_GATEWAY_HEADER]).toBe("disabled")
+    })
+
+    it("disables a fine-grained token even when it lists no private repositories", async () => {
+      // Fine-grained tokens return no X-OAuth-Scopes and their repository
+      // grant cannot be read back, so public-only cannot be proven.
+      const { gateway, upstreamPaths, log } = setup(
+        { scopes: null, privateRepos: [] },
+        { token: "github_pat_11FINEGRAINED0000_test" },
+      )
+
+      const response = await call(gateway, repoPath)
+
+      expect(response.status).toBe(503)
+      expect(response.headers[GITHUB_GATEWAY_HEADER]).toBe("disabled")
+      expect(upstreamPaths()).toEqual([])
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("fine-grained"))
+    })
+
+    it.each([
+      "gho_oauth",
+      "ghu_user_to_server",
+      "ghs_installation",
+      "ghr_refresh",
+      "opaque-token",
+    ])(
+      "rejects the %s credential type without sending it upstream",
+      async (token) => {
+        const { gateway, upstreamPaths } = setup({}, { token })
+
+        const response = await call(gateway, repoPath)
+
+        expect(response.status).toBe(503)
+        expect(upstreamPaths()).toEqual([])
+      },
+    )
 
     it("fails closed when the check itself fails, then re-checks later", async () => {
       const { gateway, fetcher, advance } = setup()
@@ -407,6 +450,49 @@ describe("GitHubGateway", () => {
       expect(response.status).toBe(429)
       expect(response.headers["retry-after"]).toBeDefined()
     })
+
+    it.each([
+      ["numeric seconds", 429, { "retry-after": "120" }, 120],
+      [
+        "an HTTP-date",
+        429,
+        { "retry-after": new Date(1_000_000 + 300_000).toUTCString() },
+        300,
+      ],
+      [
+        "X-RateLimit-Reset only",
+        403,
+        { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1600" },
+        600,
+      ],
+      [
+        "an invalid Retry-After with a reset",
+        429,
+        { "retry-after": "soon", "x-ratelimit-reset": "1450" },
+        450,
+      ],
+      ["an invalid Retry-After alone", 429, { "retry-after": "soon" }, 60],
+      ["an empty Retry-After", 429, { "retry-after": "" }, 60],
+      ["a secondary 403 with Retry-After", 403, { "retry-after": "30" }, 30],
+      ["a headerless 429", 429, {}, 60],
+    ])(
+      "derives the same retry instant as GitHubClient for %s",
+      async (_label, status, headers, expectedSeconds) => {
+        const { gateway, fetcher } = setup()
+        await call(gateway, repoPath)
+        fetcher.mockImplementationOnce(
+          async () => new Response("{}", { status, headers }),
+        )
+
+        const response = await call(gateway, `${repoPath}/branches/main`)
+
+        expect(response.status).toBe(429)
+        expect(Number(response.headers["retry-after"])).toBe(expectedSeconds)
+        expect(Number(response.headers["x-ratelimit-reset"])).toBe(
+          1_000 + expectedSeconds,
+        )
+      },
+    )
 
     it("treats a 403 with exhausted primary quota as rate-limited", async () => {
       const { gateway, fetcher } = setup()

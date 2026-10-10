@@ -27,21 +27,27 @@ export interface GitHubGatewayFetcherOptions {
  * not-found, rate limits, upstream failures -- are returned as-is, never
  * retried directly.
  */
-export function createGitHubGatewayFetcher(
+export function createGitHubGatewayTransport(
   options: GitHubGatewayFetcherOptions,
-): typeof fetch {
+): {
+  fetcher: typeof fetch
+  /** "gateway" with a live session, otherwise "direct"; see GitHubClient. */
+  rateLimitScope: () => Promise<string>
+} {
   const directFetch = (options.directFetch ?? globalThis.fetch).bind(globalThis)
   const now = options.now ?? Date.now
   const gatewayUrl = new URL(GATEWAY_PATH, options.previewApiBaseUrl)
+  const liveSession = async () => {
+    const session = await options.getSession()
+    return session && Date.parse(session.expiresAt) > now() ? session : null
+  }
 
-  return async (input, init) => {
+  const fetcher: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input))
     if (url.origin !== GITHUB_API_ORIGIN) return directFetch(input, init)
 
-    const session = await options.getSession()
-    if (!session || Date.parse(session.expiresAt) <= now()) {
-      return directFetch(input, init)
-    }
+    const session = await liveSession()
+    if (!session) return directFetch(input, init)
 
     const response = await directFetch(gatewayUrl, {
       method: "POST",
@@ -73,5 +79,10 @@ export function createGitHubGatewayFetcher(
     // Preview-API infrastructure errors (413, 415, 500, ...) surface through
     // GitHubClient's normal "unavailable" mapping.
     return response
+  }
+
+  return {
+    fetcher,
+    rateLimitScope: async () => ((await liveSession()) ? "gateway" : "direct"),
   }
 }
