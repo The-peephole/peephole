@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest"
 
 import { RepositoryMetadataCache } from "../core/github/repositoryMetadataCache"
 import { DEFAULT_REPOSITORY_REF } from "../core/github/repositoryRef"
-import type { RepositoryMetadata } from "../types/repository"
+import type {
+  RepositoryIdentity,
+  RepositoryMetadata,
+} from "../types/repository"
 
 const metadata: RepositoryMetadata = {
   repositoryId: 10270250,
@@ -217,5 +220,33 @@ describe("RepositoryMetadataCache", () => {
 
     await expect(cache.load(target)).resolves.toBe(updatedBranchMetadata)
     expect(getRepositoryMetadataAtBranch).toHaveBeenCalledTimes(2)
+  })
+
+  it("evicts least-recently-used refs and commits at the configured bounds", async () => {
+    const repository = { owner: "facebook", repo: "react" }
+    const getRepositoryMetadataAtBranch = vi.fn(
+      async (_repository: RepositoryIdentity, branchName: string) => ({
+        ...metadata,
+        commitSha: branchName === "feature/a" ? "a".repeat(40) : "b".repeat(40),
+      }),
+    )
+    const cache = new RepositoryMetadataCache(
+      {
+        getRepositoryMetadata: vi.fn(),
+        getRepositoryMetadataAtBranch,
+      },
+      {
+        currentRefTtlMs: 1_000,
+        maxCurrentRefs: 1,
+        maxCommits: 1,
+        now: () => 100,
+      },
+    )
+
+    await cache.load({ repository, ref: branchRef("feature/a") })
+    await cache.load({ repository, ref: branchRef("feature/b") })
+    await cache.load({ repository, ref: branchRef("feature/a") })
+
+    expect(getRepositoryMetadataAtBranch).toHaveBeenCalledTimes(3)
   })
 })

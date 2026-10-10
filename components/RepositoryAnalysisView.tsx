@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react"
 
 import { resolveBackendExecutionSupport } from "../core/analyzer/backendRuntimeAdapter"
+import { GitHubApiError } from "../core/github/client"
 import { isSafeExternalUrl } from "../core/github/externalUrlPolicy"
 import { DEFAULT_REPOSITORY_REF } from "../core/github/repositoryRef"
 import { toRootBuildTargetAnalysis } from "../core/preview/buildAdapters"
@@ -1144,6 +1145,13 @@ function getPreservedAnalysis(state: AnalysisState): RepositoryAnalysis | null {
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
+  if (
+    error instanceof GitHubApiError &&
+    error.code === "rate-limited" &&
+    error.retryAt
+  ) {
+    return `GitHub API rate limit reached. Try again after ${error.retryAt.toLocaleString()}.`
+  }
   return error instanceof Error ? error.message : fallback
 }
 

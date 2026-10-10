@@ -50,6 +50,8 @@ const BACKEND_DISCOVERY_UNAVAILABLE: BackendDetection = {
   truncated: false,
 }
 
+const MAX_CACHED_REPOSITORY_ANALYSES = 64
+
 export class RepositoryAnalysisService {
   private readonly cache = new Map<string, RepositoryAnalysis>()
 
@@ -66,6 +68,8 @@ export class RepositoryAnalysisService {
     const cached = this.cache.get(cacheKey)
 
     if (cached) {
+      this.cache.delete(cacheKey)
+      this.cache.set(cacheKey, cached)
       return cached
     }
 
@@ -86,12 +90,21 @@ export class RepositoryAnalysisService {
       nestedBackend,
     )
     this.cache.set(cacheKey, analysis)
+    this.evictOldest()
 
     return analysis
   }
 
   clear(): void {
     this.cache.clear()
+  }
+
+  private evictOldest(): void {
+    while (this.cache.size > MAX_CACHED_REPOSITORY_ANALYSES) {
+      const oldestKey = this.cache.keys().next().value as string | undefined
+      if (oldestKey === undefined) return
+      this.cache.delete(oldestKey)
+    }
   }
 
   /**

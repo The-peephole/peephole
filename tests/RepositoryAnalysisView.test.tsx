@@ -552,6 +552,19 @@ describe("RepositoryAnalysisView", () => {
     )
   })
 
+  it("shows the local retry time for a GitHub rate-limit response", async () => {
+    const retryAt = new Date("2030-01-01T00:00:00.000Z")
+    const loader = vi
+      .fn<RepositoryAnalysisLoader>()
+      .mockRejectedValue(
+        new GitHubApiError("rate-limited", "rate limited", 403, retryAt),
+      )
+    const container = await renderView(loader, roots)
+
+    expect(container.textContent).toContain("GitHub API rate limit reached")
+    expect(container.textContent).toContain(retryAt.toLocaleString())
+  })
+
   it("surfaces an explicit error when the selected branch no longer exists, without silently falling back", async () => {
     const loader = vi.fn<RepositoryAnalysisLoader>((target) => {
       if (target.ref.kind === "branch") {
