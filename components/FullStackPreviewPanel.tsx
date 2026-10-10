@@ -10,10 +10,7 @@ import {
   type SetStateAction,
 } from "react"
 
-import {
-  resolveBackendExecutionSupport,
-  resolveBackendRuntimePlan,
-} from "../core/analyzer/backendRuntimeAdapter"
+import { resolveFullStackCandidateSupport } from "../core/fullstack/candidateSupport"
 import {
   FullStackPreviewApiError,
   createFullStackPreviewRequest,
@@ -27,9 +24,7 @@ import {
 } from "../core/preview/sessionStorage"
 import type { BuildTargetAnalysis, RepositoryAnalysis } from "../types/analysis"
 import type { BackendCandidate } from "../types/backend"
-import type { BackendExecutionSupport } from "../types/backendRuntime"
 import type { FullStackPreview } from "../types/fullstackPreview"
-import type { PreviewRepositoryRef } from "../types/preview"
 
 const TERMINAL_STATUSES = new Set<FullStackPreview["status"]>([
   "stopped",
@@ -693,25 +688,6 @@ function formatCandidate(candidate: BackendCandidate): string {
   const framework =
     candidate.framework === "unknown" ? "Node.js" : candidate.framework
   return `${candidate.sourceRoot} (${framework})`
-}
-
-function resolveFullStackCandidateSupport(
-  repository: PreviewRepositoryRef,
-  candidate: BackendCandidate,
-): BackendExecutionSupport {
-  const standaloneSupport = resolveBackendExecutionSupport(candidate)
-  if (standaloneSupport.supported) return standaloneSupport
-
-  const trustedPlan = resolveBackendRuntimePlan(repository, candidate)
-  return trustedPlan?.databaseRequirement
-    ? {
-        supported: true,
-        adapterId: trustedPlan.adapterId,
-        evidence: [
-          "The exact pg + DATABASE_URL shape is eligible for trusted full-stack admission; the server will verify the exact commit.",
-        ],
-      }
-    : standaloneSupport
 }
 
 function formatStatus(status: FullStackPreview["status"]): string {

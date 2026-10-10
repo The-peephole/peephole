@@ -341,6 +341,7 @@ a {
 }
 
 .peephole__preview-action,
+.peephole__discovery,
 .peephole__fullstack,
 .peephole__job {
   background: var(--peephole-bg-subtle);
@@ -352,6 +353,24 @@ a {
 .peephole__fullstack {
   display: grid;
   gap: 10px;
+}
+
+.peephole__discovery {
+  display: grid;
+  gap: 10px;
+}
+
+.peephole__discovery h3 {
+  color: var(--peephole-fg);
+  font-size: 13px;
+  margin: 0;
+}
+
+.peephole__discovery > p {
+  color: var(--peephole-fg-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0;
 }
 
 .peephole__fullstack h3 {

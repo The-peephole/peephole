@@ -4,6 +4,7 @@ import { resolveBackendExecutionSupport } from "../core/analyzer/backendRuntimeA
 import { isSafeExternalUrl } from "../core/github/externalUrlPolicy"
 import { DEFAULT_REPOSITORY_REF } from "../core/github/repositoryRef"
 import { toRootBuildTargetAnalysis } from "../core/preview/buildAdapters"
+import { RootFullStackDiscovery } from "./RootFullStackDiscovery"
 import type {
   BuildTargetAnalysis,
   BuildTargetAnalysisLoader,
@@ -378,6 +379,7 @@ function AnalysisContent({
             analysis={preservedAnalysis}
             key={`${preservedAnalysis.repository.repositoryId}:${preservedAnalysis.repository.commitSha}:${selectedBranch}`}
             loadBuildTargetAnalysis={loadBuildTargetAnalysis}
+            onRetryRepositoryAnalysis={onRetry}
             renderPreviewControls={renderPreviewControls}
             renderFullStackPreviewControls={renderFullStackPreviewControls}
             renderBackendRuntimeControls={renderBackendRuntimeControls}
@@ -394,6 +396,7 @@ function AnalysisResults({
   renderPreviewControls,
   renderFullStackPreviewControls,
   renderBackendRuntimeControls,
+  onRetryRepositoryAnalysis,
 }: {
   analysis: RepositoryAnalysis
   loadBuildTargetAnalysis: BuildTargetAnalysisLoader
@@ -407,6 +410,7 @@ function AnalysisResults({
     candidate: BackendCandidate
     repository: RepositoryMetadata
   }) => ReactNode
+  onRetryRepositoryAnalysis: () => void
 }) {
   const rootAnalysis = useMemo(
     () => toRootBuildTargetAnalysis(analysis),
@@ -496,10 +500,21 @@ function AnalysisResults({
         <>
           <PreviewStatus mode={targetAnalysis.preview.mode} />
           {renderPreviewControls?.({ ...analysis, ...targetAnalysis })}
-          {renderFullStackPreviewControls?.({
-            ...analysis,
-            ...targetAnalysis,
-          })}
+          {renderFullStackPreviewControls &&
+            (targetAnalysis.target.sourceRoot === "." &&
+            targetAnalysis.preview.mode !== "native-static-build" ? (
+              <RootFullStackDiscovery
+                analysis={analysis}
+                loadBuildTargetAnalysis={loadBuildTargetAnalysis}
+                onRetryStructure={onRetryRepositoryAnalysis}
+                renderControls={renderFullStackPreviewControls}
+              />
+            ) : (
+              renderFullStackPreviewControls({
+                ...analysis,
+                ...targetAnalysis,
+              })
+            ))}
 
           <section className="peephole__section">
             <h3>Stack</h3>
