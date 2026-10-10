@@ -53,6 +53,8 @@ export class GitHubRequestCache {
     loader: (signal: AbortSignal) => Promise<T>,
     options: GitHubRequestLoadOptions,
   ): Promise<T> {
+    if (options.signal?.aborted) throw createAbortError()
+
     const cached = this.get<T>(key)
     if (cached.found) return cached.value
 
@@ -100,7 +102,12 @@ export class GitHubRequestCache {
           typeof options.ttlMs === "function"
             ? options.ttlMs(value)
             : options.ttlMs
-        if (ttlMs !== 0) {
+        if (
+          ttlMs !== 0 &&
+          !controller.signal.aborted &&
+          pending.subscribers > 0 &&
+          this.pending.get(key) === pending
+        ) {
           this.set(key, value, options.sizeOf(value), ttlMs)
         }
         return value

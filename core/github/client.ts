@@ -415,6 +415,7 @@ export class GitHubClient {
       signal,
       {
         ttlMs: (value) => (value === null ? this.missingContentTtlMs : null),
+        validateValue: (value) => assertValidBase64(value.content, path),
       },
     )
 
@@ -560,6 +561,7 @@ export class GitHubClient {
     signal?: AbortSignal,
     cachePolicy: {
       ttlMs: number | null | ((value: unknown) => number | null)
+      validateValue?: (value: T) => void
     } = { ttlMs: 0 },
   ): Promise<T | null> {
     return this.loadRequest(
@@ -589,6 +591,8 @@ export class GitHubClient {
             response.status,
           )
         }
+
+        cachePolicy.validateValue?.(payload)
 
         return payload
       },
@@ -912,6 +916,22 @@ function decodeBase64Utf8(
 
     return new TextDecoder().decode(bytes)
   } catch {
+    throw new GitHubApiError(
+      "invalid-response",
+      `${path} could not be decoded as repository text.`,
+    )
+  }
+}
+
+function assertValidBase64(content: string, path: string): void {
+  const normalized = content.replace(/\s/g, "")
+  const valid =
+    normalized.length % 4 === 0 &&
+    /^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/.test(
+      normalized,
+    )
+
+  if (!valid) {
     throw new GitHubApiError(
       "invalid-response",
       `${path} could not be decoded as repository text.`,

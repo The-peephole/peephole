@@ -104,6 +104,153 @@ describe("GitHub request optimization", () => {
     expect(fetcher).toHaveBeenCalledTimes(1)
   })
 
+  it("rejects a pre-aborted caller before reading a cached response", async () => {
+    const fetcher = vi.fn<typeof fetch>(() =>
+      Promise.resolve(fileResponse("package.json", "{}")),
+    )
+    const client = new GitHubClient({ fetcher, requestCache: {} })
+
+    await client.getRepositoryTextFile(metadata, "package.json", 1024)
+    const cancelled = new AbortController()
+    cancelled.abort()
+
+    await expect(
+      client.getRepositoryTextFile(
+        metadata,
+        "package.json",
+        1024,
+        cancelled.signal,
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not start a request for a pre-aborted cache miss", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+    const client = new GitHubClient({ fetcher, requestCache: {} })
+    const cancelled = new AbortController()
+    cancelled.abort()
+
+    await expect(
+      client.getRepositoryTextFile(
+        metadata,
+        "package.json",
+        1024,
+        cancelled.signal,
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" })
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it("does not cache a late success after every subscriber aborts", async () => {
+    const responses: Array<(response: Response) => void> = []
+    const fetcher = vi.fn<typeof fetch>(
+      () =>
+        new Promise<Response>((resolve) => {
+          responses.push(resolve)
+        }),
+    )
+    const client = new GitHubClient({ fetcher, requestCache: {} })
+    const firstAbort = new AbortController()
+    const secondAbort = new AbortController()
+
+    const first = client.getRepositoryTextFile(
+      metadata,
+      "package.json",
+      1024,
+      firstAbort.signal,
+    )
+    const second = client.getRepositoryTextFile(
+      metadata,
+      "package.json",
+      1024,
+      secondAbort.signal,
+    )
+    const firstRejection = expect(first).rejects.toMatchObject({
+      name: "AbortError",
+    })
+    const secondRejection = expect(second).rejects.toMatchObject({
+      name: "AbortError",
+    })
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
+    firstAbort.abort()
+    secondAbort.abort()
+    responses[0]?.(fileResponse("package.json", '{"late":true}'))
+
+    await firstRejection
+    await secondRejection
+    await Promise.resolve()
+
+    const next = client.getRepositoryTextFile(metadata, "package.json", 1024)
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2))
+    responses[1]?.(fileResponse("package.json", '{"fresh":true}'))
+
+    await expect(next).resolves.toBe('{"fresh":true}')
+  })
+
+  it("does not let a cancelled old request overwrite a newer completion", async () => {
+    const responses: Array<(response: Response) => void> = []
+    const fetcher = vi.fn<typeof fetch>(
+      () =>
+        new Promise<Response>((resolve) => {
+          responses.push(resolve)
+        }),
+    )
+    const client = new GitHubClient({ fetcher, requestCache: {} })
+    const oldAbort = new AbortController()
+    const old = client.getRepositoryTextFile(
+      metadata,
+      "package.json",
+      1024,
+      oldAbort.signal,
+    )
+    const oldRejection = expect(old).rejects.toMatchObject({
+      name: "AbortError",
+    })
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
+
+    oldAbort.abort()
+    const current = client.getRepositoryTextFile(metadata, "package.json", 1024)
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2))
+    responses[1]?.(fileResponse("package.json", '{"version":"new"}'))
+    await expect(current).resolves.toContain('"new"')
+
+    responses[0]?.(fileResponse("package.json", '{"version":"old"}'))
+    await oldRejection
+    await Promise.resolve()
+
+    await expect(
+      client.getRepositoryTextFile(metadata, "package.json", 1024),
+    ).resolves.toContain('"new"')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not cache a file payload whose Base64 content cannot be decoded", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          type: "file",
+          path: "package.json",
+          size: 4,
+          encoding: "base64",
+          content: "%%%invalid%%%",
+        }),
+      )
+      .mockImplementation(() =>
+        Promise.resolve(fileResponse("package.json", "{}")),
+      )
+    const client = new GitHubClient({ fetcher, requestCache: {} })
+
+    await expect(
+      client.getRepositoryTextFile(metadata, "package.json", 1024),
+    ).rejects.toMatchObject({ code: "invalid-response" })
+    await expect(
+      client.getRepositoryTextFile(metadata, "package.json", 1024),
+    ).resolves.toBe("{}")
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
   it("keeps different commits isolated and reapplies each caller's byte limit", async () => {
     const fetcher = vi.fn<typeof fetch>(() =>
       Promise.resolve(fileResponse("package.json", '{"name":"cached"}')),
@@ -116,6 +263,10 @@ describe("GitHub request optimization", () => {
     await expect(
       client.getRepositoryTextFile(metadata, "package.json", 4),
     ).rejects.toMatchObject({ code: "invalid-response" })
+    await expect(
+      client.getRepositoryTextFile(metadata, "package.json", 1024),
+    ).resolves.toContain("cached")
+    expect(fetcher).toHaveBeenCalledTimes(1)
     await client.getRepositoryTextFile(
       { ...metadata, commitSha: SHA_B },
       "package.json",

@@ -76,7 +76,13 @@ and simultaneous callers share one network operation.
   file and is retained for only 15 seconds. Network, validation, 403, and 429
   failures are not cached.
 - Concurrent callers receive independent cancellation. The shared fetch is
-  aborted only when every subscriber has cancelled.
+  aborted only when every subscriber has cancelled. A pre-aborted caller is
+  rejected before cache lookup or loader start, and a cancelled shared
+  request's late completion is never cached or allowed to replace a newer
+  request for the same key.
+- A GitHub file payload must contain decodable Base64 before it can enter the
+  immutable cache. Per-caller `maxBytes` failures do not evict an otherwise
+  valid shared response.
 - This is an opportunistic MV3 service-worker memory cache, not persistence.
   Chrome may stop the worker and discard it at any time.
 
