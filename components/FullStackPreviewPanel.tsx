@@ -10,10 +10,7 @@ import {
   type SetStateAction,
 } from "react"
 
-import {
-  resolveBackendExecutionSupport,
-  resolveBackendRuntimePlan,
-} from "../core/analyzer/backendRuntimeAdapter"
+import { resolveFullStackCandidateSupport } from "../core/fullstack/candidateSupport"
 import {
   FullStackPreviewApiError,
   createFullStackPreviewRequest,
@@ -27,9 +24,7 @@ import {
 } from "../core/preview/sessionStorage"
 import type { BuildTargetAnalysis, RepositoryAnalysis } from "../types/analysis"
 import type { BackendCandidate } from "../types/backend"
-import type { BackendExecutionSupport } from "../types/backendRuntime"
 import type { FullStackPreview } from "../types/fullstackPreview"
-import type { PreviewRepositoryRef } from "../types/preview"
 
 const TERMINAL_STATUSES = new Set<FullStackPreview["status"]>([
   "stopped",
@@ -63,6 +58,7 @@ export interface FullStackPreviewPanelProps {
   pollIntervalMs?: number
   retainedPreview?: FullStackPreview | null
   onRetainedPreviewChange?: (preview: FullStackPreview | null) => void
+  onCreatePendingChange?: (pending: boolean) => void
 }
 
 export function FullStackPreviewPanel({
@@ -76,6 +72,7 @@ export function FullStackPreviewPanel({
   pollIntervalMs = 2_000,
   retainedPreview,
   onRetainedPreviewChange,
+  onCreatePendingChange,
 }: FullStackPreviewPanelProps) {
   const repository = useMemo(
     () => ({
@@ -161,12 +158,18 @@ export function FullStackPreviewPanel({
   }, [clearSession, getSession])
 
   useEffect(() => {
+    const hadActiveRequest = activeRequest.current !== null
     activeRequest.current?.abort()
     activeRequest.current = null
+    if (hadActiveRequest) onCreatePendingChange?.(false)
     createKey.current = null
     setState({ status: "idle" })
-    return () => activeRequest.current?.abort()
-  }, [requestIdentity])
+    return () => {
+      const hasActiveRequest = activeRequest.current !== null
+      activeRequest.current?.abort()
+      if (hasActiveRequest) onCreatePendingChange?.(false)
+    }
+  }, [onCreatePendingChange, requestIdentity])
 
   useEffect(() => {
     if (
@@ -254,6 +257,7 @@ export function FullStackPreviewPanel({
       createKey,
       setAuthenticationStatus,
       setRetainedPreview,
+      onCreatePendingChange,
     )
   }
 
@@ -622,12 +626,14 @@ function startFullStackPreview(
   createKey: MutableRefObject<string | null>,
   setAuthenticationStatus: Dispatch<SetStateAction<AuthenticationStatus>>,
   setRetainedPreview: (preview: FullStackPreview | null) => void,
+  onCreatePendingChange?: (pending: boolean) => void,
 ): void {
   if (activeRequest.current && !activeRequest.current.signal.aborted) return
   activeRequest.current?.abort()
   const abortController = new AbortController()
   activeRequest.current = abortController
   setState({ status: "creating" })
+  onCreatePendingChange?.(true)
   createKey.current ??= `fullstack-request-${crypto.randomUUID()}`
 
   void api
@@ -639,6 +645,7 @@ function startFullStackPreview(
       (preview) => {
         if (!abortController.signal.aborted) {
           activeRequest.current = null
+          onCreatePendingChange?.(false)
           setRetainedPreview(preview)
           setState({ status: "idle" })
         }
@@ -646,6 +653,7 @@ function startFullStackPreview(
       (error: unknown) => {
         if (!abortController.signal.aborted) {
           activeRequest.current = null
+          onCreatePendingChange?.(false)
           setState(createErrorState(error))
           if (isAuthenticationError(error)) {
             setAuthenticationStatus("unauthenticated")
@@ -693,25 +701,6 @@ function formatCandidate(candidate: BackendCandidate): string {
   const framework =
     candidate.framework === "unknown" ? "Node.js" : candidate.framework
   return `${candidate.sourceRoot} (${framework})`
-}
-
-function resolveFullStackCandidateSupport(
-  repository: PreviewRepositoryRef,
-  candidate: BackendCandidate,
-): BackendExecutionSupport {
-  const standaloneSupport = resolveBackendExecutionSupport(candidate)
-  if (standaloneSupport.supported) return standaloneSupport
-
-  const trustedPlan = resolveBackendRuntimePlan(repository, candidate)
-  return trustedPlan?.databaseRequirement
-    ? {
-        supported: true,
-        adapterId: trustedPlan.adapterId,
-        evidence: [
-          "The exact pg + DATABASE_URL shape is eligible for trusted full-stack admission; the server will verify the exact commit.",
-        ],
-      }
-    : standaloneSupport
 }
 
 function formatStatus(status: FullStackPreview["status"]): string {

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useCallback, useState } from "react"
 
 import { RepositoryAnalysisView } from "../../components/RepositoryAnalysisView"
 import { BackendRuntimeControl } from "../../components/BackendRuntimeControl"
@@ -8,7 +8,9 @@ import type { BackendRuntimeApi } from "../../core/backendRuntime/apiClient"
 import type { FullStackPreviewApi } from "../../core/fullstack/apiClient"
 import type { PreviewApi } from "../../core/preview/apiClient"
 import type {
+  BuildTargetAnalysis,
   BuildTargetAnalysisLoader,
+  RepositoryAnalysis,
   RepositoryAnalysisLoader,
 } from "../../types/analysis"
 import type { RepositoryLiveDeploymentLoader } from "../../types/deployment"
@@ -38,6 +40,11 @@ interface SidePanelAppProps {
   fullStackPreviewEnabled?: boolean
 }
 
+interface RetainedFullStackControl {
+  analysis: BuildTargetAnalysis & RepositoryAnalysis
+  preview: FullStackPreview
+}
+
 export function SidePanelApp({
   repository,
   loadRepositoryAnalysis,
@@ -53,8 +60,16 @@ export function SidePanelApp({
   fullStackPreviewApi = null,
   fullStackPreviewEnabled = false,
 }: SidePanelAppProps) {
-  const [retainedFullStackPreview, setRetainedFullStackPreview] =
-    useState<FullStackPreview | null>(null)
+  const [retainedFullStackControl, setRetainedFullStackControl] =
+    useState<RetainedFullStackControl | null>(null)
+  const updateRetainedFullStackPreview = useCallback(
+    (preview: FullStackPreview | null) => {
+      setRetainedFullStackControl((current) =>
+        preview && current ? { ...current, preview } : null,
+      )
+    },
+    [],
+  )
 
   return (
     <main className="peephole-panel">
@@ -65,8 +80,22 @@ export function SidePanelApp({
         </div>
       </header>
 
+      {fullStackPreviewEnabled && retainedFullStackControl && (
+        <FullStackPreviewPanel
+          analysis={retainedFullStackControl.analysis}
+          configurationError={previewConfigurationError}
+          connectGitHub={connectGitHub}
+          fullStackPreviewApi={fullStackPreviewApi}
+          key={`active:${retainedFullStackControl.preview.id}`}
+          onRetainedPreviewChange={updateRetainedFullStackPreview}
+          previewArtifactBaseDomain={previewArtifactBaseDomain}
+          retainedPreview={retainedFullStackControl.preview}
+        />
+      )}
+
       {repository ? (
         <RepositoryAnalysisView
+          hasRetainedFullStackPreview={Boolean(retainedFullStackControl)}
           loadRepositoryAnalysis={loadRepositoryAnalysis}
           loadBuildTargetAnalysis={loadBuildTargetAnalysis}
           loadRepositoryBranches={loadRepositoryBranches}
@@ -87,18 +116,24 @@ export function SidePanelApp({
           }
           renderFullStackPreviewControls={
             fullStackPreviewEnabled
-              ? (analysis) => (
-                  <FullStackPreviewPanel
-                    analysis={analysis}
-                    configurationError={previewConfigurationError}
-                    connectGitHub={connectGitHub}
-                    fullStackPreviewApi={fullStackPreviewApi}
-                    key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
-                    onRetainedPreviewChange={setRetainedFullStackPreview}
-                    previewArtifactBaseDomain={previewArtifactBaseDomain}
-                    retainedPreview={retainedFullStackPreview}
-                  />
-                )
+              ? (analysis, options) =>
+                  retainedFullStackControl ? null : (
+                    <FullStackPreviewPanel
+                      analysis={analysis}
+                      configurationError={previewConfigurationError}
+                      connectGitHub={connectGitHub}
+                      fullStackPreviewApi={fullStackPreviewApi}
+                      key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
+                      onCreatePendingChange={options?.onCreatePendingChange}
+                      onRetainedPreviewChange={(preview) =>
+                        setRetainedFullStackControl(
+                          preview ? { analysis, preview } : null,
+                        )
+                      }
+                      previewArtifactBaseDomain={previewArtifactBaseDomain}
+                      retainedPreview={null}
+                    />
+                  )
               : undefined
           }
           renderPreviewControls={(analysis) => (
