@@ -19,7 +19,7 @@ import { createSidePanelThemeStore } from "../core/sidepanel/themeStorage"
 
 export default defineBackground(() => {
   void clearLegacyStoredGitHubToken()
-  const githubClient = new GitHubClient()
+  const githubClient = new GitHubClient({ requestCache: {} })
   const metadataCache = new RepositoryMetadataCache(githubClient)
   const analysisService = new RepositoryAnalysisService(
     metadataCache.load,

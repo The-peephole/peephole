@@ -20,6 +20,8 @@ interface TargetKnownFilesSource {
   ): Promise<RepositoryFileSnapshot>
 }
 
+const MAX_CACHED_TARGET_ANALYSES = 128
+
 export class BuildTargetAnalysisService {
   private readonly cache = new Map<string, BuildTargetAnalysis>()
 
@@ -40,15 +42,28 @@ export class BuildTargetAnalysisService {
       target.sourceRoot,
     )}:${TARGET_ANALYZER_VERSION}`
     const cached = this.cache.get(cacheKey)
-    if (cached) return cached
+    if (cached) {
+      this.cache.delete(cacheKey)
+      this.cache.set(cacheKey, cached)
+      return cached
+    }
 
     const files = await this.knownFiles.load(repository, target, options.signal)
     const analysis = analyzeBuildTarget(repository, target, files)
     this.cache.set(cacheKey, analysis)
+    this.evictOldest()
     return analysis
   }
 
   clear(): void {
     this.cache.clear()
+  }
+
+  private evictOldest(): void {
+    while (this.cache.size > MAX_CACHED_TARGET_ANALYSES) {
+      const oldestKey = this.cache.keys().next().value as string | undefined
+      if (oldestKey === undefined) return
+      this.cache.delete(oldestKey)
+    }
   }
 }
