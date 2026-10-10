@@ -1,4 +1,11 @@
-import { useEffect, useId, useMemo, useState, type ReactNode } from "react"
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react"
 
 import { resolveFullStackCandidateSupport } from "../core/fullstack/candidateSupport"
 import type {
@@ -14,6 +21,7 @@ interface RootFullStackDiscoveryProps {
   analysis: RepositoryAnalysis
   hasRetainedFullStackPreview?: boolean
   loadBuildTargetAnalysis: BuildTargetAnalysisLoader
+  onCreatePendingChange?: (pending: boolean) => void
   onRetryStructure: () => void
   renderControls: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
@@ -44,6 +52,7 @@ export function RootFullStackDiscovery({
   analysis,
   hasRetainedFullStackPreview = false,
   loadBuildTargetAnalysis,
+  onCreatePendingChange,
   onRetryStructure,
   renderControls,
 }: RootFullStackDiscoveryProps) {
@@ -65,6 +74,15 @@ export function RootFullStackDiscovery({
   const [state, setState] = useState<DiscoveryState>({ status: "loading" })
   const [selectedSourceRoot, setSelectedSourceRoot] = useState("")
   const [createPending, setCreatePending] = useState(false)
+  // Must stay referentially stable: the panel aborts its in-flight Create
+  // whenever this callback identity changes.
+  const handleCreatePendingChange = useCallback(
+    (pending: boolean) => {
+      setCreatePending(pending)
+      onCreatePendingChange?.(pending)
+    },
+    [onCreatePendingChange],
+  )
   const structureIsComplete =
     analysis.structure.complete && !analysis.structure.truncated
 
@@ -352,7 +370,7 @@ export function RootFullStackDiscovery({
           </p>
           {renderControls(
             { ...analysis, ...selectedFrontend.value },
-            { onCreatePendingChange: setCreatePending },
+            { onCreatePendingChange: handleCreatePendingChange },
           )}
         </>
       )}

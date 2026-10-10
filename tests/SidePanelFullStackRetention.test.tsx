@@ -210,6 +210,127 @@ describe("SidePanelApp full-stack retention", () => {
       noFrontend.repository.commitSha.slice(0, 7),
     )
   })
+
+  it("locks the branch selector until a pending root create returns its job ID", async () => {
+    const main = createRootAnalysis({ commitSha: "5".repeat(40) })
+    const feature = createRootAnalysis({ commitSha: "6".repeat(40) })
+    const pendingCreate = createDeferred<FullStackPreview>()
+    let createSignal: AbortSignal | undefined
+    const api = createApi({
+      create: vi.fn((_request, options) => {
+        createSignal = options?.signal
+        return pendingCreate.promise
+      }),
+    })
+    const container = await renderSidePanel({
+      analysisForBranch: (branch) => (branch === "feature" ? feature : main),
+      api,
+      branches: ["main", "feature"],
+      loadTarget: async (repository, target) =>
+        createTargetAnalysis(
+          repository.commitSha === main.repository.commitSha ? main : feature,
+          target.sourceRoot,
+        ),
+      roots,
+    })
+    const branch = getSelect(container, "branch")
+
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+    expect(branch.disabled).toBe(true)
+    await act(async () => setSelectValue(branch, "feature"))
+    expect(container.textContent).not.toContain(
+      feature.repository.commitSha.slice(0, 7),
+    )
+    expect(createSignal?.aborted).toBe(false)
+
+    const queued = createPreview(main)
+    await act(async () => pendingCreate.resolve(queued))
+    expect(createSignal?.aborted).toBe(false)
+    expect(getSelect(container, "branch").disabled).toBe(false)
+
+    await act(async () =>
+      setSelectValue(getSelect(container, "branch"), "feature"),
+    )
+    expect(container.textContent).toContain(
+      feature.repository.commitSha.slice(0, 7),
+    )
+    const activeControls = container.querySelector(".peephole__fullstack")
+    expect(activeControls?.textContent).toContain(queued.id)
+    expect(activeControls?.textContent).toContain(
+      main.repository.commitSha.slice(0, 7),
+    )
+    expect(getButton(container, "Cancel full-stack preview")).toBeTruthy()
+    expect(container.textContent).not.toContain("Run full-stack preview")
+    expect(api.create).toHaveBeenCalledTimes(1)
+  })
+
+  it("unlocks the branch selector after a pending create fails", async () => {
+    const analysis = createRootAnalysis({ commitSha: "7".repeat(40) })
+    const pendingCreate = createDeferred<FullStackPreview>()
+    const api = createApi({ create: vi.fn(() => pendingCreate.promise) })
+    const container = await renderSidePanel({
+      analysisForBranch: () => analysis,
+      api,
+      branches: ["main", "feature"],
+      loadTarget: async (_repository, target) =>
+        createTargetAnalysis(analysis, target.sourceRoot),
+      roots,
+    })
+
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+    expect(getSelect(container, "branch").disabled).toBe(true)
+
+    await act(async () =>
+      pendingCreate.reject(new Error("Full-stack admission failed.")),
+    )
+    expect(container.textContent).toContain("Full-stack admission failed.")
+    expect(getSelect(container, "branch").disabled).toBe(false)
+    expect(api.create).toHaveBeenCalledTimes(1)
+  })
+
+  it("locks branch and target selectors while a nested-target create is pending", async () => {
+    const analysis = createRootAnalysis({ commitSha: "8".repeat(40) })
+    const pendingCreate = createDeferred<FullStackPreview>()
+    let createSignal: AbortSignal | undefined
+    const api = createApi({
+      create: vi.fn((_request, options) => {
+        createSignal = options?.signal
+        return pendingCreate.promise
+      }),
+    })
+    const container = await renderSidePanel({
+      analysisForBranch: () => analysis,
+      api,
+      branches: ["main", "feature"],
+      loadTarget: async (_repository, target) =>
+        createTargetAnalysis(analysis, target.sourceRoot),
+      roots,
+    })
+    const target = getSelect(container, "preview-target")
+
+    await act(async () => setSelectValue(target, "frontend"))
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+    expect(target.disabled).toBe(true)
+    expect(getSelect(container, "branch").disabled).toBe(true)
+    await act(async () => setSelectValue(target, "."))
+    expect(target.value).toBe("frontend")
+    expect(createSignal?.aborted).toBe(false)
+
+    const queued = createPreview(analysis)
+    await act(async () => pendingCreate.resolve(queued))
+    expect(target.disabled).toBe(false)
+    expect(getSelect(container, "branch").disabled).toBe(false)
+    expect(
+      container.querySelector(".peephole__fullstack")?.textContent,
+    ).toContain(queued.id)
+    expect(api.create).toHaveBeenCalledTimes(1)
+  })
 })
 
 function createApi(

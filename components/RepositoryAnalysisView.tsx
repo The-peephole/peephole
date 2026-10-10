@@ -104,6 +104,9 @@ function RepositoryAnalysisSession({
   const [selectedRef, setSelectedRef] = useState<RepositoryRefSelection>(
     DEFAULT_REPOSITORY_REF,
   )
+  // A full-stack Create in flight is owned by a panel that a branch or
+  // target change would unmount (aborting it and losing the server job ID).
+  const [fullStackCreatePending, setFullStackCreatePending] = useState(false)
 
   useEffect(() => {
     const abortController = new AbortController()
@@ -197,8 +200,10 @@ function RepositoryAnalysisSession({
       />
       <BranchSelector
         branchState={branchState}
+        createPending={fullStackCreatePending}
         onRetry={() => setBranchRequestVersion((version) => version + 1)}
         onSelect={(branchName) => {
+          if (fullStackCreatePending) return
           const defaultBranch =
             branchState.status === "ready"
               ? branchState.value.defaultBranch
@@ -224,6 +229,8 @@ function RepositoryAnalysisSession({
         renderPreviewControls={renderPreviewControls}
         renderFullStackPreviewControls={renderFullStackPreviewControls}
         hasRetainedFullStackPreview={hasRetainedFullStackPreview}
+        fullStackCreatePending={fullStackCreatePending}
+        onFullStackCreatePendingChange={setFullStackCreatePending}
         renderBackendRuntimeControls={renderBackendRuntimeControls}
         loadBuildTargetAnalysis={loadBuildTargetAnalysis}
         selectedBranch={selectedBranch}
@@ -234,11 +241,13 @@ function RepositoryAnalysisSession({
 
 function BranchSelector({
   branchState,
+  createPending,
   onRetry,
   onSelect,
   selectedBranch,
 }: {
   branchState: BranchState
+  createPending: boolean
   onRetry: () => void
   onSelect: (branchName: string) => void
   selectedBranch: string
@@ -250,7 +259,7 @@ function BranchSelector({
       : selectedBranch
         ? [selectedBranch]
         : []
-  const disabled = branchState.status !== "ready"
+  const disabled = branchState.status !== "ready" || createPending
 
   return (
     <section className="peephole__branch">
@@ -277,6 +286,8 @@ function BranchSelector({
         )}
       </select>
       <div className="peephole__branch-help" id={descriptionId}>
+        {createPending &&
+          "Branch selection is locked until the full-stack preview request finishes. "}
         {branchState.status === "loading" &&
           "Loading the bounded GitHub branch list. Default-branch analysis continues independently."}
         {branchState.status === "ready" &&
@@ -342,6 +353,8 @@ function AnalysisContent({
   renderPreviewControls,
   renderFullStackPreviewControls,
   hasRetainedFullStackPreview,
+  fullStackCreatePending,
+  onFullStackCreatePendingChange,
   renderBackendRuntimeControls,
   loadBuildTargetAnalysis,
   selectedBranch,
@@ -356,6 +369,8 @@ function AnalysisContent({
     options?: FullStackPreviewRenderOptions,
   ) => ReactNode
   hasRetainedFullStackPreview: boolean
+  fullStackCreatePending: boolean
+  onFullStackCreatePendingChange: (pending: boolean) => void
   renderBackendRuntimeControls?: (input: {
     candidate: BackendCandidate
     repository: RepositoryMetadata
@@ -394,6 +409,8 @@ function AnalysisContent({
             renderPreviewControls={renderPreviewControls}
             renderFullStackPreviewControls={renderFullStackPreviewControls}
             hasRetainedFullStackPreview={hasRetainedFullStackPreview}
+            fullStackCreatePending={fullStackCreatePending}
+            onFullStackCreatePendingChange={onFullStackCreatePendingChange}
             renderBackendRuntimeControls={renderBackendRuntimeControls}
           />
         </div>
@@ -408,6 +425,8 @@ function AnalysisResults({
   renderPreviewControls,
   renderFullStackPreviewControls,
   hasRetainedFullStackPreview,
+  fullStackCreatePending,
+  onFullStackCreatePendingChange,
   renderBackendRuntimeControls,
   onRetryRepositoryAnalysis,
 }: {
@@ -421,6 +440,8 @@ function AnalysisResults({
     options?: FullStackPreviewRenderOptions,
   ) => ReactNode
   hasRetainedFullStackPreview: boolean
+  fullStackCreatePending: boolean
+  onFullStackCreatePendingChange: (pending: boolean) => void
   renderBackendRuntimeControls?: (input: {
     candidate: BackendCandidate
     repository: RepositoryMetadata
@@ -488,7 +509,10 @@ function AnalysisResults({
     <div className="peephole__analysis">
       {targets.length > 0 && (
         <TargetSelector
-          onSelect={setSelectedSourceRoot}
+          disabled={fullStackCreatePending}
+          onSelect={(sourceRoot) => {
+            if (!fullStackCreatePending) setSelectedSourceRoot(sourceRoot)
+          }}
           selectedSourceRoot={selectedSourceRoot}
           targets={targets}
         />
@@ -522,6 +546,7 @@ function AnalysisResults({
                 analysis={analysis}
                 hasRetainedFullStackPreview={hasRetainedFullStackPreview}
                 loadBuildTargetAnalysis={loadBuildTargetAnalysis}
+                onCreatePendingChange={onFullStackCreatePendingChange}
                 onRetryStructure={onRetryRepositoryAnalysis}
                 renderControls={renderFullStackPreviewControls}
               />
@@ -531,10 +556,10 @@ function AnalysisResults({
                 job controls. Stop or finish it before running a new target.
               </p>
             ) : (
-              renderFullStackPreviewControls({
-                ...analysis,
-                ...targetAnalysis,
-              })
+              renderFullStackPreviewControls(
+                { ...analysis, ...targetAnalysis },
+                { onCreatePendingChange: onFullStackCreatePendingChange },
+              )
             ))}
 
           <section className="peephole__section">
@@ -681,10 +706,12 @@ function AnalysisResults({
 }
 
 function TargetSelector({
+  disabled,
   onSelect,
   selectedSourceRoot,
   targets,
 }: {
+  disabled: boolean
   onSelect: (sourceRoot: string) => void
   selectedSourceRoot: string
   targets: RepositoryAnalysis["structure"]["projects"]
@@ -699,6 +726,7 @@ function TargetSelector({
       <select
         aria-describedby={descriptionId}
         className="peephole__branch-select"
+        disabled={disabled}
         id={selectId}
         name="preview-target"
         onChange={(event) => onSelect(event.currentTarget.value)}
