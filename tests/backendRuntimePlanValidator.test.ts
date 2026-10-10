@@ -31,6 +31,7 @@ const plan: BackendRuntimePlan = {
   },
   generatedSecretNames: [],
   databaseRequirement: null,
+  userEnvironmentNames: [],
 }
 
 function withGeneratedSecretNames(value: unknown): BackendRuntimePlan {
@@ -155,5 +156,53 @@ describe("validateBackendRuntimePlan databaseRequirement", () => {
     ])
     expect(validated.generatedSecretNames).toEqual(["JWT_SECRET"])
     expect(validated.databaseRequirement).toEqual({ name: "DATABASE_URL" })
+  })
+})
+
+describe("validateBackendRuntimePlan userEnvironmentNames (M12)", () => {
+  const base = validateBackendRuntimePlan(validPlanForM12())
+
+  function validPlanForM12() {
+    return {
+      ...plan,
+      userEnvironmentNames: ["APP_GREETING", "FEATURE_MODE"],
+    }
+  }
+
+  it("accepts sorted, unique, eligible names and an empty list", () => {
+    expect(base.userEnvironmentNames).toEqual(["APP_GREETING", "FEATURE_MODE"])
+    expect(
+      validateBackendRuntimePlan({ ...plan, userEnvironmentNames: [] })
+        .userEnvironmentNames,
+    ).toEqual([])
+  })
+
+  it.each([
+    ["missing", undefined],
+    ["not an array", "APP_GREETING"],
+    ["unsorted", ["FEATURE_MODE", "APP_GREETING"]],
+    ["duplicated", ["APP_GREETING", "APP_GREETING"]],
+    ["a platform name", ["PORT"]],
+    ["a generated-secret name", ["SESSION_SECRET"]],
+    ["DATABASE_URL", ["DATABASE_URL"]],
+    ["a process-control name", ["NODE_OPTIONS"]],
+    ["a client-public name", ["VITE_GREETING"]],
+    ["a secret-like name", ["OPENAI_API_KEY"]],
+    ["a lowercase name", ["app_greeting"]],
+    ["a non-string", [1]],
+    [
+      "more than the bound",
+      Array.from(
+        { length: 17 },
+        (_, index) => `SETTING_${String(index).padStart(2, "0")}`,
+      ),
+    ],
+  ])("rejects %s", (_label, value) => {
+    expect(() =>
+      validateBackendRuntimePlan({
+        ...plan,
+        userEnvironmentNames: value as unknown as string[],
+      }),
+    ).toThrow(InvalidBackendRuntimePlanError)
   })
 })

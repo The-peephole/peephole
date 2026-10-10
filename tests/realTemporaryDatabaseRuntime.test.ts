@@ -116,6 +116,7 @@ const databasePlan: BackendRuntimePlan = {
   },
   generatedSecretNames: [],
   databaseRequirement: { name: "DATABASE_URL" },
+  userEnvironmentNames: [],
 }
 
 const otherJobPlan: BackendRuntimePlan = {

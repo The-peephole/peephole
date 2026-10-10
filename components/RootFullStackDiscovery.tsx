@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useContext,
   useEffect,
   useId,
   useMemo,
@@ -16,6 +17,7 @@ import type {
 } from "../types/analysis"
 import type { BackendCandidate } from "../types/backend"
 import type { RepositoryProjectCandidate } from "../types/structure"
+import { UserEnvironmentEnabledContext } from "./userEnvironmentContext"
 
 interface RootFullStackDiscoveryProps {
   analysis: RepositoryAnalysis
@@ -56,6 +58,7 @@ export function RootFullStackDiscovery({
   onRetryStructure,
   renderControls,
 }: RootFullStackDiscoveryProps) {
+  const userEnvironmentEnabled = useContext(UserEnvironmentEnabledContext)
   const titleId = useId()
   const selectId = useId()
   const selectHelpId = useId()
@@ -231,7 +234,9 @@ export function RootFullStackDiscovery({
   }
   const backendOptions = analysis.backend.candidates.map((candidate) => ({
     candidate,
-    support: resolveFullStackCandidateSupport(repository, candidate),
+    support: resolveFullStackCandidateSupport(repository, candidate, {
+      userEnvironmentEnabled,
+    }),
   }))
   const supportedBackends = backendOptions.filter(
     ({ support }) => support.supported,

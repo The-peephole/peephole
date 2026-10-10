@@ -1600,3 +1600,11 @@ proceeds — not a sign the address itself is still undecided.
 
 Everything else decidable from the existing codebase and the production
 facts gathered in M11-A3 has been decided in this document.
+
+## M12 boundary (added 2026-10-11)
+
+M12's user-provided configuration (D-035) never accepts `DATABASE_URL` or
+any database-shaped name (`DB`, `POSTGRES`, `PG`, `REDIS`, `MONGO`, ... as a
+name token), so a user-supplied database credential is still impossible.
+`/run/secrets/database-url`, its writer, the bootstrap's raw-URL parser, and
+this document's production verification record are unchanged.

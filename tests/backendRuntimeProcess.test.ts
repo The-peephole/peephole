@@ -66,6 +66,7 @@ const plan: BackendRuntimePlan = {
   },
   generatedSecretNames: [],
   databaseRequirement: null,
+  userEnvironmentNames: [],
 }
 
 const secretPlan: BackendRuntimePlan = {

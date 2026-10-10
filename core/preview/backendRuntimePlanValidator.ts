@@ -3,6 +3,8 @@ import type { BackendRuntimePlan } from "../../types/backendRuntime"
 import { PREVIEW_GENERATED_SECRET_NAMES } from "../../types/backendRuntimeSecrets"
 import { BACKEND_RUNTIME_DATABASE_ENV_NAME } from "../../types/backendRuntimeDatabase"
 import { isEligiblePreviewGeneratedSecretName } from "../backendSecrets/generatedSecretPolicy"
+import { isEligibleUserEnvironmentName } from "../userEnvironment/userEnvironmentPolicy"
+import { USER_ENVIRONMENT_LIMITS } from "../../types/userEnvironment"
 import { validateRepositoryRef } from "./buildPlan"
 import { isSafePreviewSourceRoot } from "./sourceRoot"
 
@@ -112,8 +114,41 @@ export function validateBackendRuntimePlan(
   validatePlatformEnvironment(value.platformEnvironment, value.internalPort)
   validateGeneratedSecretNames(value.generatedSecretNames)
   validateDatabaseRequirement(value.databaseRequirement)
+  validateUserEnvironmentNames(value.userEnvironmentNames)
 
   return value
+}
+
+/** Names only; the same eligibility policy the adapter applied, re-checked
+ * here so a queued plan can never smuggle a reserved, generated, database,
+ * or client-public name into the user-configuration channel. */
+function validateUserEnvironmentNames(
+  value: BackendRuntimePlan["userEnvironmentNames"],
+): void {
+  if (!Array.isArray(value)) {
+    throw new InvalidBackendRuntimePlanError(
+      "Backend runtime user environment names must be an array.",
+    )
+  }
+  if (value.length > USER_ENVIRONMENT_LIMITS.maxEntries) {
+    throw new InvalidBackendRuntimePlanError(
+      "Backend runtime user environment names exceed the fixed bound.",
+    )
+  }
+  let previous: string | null = null
+  for (const name of value) {
+    if (typeof name !== "string" || !isEligibleUserEnvironmentName(name)) {
+      throw new InvalidBackendRuntimePlanError(
+        "Backend runtime user environment name is not eligible.",
+      )
+    }
+    if (previous !== null && previous >= name) {
+      throw new InvalidBackendRuntimePlanError(
+        "Backend runtime user environment names must be sorted and unique.",
+      )
+    }
+    previous = name
+  }
 }
 
 function validateDatabaseRequirement(

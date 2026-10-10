@@ -49,6 +49,14 @@ export interface ProductionConfig {
   /** M11 temporary PostgreSQL previews. Default OFF; see
    * docs/TEMPORARY_DATABASES.md section 17 for the activation gate. */
   temporaryDatabases: TemporaryDatabaseProductionConfig
+  /** M12 user-provided preview configuration. Default OFF; the root is
+   * known in both modes so a rollback still clears leftover files. */
+  userEnvironment: UserEnvironmentProductionConfig
+}
+
+export interface UserEnvironmentProductionConfig {
+  enabled: boolean
+  rootDir: string
 }
 
 /** The database-credential root is known in both modes: a rollback that
@@ -81,6 +89,7 @@ const DEFAULTS = {
   trustedRegistrableDomain: "peephole.dev",
   trustedAppOrigin: "https://app.peephole.dev",
   databaseCredentialRootDir: "/run/peephole/db-credentials",
+  userEnvironmentRootDir: "/run/peephole/user-env",
 } as const
 
 export function readProductionConfig(
@@ -173,6 +182,7 @@ export function readProductionConfig(
       DEFAULTS.artifactBaseDomain,
     ),
     temporaryDatabases: readTemporaryDatabaseConfig(environment),
+    userEnvironment: readUserEnvironmentConfig(environment),
   }
   // Compare at label boundaries in both directions, including equality.
   if (
@@ -190,6 +200,25 @@ export function readProductionConfig(
     )
   }
   return config
+}
+
+/** Only the exact value "1" enables M12; unset, empty, or "0" disables it,
+ * and anything else is a configuration error rather than a guess. */
+function readUserEnvironmentConfig(
+  environment: NodeJS.ProcessEnv,
+): UserEnvironmentProductionConfig {
+  const flag = environment.PEEPHOLE_USER_ENVIRONMENT?.trim() ?? ""
+  if (flag !== "" && flag !== "0" && flag !== "1") {
+    throw new Error("PEEPHOLE_USER_ENVIRONMENT must be 0 or 1.")
+  }
+  return {
+    enabled: flag === "1",
+    rootDir: readAbsolutePath(
+      "PEEPHOLE_USER_ENVIRONMENT_ROOT",
+      environment.PEEPHOLE_USER_ENVIRONMENT_ROOT,
+      DEFAULTS.userEnvironmentRootDir,
+    ),
+  }
 }
 
 /** Only the exact value "1" enables M11; unset, empty, or "0" disables it,

@@ -17,3 +17,9 @@ export const SANDBOX_NODE_BINARY = "/usr/local/bin/node"
 // It is never loaded from /workspace and never accepts a secret-file path
 // from repository code or OCI argv.
 export const SANDBOX_SECRET_BOOTSTRAP = "/opt/peephole/secret-bootstrap.mjs"
+/** Fixed first bootstrap argument when an M12 user-env file is mounted. A
+ * bootstrap that predates M12 passes it on to Node, which rejects the
+ * unknown option and exits -- so a stale rootfs fails closed instead of
+ * silently starting without the configuration. */
+export const SANDBOX_USER_ENVIRONMENT_BOOTSTRAP_FLAG =
+  "--peephole-require-user-environment"

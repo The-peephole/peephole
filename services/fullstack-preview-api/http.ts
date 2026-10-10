@@ -3,6 +3,10 @@ import {
   type CreateFullStackPreviewRequest,
 } from "../../types/fullstackPreview"
 import type { PreviewRequester } from "../../types/preview"
+import {
+  InvalidUserEnvironmentError,
+  parseUserEnvironmentEntries,
+} from "../../core/userEnvironment/userEnvironmentPolicy"
 import type { FullStackPreviewControlPlane } from "./controlPlane"
 import { FullStackPreviewControlError } from "./errors"
 
@@ -94,6 +98,7 @@ function parseCreateRequest(value: unknown): CreateFullStackPreviewRequest {
       "repository",
       "frontendTarget",
       "backendSourceRoot",
+      "userEnvironment",
     ]) ||
     value.contractVersion !== FULLSTACK_PREVIEW_CONTRACT_VERSION ||
     !isObject(value.repository) ||
@@ -119,6 +124,23 @@ function parseCreateRequest(value: unknown): CreateFullStackPreviewRequest {
     )
   }
 
+  let userEnvironment
+  try {
+    userEnvironment =
+      value.userEnvironment === undefined
+        ? []
+        : parseUserEnvironmentEntries(value.userEnvironment)
+  } catch (error) {
+    // The policy's messages name variables, never values.
+    throw new FullStackPreviewControlError(
+      "INVALID_REQUEST",
+      error instanceof InvalidUserEnvironmentError
+        ? error.message
+        : "Full-stack preview request body is invalid.",
+      400,
+    )
+  }
+
   return {
     contractVersion: FULLSTACK_PREVIEW_CONTRACT_VERSION,
     repository: {
@@ -129,6 +151,7 @@ function parseCreateRequest(value: unknown): CreateFullStackPreviewRequest {
     },
     frontendTarget: { sourceRoot: value.frontendTarget.sourceRoot },
     backendSourceRoot: value.backendSourceRoot,
+    ...(userEnvironment.length > 0 ? { userEnvironment } : {}),
   }
 }
 

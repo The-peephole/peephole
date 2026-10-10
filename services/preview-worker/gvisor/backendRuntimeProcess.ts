@@ -10,6 +10,7 @@ import { BACKEND_RUNTIME_DATABASE_ENV_NAME } from "../../../types/backendRuntime
 import type { BackendRuntimePlan } from "../../../types/backendRuntime"
 import type { GeneratedSecretMaterial } from "../../../types/backendRuntimeSecrets"
 import type { TemporaryDatabaseRuntimeCredentialMaterial } from "../../../types/temporaryDatabase"
+import type { UserEnvironmentMaterial } from "../../../types/userEnvironment"
 import type {
   BackendRuntimeProcessStarter,
   RuntimeProcessHandle,
@@ -26,6 +27,10 @@ import {
   type GeneratedSecretFilesystem,
 } from "./generatedSecretFilesystem"
 import { buildOciRuntimeSpec } from "./ociConfig"
+import {
+  USER_ENVIRONMENT_FILE_NAME,
+  type UserEnvironmentFilesystem,
+} from "./userEnvironmentFilesystem"
 import { NodeProcessRunner } from "./nodeProcessRunner"
 import type { ProcessRunner, ProcessRunResult } from "./processRunner"
 import { runscDeleteArgs, runscKillArgs, runscRunArgs } from "./runscCli"
@@ -34,6 +39,7 @@ import {
   SANDBOX_NODE_BINARY,
   SANDBOX_SECRET_BOOTSTRAP,
   SANDBOX_UID,
+  SANDBOX_USER_ENVIRONMENT_BOOTSTRAP_FLAG,
 } from "./sandboxIdentity"
 
 /** Thrown by `waitUntilReady` when the process exits before ever accepting
@@ -79,6 +85,8 @@ export interface GVisorBackendRuntimeProcessOptions {
    * material (M11-C3). Not yet activated by any production composition --
    * see `BackendRuntimeProcessStarter.start()`'s own doc comment. */
   databaseCredentialFilesystem?: DatabaseCredentialFilesystem
+  /** Required only when `start()` receives M12 user-provided configuration. */
+  userEnvironmentFilesystem?: UserEnvironmentFilesystem
   /** Bounded window `stop()` gives the sandboxed process to exit on its own
    * after a polite `SIGTERM` before the unconditional `runsc delete --force`
    * backstop below proceeds regardless. Only a well-behaved process (or the
@@ -122,6 +130,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
   private readonly maxProbeIntervalMs: number
   private readonly generatedSecretFilesystem?: GeneratedSecretFilesystem
   private readonly databaseCredentialFilesystem?: DatabaseCredentialFilesystem
+  private readonly userEnvironmentFilesystem?: UserEnvironmentFilesystem
   private readonly stopGraceMs: number
 
   constructor(options: GVisorBackendRuntimeProcessOptions = {}) {
@@ -135,6 +144,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     this.maxProbeIntervalMs = options.maxProbeIntervalMs ?? 1_000
     this.generatedSecretFilesystem = options.generatedSecretFilesystem
     this.databaseCredentialFilesystem = options.databaseCredentialFilesystem
+    this.userEnvironmentFilesystem = options.userEnvironmentFilesystem
     this.stopGraceMs = options.stopGraceMs ?? 5_000
 
     // Both filesystem roots are independently injectable (test/config seams),
@@ -155,6 +165,23 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         "Generated-secret and database credential filesystem roots must be disjoint.",
       )
     }
+    const credentialRoots = [
+      this.generatedSecretFilesystem?.rootDir,
+      this.databaseCredentialFilesystem?.rootDir,
+    ].filter((root): root is string => root !== undefined)
+    if (
+      this.userEnvironmentFilesystem &&
+      credentialRoots.some((root) =>
+        pathsOverlap(
+          path.resolve(root),
+          path.resolve(this.userEnvironmentFilesystem!.rootDir),
+        ),
+      )
+    ) {
+      throw new Error(
+        "User environment and credential filesystem roots must be disjoint.",
+      )
+    }
   }
 
   async start(
@@ -162,6 +189,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     plan: BackendRuntimePlan,
     secrets: GeneratedSecretMaterial | null = null,
     databaseCredential: TemporaryDatabaseRuntimeCredentialMaterial | null = null,
+    userEnvironment: UserEnvironmentMaterial | null = null,
   ): Promise<RuntimeProcessHandle> {
     if (!isSafePreviewSourceRoot(plan.sourceRoot)) {
       throw new Error("Backend runtime plan sourceRoot is unsafe.")
@@ -176,6 +204,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     }
     assertSecretMaterialMatchesPlan(workspace.id, plan, secrets)
     assertDatabaseCredentialMatchesPlan(workspace.id, plan, databaseCredential)
+    assertUserEnvironmentMatchesPlan(workspace.id, plan, userEnvironment)
     const sandbox = asGVisorWorkspace(workspace)
 
     const dnsConfig = this.resolveDnsConfig()
@@ -222,13 +251,37 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       return databaseCredentialCleanupPromise
     }
 
-    // Both credential cleanups are always attempted, independently -- one
-    // failing must never silently skip the other (docs/TEMPORARY_DATABASES.md
-    // section 15 / M11-C3 lifecycle requirements).
+    let userEnvironmentMountSource: string | undefined
+    let userEnvironmentCreated = false
+    let userEnvironmentCleanupPromise: Promise<void> | null = null
+    const cleanupUserEnvironment = (): Promise<void> => {
+      if (
+        !userEnvironmentCreated ||
+        !userEnvironment ||
+        !this.userEnvironmentFilesystem
+      ) {
+        return Promise.resolve()
+      }
+      userEnvironmentCleanupPromise ??= this.userEnvironmentFilesystem
+        .remove(userEnvironment.runtimeId)
+        .then(() => {
+          userEnvironmentCreated = false
+        })
+        .catch((error: unknown) => {
+          userEnvironmentCleanupPromise = null
+          throw error
+        })
+      return userEnvironmentCleanupPromise
+    }
+
+    // Every material cleanup is always attempted, independently -- one
+    // failing must never silently skip another (docs/TEMPORARY_DATABASES.md
+    // section 15 / M11-C3 lifecycle requirements; M12 adds a third).
     const cleanupCredentials = async (): Promise<void> => {
       const results = await Promise.allSettled([
         cleanupSecrets(),
         cleanupDatabaseCredential(),
+        cleanupUserEnvironment(),
       ])
       const errors = results
         .filter(
@@ -307,16 +360,56 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         databaseCredentialMountSource = credentialFile
       }
 
+      if (userEnvironment) {
+        if (!this.userEnvironmentFilesystem) {
+          throw new Error(
+            "User environment filesystem is unavailable for this runtime.",
+          )
+        }
+        if (
+          pathsOverlap(
+            path.resolve(this.userEnvironmentFilesystem.rootDir),
+            path.resolve(sandbox.bundleDir),
+          )
+        ) {
+          throw new Error(
+            "User environment root overlaps persistent runtime storage.",
+          )
+        }
+        const environmentFile =
+          await this.userEnvironmentFilesystem.create(userEnvironment)
+        userEnvironmentCreated = true
+        const expectedEnvironmentFile = path.join(
+          path.resolve(this.userEnvironmentFilesystem.rootDir),
+          userEnvironment.runtimeId,
+          USER_ENVIRONMENT_FILE_NAME,
+        )
+        if (path.resolve(environmentFile) !== expectedEnvironmentFile) {
+          throw new Error("User environment mount source is invalid.")
+        }
+        userEnvironmentMountSource = environmentFile
+      }
+
       const namespace = await sandbox.ensureIngressOnlyNetworkNamespace({
         temporaryDatabaseAccess: databaseCredential !== null,
       })
       namespacePath = namespace.path
       peerIp = namespace.peerIp
 
-      const usesBootstrap = Boolean(secrets) || Boolean(databaseCredential)
+      const usesBootstrap =
+        Boolean(secrets) ||
+        Boolean(databaseCredential) ||
+        Boolean(userEnvironment)
       const spec = buildOciRuntimeSpec({
         command: usesBootstrap
-          ? [SANDBOX_NODE_BINARY, SANDBOX_SECRET_BOOTSTRAP, ...plan.start.args]
+          ? [
+              SANDBOX_NODE_BINARY,
+              SANDBOX_SECRET_BOOTSTRAP,
+              ...(userEnvironment
+                ? [SANDBOX_USER_ENVIRONMENT_BOOTSTRAP_FLAG]
+                : []),
+              ...plan.start.args,
+            ]
           : [SANDBOX_NODE_BINARY, ...plan.start.args],
         cwd:
           plan.sourceRoot === "."
@@ -334,6 +427,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         workspaceSource: sandbox.rootDir,
         generatedSecretsSource: secretMountSource,
         databaseCredentialSource: databaseCredentialMountSource,
+        userEnvironmentSource: userEnvironmentMountSource,
       })
 
       // `runsc run --bundle <dir>` always reads `<dir>/config.json` specifically
@@ -584,6 +678,31 @@ function assertDatabaseCredentialMatchesPlan(
   ) {
     throw new Error(
       "Database credential material does not match the backend runtime plan.",
+    )
+  }
+}
+
+function assertUserEnvironmentMatchesPlan(
+  runtimeId: string,
+  plan: BackendRuntimePlan,
+  userEnvironment: UserEnvironmentMaterial | null,
+): void {
+  if (plan.userEnvironmentNames.length === 0) {
+    if (userEnvironment) {
+      throw new Error(
+        "User environment material does not match the backend runtime plan.",
+      )
+    }
+    return
+  }
+  if (
+    !userEnvironment ||
+    userEnvironment.runtimeId !== runtimeId ||
+    userEnvironment.values.size !== plan.userEnvironmentNames.length ||
+    plan.userEnvironmentNames.some((name) => !userEnvironment.values.has(name))
+  ) {
+    throw new Error(
+      "User environment material does not match the backend runtime plan.",
     )
   }
 }

@@ -32,6 +32,8 @@ import type {
 } from "../preview-worker/ports"
 import { BackendRuntimeReadinessTimeoutError } from "../preview-worker/gvisor/backendRuntimeProcess"
 import type { GeneratedSecretMaterial } from "../../types/backendRuntimeSecrets"
+import type { UserEnvironmentMaterial } from "../../types/userEnvironment"
+import type { UserEnvironmentSource } from "../user-environment/userEnvironmentBroker"
 import type {
   BackendRuntimeProcessStarter,
   RuntimeProcessHandle,
@@ -53,6 +55,11 @@ export interface BackendRuntimeSupervisorOptions {
    * A database-requiring plan fails closed before sandbox allocation when
    * this dependency is absent. */
   temporaryDatabaseProvisioner?: TemporaryDatabaseLifecycleProvisioner
+  /** M12 (D-035): the same process-local broker full-stack admission
+   * registers into. Optional until production deliberately enables user
+   * configuration; a plan naming user configuration fails closed with
+   * `CONFIGURATION_UNAVAILABLE` before sandbox allocation without it. */
+  userEnvironmentSource?: UserEnvironmentSource
 }
 
 export interface TemporaryDatabaseLifecycleProvisioner {
@@ -113,6 +120,7 @@ export class BackendRuntimeSupervisor {
       options.signal?.throwIfAborted()
     } catch (error) {
       this.discardSecretMaterial(queued.runtimeId)
+      this.discardUserEnvironment(queued.orchestrationKey)
       throw error
     }
 
@@ -125,10 +133,12 @@ export class BackendRuntimeSupervisor {
       )
     } catch (error) {
       this.discardSecretMaterial(queued.runtimeId)
+      this.discardUserEnvironment(queued.orchestrationKey)
       throw error
     }
     if (!started) {
       this.discardSecretMaterial(queued.runtimeId)
+      this.discardUserEnvironment(queued.orchestrationKey)
       return
     }
 
@@ -190,6 +200,12 @@ export class BackendRuntimeSupervisor {
           throw databaseUnavailableError()
         }
       }
+      if (
+        plan.userEnvironmentNames.length > 0 &&
+        (!queued.orchestrationKey || !this.options.userEnvironmentSource)
+      ) {
+        throw configurationUnavailableError()
+      }
       workspace = await this.sandbox.allocate(queued.runtimeId)
       signal.throwIfAborted()
       processHandle = await this.fetchInstallStart(
@@ -240,6 +256,7 @@ export class BackendRuntimeSupervisor {
       // Broker cleanup is unconditional and best-effort. A bookkeeping
       // failure must never prevent process/container/workspace teardown.
       this.discardSecretMaterial(queued.runtimeId)
+      this.discardUserEnvironment(queued.orchestrationKey)
       stopped = true
       clearTimeout(poll)
       await checking
@@ -314,6 +331,9 @@ export class BackendRuntimeSupervisor {
     )
     await this.controlPlane.markPhase(runtimeId, "starting")
     const secrets = this.issueAndTakeGeneratedSecrets(runtimeId, plan)
+    // Before database provisioning, so missing configuration never leaves
+    // a provisioned database behind for nothing.
+    const userEnvironment = this.takeUserEnvironment(queued, plan)
     await this.assertWorkerExecutionActive(runtimeId)
     const databaseCredential = await this.provisionTemporaryDatabase(
       queued,
@@ -328,6 +348,7 @@ export class BackendRuntimeSupervisor {
         plan,
         secrets,
         databaseCredential,
+        userEnvironment,
       ),
     )
     // Publish cleanup ownership synchronously, before readiness or any later
@@ -434,6 +455,46 @@ export class BackendRuntimeSupervisor {
       return material
     } catch {
       throw secretUnavailableError()
+    }
+  }
+
+  private takeUserEnvironment(
+    queued: QueuedBackendRuntime,
+    plan: ReturnType<typeof validateBackendRuntimePlan>,
+  ): UserEnvironmentMaterial | null {
+    if (plan.userEnvironmentNames.length === 0) return null
+    const source = this.options.userEnvironmentSource
+    if (!source || !queued.orchestrationKey) {
+      throw configurationUnavailableError()
+    }
+    let material: UserEnvironmentMaterial | null
+    try {
+      material = source.take(queued.orchestrationKey, {
+        runtimeId: queued.runtimeId,
+        repository: queued.repository,
+        backendSourceRoot: plan.sourceRoot,
+        names: plan.userEnvironmentNames,
+      })
+    } catch {
+      throw configurationUnavailableError()
+    }
+    if (
+      !material ||
+      material.runtimeId !== queued.runtimeId ||
+      material.values.size !== plan.userEnvironmentNames.length ||
+      plan.userEnvironmentNames.some((name) => !material.values.has(name))
+    ) {
+      throw configurationUnavailableError()
+    }
+    return material
+  }
+
+  private discardUserEnvironment(orchestrationKey: string | null): void {
+    if (!orchestrationKey) return
+    try {
+      this.options.userEnvironmentSource?.discard(orchestrationKey)
+    } catch {
+      // Never expose broker state while cleaning up.
     }
   }
 
@@ -670,6 +731,13 @@ function secretUnavailableError(): RuntimePhaseError {
   return new RuntimePhaseError(
     "SECRET_UNAVAILABLE",
     new Error("Generated-secret material is unavailable."),
+  )
+}
+
+function configurationUnavailableError(): RuntimePhaseError {
+  return new RuntimePhaseError(
+    "CONFIGURATION_UNAVAILABLE",
+    new Error("User-provided configuration is unavailable."),
   )
 }
 

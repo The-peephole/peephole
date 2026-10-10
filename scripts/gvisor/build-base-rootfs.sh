@@ -90,6 +90,11 @@ install -d -m 0755 "$OUT_DIR/run/secrets"
 # empty here, so world-readability leaks nothing.
 install -D -m 0644 /dev/null "$OUT_DIR/run/secrets/env"
 install -D -m 0644 /dev/null "$OUT_DIR/run/secrets/database-url"
+# M12 (D-035): a third, independent sibling placeholder for user-provided,
+# non-sensitive configuration. Same reasoning and mode as the two above. Its
+# presence is also the production preflight's evidence that this rootfs
+# carries an M12-aware bootstrap (services/production/preflight.ts).
+install -D -m 0644 /dev/null "$OUT_DIR/run/secrets/user-env"
 
 # The sandbox process runs as uid/gid 65534 (nobody/nogroup), never root.
 # Its HOME and npm cache are created on the quota-backed /workspace mount;

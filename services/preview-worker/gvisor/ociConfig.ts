@@ -1,6 +1,7 @@
 import type { SandboxResourceLimits } from "../../../core/runner/runnerLimits"
 import { SANDBOX_DATABASE_CREDENTIAL_FILE } from "./databaseCredentialFilesystem"
 import { SANDBOX_GENERATED_SECRET_FILE } from "./generatedSecretFilesystem"
+import { SANDBOX_USER_ENVIRONMENT_FILE } from "./userEnvironmentFilesystem"
 
 export interface OciConfigOptions {
   command: string[]
@@ -39,6 +40,9 @@ export interface OciConfigOptions {
    * docs/TEMPORARY_DATABASES.md section 15 and the M11-C3 mount-composition
    * note on `SANDBOX_DATABASE_CREDENTIAL_FILE`. */
   databaseCredentialSource?: string
+  /** Exact host path of one runtime's M12 `user-env` FILE -- a third,
+   * independent sibling mount onto its own fixed base-rootfs placeholder. */
+  userEnvironmentSource?: string
 }
 
 export interface OciRuntimeSpec {
@@ -201,6 +205,16 @@ export function buildOciRuntimeSpec(options: OciConfigOptions): OciRuntimeSpec {
               destination: SANDBOX_DATABASE_CREDENTIAL_FILE,
               type: "bind",
               source: options.databaseCredentialSource,
+              options: ["bind", "ro", "nosuid", "nodev", "noexec"],
+            },
+          ]
+        : []),
+      ...(options.userEnvironmentSource
+        ? [
+            {
+              destination: SANDBOX_USER_ENVIRONMENT_FILE,
+              type: "bind",
+              source: options.userEnvironmentSource,
               options: ["bind", "ro", "nosuid", "nodev", "noexec"],
             },
           ]

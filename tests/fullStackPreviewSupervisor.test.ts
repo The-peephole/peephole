@@ -766,3 +766,65 @@ describe("FullStackPreviewSupervisor", () => {
     ).toBe("cancelled")
   })
 })
+
+describe("FullStackPreviewSupervisor user-provided configuration (M12)", () => {
+  it("maps a backend CONFIGURATION_UNAVAILABLE failure to the parent and discards retained values", async () => {
+    const harness = createHarness()
+    await harness.createParent()
+    const discard = vi.spyOn(harness.fullStack, "discardUserEnvironment")
+    const supervisor = new FullStackPreviewSupervisor(
+      harness.fullStack,
+      harness.frontend,
+      harness.artifacts,
+      harness.backend,
+      {
+        wait: async () => {
+          await completeFrontendAndBackend(harness, false)
+          const parent = await harness.fullStackStore.get(previewId)
+          if (
+            parent?.status === "starting_backend" &&
+            parent.backendRuntimeId
+          ) {
+            const runtime = await harness.backend.getForOrchestration(
+              parent.backendRuntimeId,
+              requester.subject,
+            )
+            if (runtime.status !== "failed") {
+              await harness.backend.failWorkerRuntime(
+                parent.backendRuntimeId,
+                "CONFIGURATION_UNAVAILABLE",
+              )
+            }
+          }
+        },
+      },
+    )
+    await supervisor.run(harness.queued)
+    expect(await harness.fullStackStore.get(previewId)).toMatchObject({
+      status: "failed",
+      errorCode: "CONFIGURATION_UNAVAILABLE",
+      errorMessage:
+        "The configuration values for this preview are no longer available. Start a new preview and enter them again.",
+    })
+    expect(discard).toHaveBeenCalledWith(previewId)
+  })
+
+  it("discards retained values even when orchestration throws", async () => {
+    const harness = createHarness()
+    await harness.createParent()
+    const discard = vi.spyOn(harness.fullStack, "discardUserEnvironment")
+    vi.spyOn(harness.fullStack, "getWorkerFullStackPreview").mockRejectedValue(
+      new Error("store unavailable"),
+    )
+    const supervisor = new FullStackPreviewSupervisor(
+      harness.fullStack,
+      harness.frontend,
+      harness.artifacts,
+      harness.backend,
+    )
+    await expect(supervisor.run(harness.queued)).rejects.toThrow(
+      "store unavailable",
+    )
+    expect(discard).toHaveBeenCalledWith(previewId)
+  })
+})

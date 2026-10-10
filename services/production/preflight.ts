@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs"
-import { lstat, mkdir, realpath, stat } from "node:fs/promises"
+import { lstat, mkdir, readFile, realpath, stat } from "node:fs/promises"
 import nativePath from "node:path"
 import path from "node:path/posix"
 
@@ -11,6 +11,7 @@ import { NodeProcessRunner } from "../preview-worker/gvisor/nodeProcessRunner"
 import type { ProcessRunner } from "../preview-worker/gvisor/processRunner"
 import { type SandboxDiskManager } from "../preview-worker/gvisor/sandboxDisk"
 import { assertTmpfsFilesystem } from "../preview-worker/gvisor/generatedSecretFilesystem"
+import { SANDBOX_USER_ENVIRONMENT_BOOTSTRAP_FLAG } from "../preview-worker/gvisor/sandboxIdentity"
 
 const CGROUP_V2_MARKER = "/sys/fs/cgroup/cgroup.controllers"
 const IP_FORWARD_FILE = "/proc/sys/net/ipv4/ip_forward"
@@ -68,6 +69,17 @@ export interface GeneratedSecretRootPreflightOptions {
   processRunner?: ProcessRunner
   findmntBinaryPath?: string
   prepareDirectory?: (candidate: string) => Promise<void>
+}
+
+export interface UserEnvironmentPreflightOptions {
+  rootDir: string
+  baseRootfsImage: string
+  processRunner?: ProcessRunner
+  findmntBinaryPath?: string
+  prepareDirectory?: (candidate: string) => Promise<void>
+  /** Test seams; default to a real no-follow lstat / UTF-8 read. */
+  inspectRootfsEntry?: (candidate: string) => Promise<RootfsEntry | null>
+  readRootfsFile?: (candidate: string) => Promise<string | null>
 }
 
 export interface DatabaseCredentialRootPreflightOptions {
@@ -424,6 +436,52 @@ export async function ensureDatabaseCredentialCapability(
     options.credentialRootDir,
     options,
   )
+}
+
+/** M12 capability gate, run only while `PEEPHOLE_USER_ENVIRONMENT=1`.
+ * Deliberately NOT part of the always-on rootfs secret contract above, so
+ * deploying this version on a pre-M12 rootfs keeps working while the
+ * feature is off. When on, it proves a tmpfs-backed root, the third empty
+ * root-owned placeholder, and an M12-aware bootstrap -- a pre-M12 bootstrap
+ * would ignore the mounted file and start the backend without its values. */
+export async function ensureUserEnvironmentCapability(
+  options: UserEnvironmentPreflightOptions,
+): Promise<void> {
+  await ensureMemoryBackedRoot("User environment", options.rootDir, options)
+
+  const inspect = options.inspectRootfsEntry ?? defaultInspectRootfsEntry
+  const placeholder = await inspect(
+    nativePath.join(options.baseRootfsImage, "run", "secrets", "user-env"),
+  ).catch(() => null)
+  if (
+    !placeholder ||
+    placeholder.kind !== "file" ||
+    placeholder.uid !== 0 ||
+    placeholder.mode !== 0o644 ||
+    placeholder.size !== 0
+  ) {
+    throw new Error(
+      "The base rootfs lacks the empty run/secrets/user-env placeholder -- rebuild it with the current scripts/gvisor/build-base-rootfs.sh before enabling PEEPHOLE_USER_ENVIRONMENT.",
+    )
+  }
+
+  const readRootfsFile =
+    options.readRootfsFile ??
+    ((candidate: string) =>
+      readFile(candidate, "utf8").catch(() => null as string | null))
+  const bootstrap = await readRootfsFile(
+    nativePath.join(
+      options.baseRootfsImage,
+      "opt",
+      "peephole",
+      "secret-bootstrap.mjs",
+    ),
+  )
+  if (!bootstrap?.includes(SANDBOX_USER_ENVIRONMENT_BOOTSTRAP_FLAG)) {
+    throw new Error(
+      "The base rootfs bootstrap does not support user environment delivery -- rebuild it with the current scripts/gvisor/build-base-rootfs.sh before enabling PEEPHOLE_USER_ENVIRONMENT.",
+    )
+  }
 }
 
 async function ensureMemoryBackedRoot(

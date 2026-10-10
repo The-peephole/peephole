@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useContext,
   useEffect,
   useId,
   useMemo,
@@ -11,6 +12,14 @@ import {
 } from "react"
 
 import { resolveFullStackCandidateSupport } from "../core/fullstack/candidateSupport"
+import {
+  describeUserEnvironmentRows,
+  type UserEnvironmentRow,
+} from "../core/fullstack/userEnvironmentRows"
+import {
+  assertValidUserEnvironmentValue,
+  resolveUserEnvironmentNames,
+} from "../core/userEnvironment/userEnvironmentPolicy"
 import {
   FullStackPreviewApiError,
   createFullStackPreviewRequest,
@@ -25,6 +34,7 @@ import {
 import type { BuildTargetAnalysis, RepositoryAnalysis } from "../types/analysis"
 import type { BackendCandidate } from "../types/backend"
 import type { FullStackPreview } from "../types/fullstackPreview"
+import { UserEnvironmentEnabledContext } from "./userEnvironmentContext"
 
 const TERMINAL_STATUSES = new Set<FullStackPreview["status"]>([
   "stopped",
@@ -59,6 +69,9 @@ export interface FullStackPreviewPanelProps {
   retainedPreview?: FullStackPreview | null
   onRetainedPreviewChange?: (preview: FullStackPreview | null) => void
   onCreatePendingChange?: (pending: boolean) => void
+  /** M12 build-time opt-in (`WXT_USER_ENVIRONMENT_ENABLED`). Defaults to
+   * the Side Panel's `UserEnvironmentEnabledContext`. */
+  userEnvironmentEnabled?: boolean
 }
 
 export function FullStackPreviewPanel({
@@ -73,7 +86,13 @@ export function FullStackPreviewPanel({
   retainedPreview,
   onRetainedPreviewChange,
   onCreatePendingChange,
+  userEnvironmentEnabled: userEnvironmentEnabledProp,
 }: FullStackPreviewPanelProps) {
+  const userEnvironmentEnabledContext = useContext(
+    UserEnvironmentEnabledContext,
+  )
+  const userEnvironmentEnabled =
+    userEnvironmentEnabledProp ?? userEnvironmentEnabledContext
   const repository = useMemo(
     () => ({
       repositoryId: analysis.repository.repositoryId,
@@ -88,9 +107,11 @@ export function FullStackPreviewPanel({
     () =>
       candidates.map((candidate) => ({
         candidate,
-        support: resolveFullStackCandidateSupport(repository, candidate),
+        support: resolveFullStackCandidateSupport(repository, candidate, {
+          userEnvironmentEnabled,
+        }),
       })),
-    [candidates, repository],
+    [candidates, repository, userEnvironmentEnabled],
   )
   const supportedCandidates = candidateOptions
     .filter(({ support }) => support.supported)
@@ -115,6 +136,12 @@ export function FullStackPreviewPanel({
     null,
   )
   const [locallyExpired, setLocallyExpired] = useState(false)
+  // M12: in-memory React state only -- never browser storage, never part of
+  // retained preview state, cleared on target change and after admission.
+  const [environmentValues, setEnvironmentValues] = useState<
+    Record<string, string>
+  >({})
+  const [environmentConfirmed, setEnvironmentConfirmed] = useState(false)
   const usesLocalPreview = retainedPreview === undefined
   const preview = usesLocalPreview ? localPreview : retainedPreview
   const setRetainedPreview = useCallback(
@@ -128,6 +155,35 @@ export function FullStackPreviewPanel({
   const selectedBackend = supportedCandidates.find(
     (candidate) => candidate.sourceRoot === backendSourceRoot,
   )
+  const environmentRows = useMemo(
+    () =>
+      selectedBackend
+        ? describeUserEnvironmentRows(selectedBackend.environmentRequirements)
+        : [],
+    [selectedBackend],
+  )
+  const environmentNames = useMemo(
+    () =>
+      userEnvironmentEnabled && selectedBackend
+        ? (resolveUserEnvironmentNames(
+            selectedBackend.environmentRequirements,
+          ) ?? [])
+        : [],
+    [selectedBackend, userEnvironmentEnabled],
+  )
+  const environmentErrors = Object.fromEntries(
+    environmentNames.flatMap((name) => {
+      try {
+        assertValidUserEnvironmentValue(name, environmentValues[name] ?? "")
+        return []
+      } catch (error) {
+        return [[name, (error as Error).message]]
+      }
+    }),
+  ) as Record<string, string>
+  const environmentReady =
+    environmentNames.length === 0 ||
+    (environmentConfirmed && Object.keys(environmentErrors).length === 0)
   const detectionIsComplete =
     analysis.backend.complete && !analysis.backend.truncated
   const frontendIsEligible = analysis.preview.mode === "native-static-build"
@@ -164,6 +220,10 @@ export function FullStackPreviewPanel({
     if (hadActiveRequest) onCreatePendingChange?.(false)
     createKey.current = null
     setState({ status: "idle" })
+    // Values are scoped to one repository/commit/target pair and are never
+    // carried over to another one.
+    setEnvironmentValues({})
+    setEnvironmentConfirmed(false)
     return () => {
       const hasActiveRequest = activeRequest.current !== null
       activeRequest.current?.abort()
@@ -244,19 +304,30 @@ export function FullStackPreviewPanel({
   }, [preview?.expiresAt, preview?.id, preview?.status])
 
   const start = () => {
-    if (!fullStackPreviewApi || !selectedBackend) return
+    if (!fullStackPreviewApi || !selectedBackend || !environmentReady) return
     startFullStackPreview(
       fullStackPreviewApi,
       createFullStackPreviewRequest({
         repository,
         frontendSourceRoot: analysis.target.sourceRoot,
         backendSourceRoot: selectedBackend.sourceRoot,
+        userEnvironment: environmentNames.map((name) => ({
+          name,
+          value: environmentValues[name] ?? "",
+        })),
       }),
       activeRequest,
       setState,
       createKey,
       setAuthenticationStatus,
-      setRetainedPreview,
+      (nextPreview) => {
+        // Admitted: the server holds the values now; drop the local copy.
+        if (nextPreview) {
+          setEnvironmentValues({})
+          setEnvironmentConfirmed(false)
+        }
+        setRetainedPreview(nextPreview)
+      },
       onCreatePendingChange,
     )
   }
@@ -368,6 +439,27 @@ export function FullStackPreviewPanel({
                 </li>
               ))}
           </ul>
+        )}
+
+      {/* Off: the panel is exactly the pre-M12 UI. */}
+      {userEnvironmentEnabled &&
+        !preview &&
+        selectedBackend &&
+        environmentRows.length > 0 && (
+          <FullStackEnvironmentSection
+            confirmed={environmentConfirmed}
+            disabled={state.status === "creating"}
+            errors={environmentErrors}
+            inputEnabled={userEnvironmentEnabled}
+            onConfirmedChange={setEnvironmentConfirmed}
+            onValueChange={(name, value) => {
+              // A changed value is a different request, not a retry.
+              createKey.current = null
+              setEnvironmentValues((current) => ({ ...current, [name]: value }))
+            }}
+            rows={environmentRows}
+            values={environmentValues}
+          />
         )}
 
       {!preview && !frontendIsEligible ? (
@@ -492,9 +584,109 @@ export function FullStackPreviewPanel({
           }
         />
       ) : (
-        <button className="peephole__primary" onClick={start} type="button">
+        <button
+          className="peephole__primary"
+          disabled={!environmentReady}
+          onClick={start}
+          type="button"
+        >
           Run full-stack preview
         </button>
+      )}
+    </section>
+  )
+}
+
+function FullStackEnvironmentSection({
+  rows,
+  values,
+  errors,
+  confirmed,
+  disabled,
+  inputEnabled,
+  onValueChange,
+  onConfirmedChange,
+}: {
+  rows: UserEnvironmentRow[]
+  values: Record<string, string>
+  errors: Record<string, string>
+  confirmed: boolean
+  disabled: boolean
+  inputEnabled: boolean
+  onValueChange: (name: string, value: string) => void
+  onConfirmedChange: (confirmed: boolean) => void
+}) {
+  const baseId = useId()
+  const hasInputs = inputEnabled && rows.some((row) => row.acceptsInput)
+  return (
+    <section
+      aria-labelledby={`${baseId}-title`}
+      className="peephole__fullstack-environment"
+    >
+      <h4 id={`${baseId}-title`}>Environment variables</h4>
+      {hasInputs && (
+        <p className="peephole__action-note" id={`${baseId}-note`}>
+          Enter non-sensitive configuration only. Values are passed to this
+          repository&apos;s untrusted code and may be visible to anyone with the
+          preview link. Do not enter API keys, passwords, or tokens.
+        </p>
+      )}
+      <ul className="peephole__list" role="list">
+        {rows.map((row) => {
+          const inputId = `${baseId}-${row.name}`
+          const error = errors[row.name]
+          const showInput = inputEnabled && row.acceptsInput
+          return (
+            <li key={row.name}>
+              {showInput ? (
+                <>
+                  <label htmlFor={inputId}>
+                    <code>{row.name}</code> ({row.source}: {row.description})
+                  </label>
+                  <input
+                    aria-describedby={`${baseId}-note${error ? ` ${inputId}-error` : ""}`}
+                    aria-invalid={error ? true : undefined}
+                    autoComplete="off"
+                    className="peephole__branch-select"
+                    disabled={disabled}
+                    id={inputId}
+                    name={row.name}
+                    onChange={(event) =>
+                      onValueChange(row.name, event.currentTarget.value)
+                    }
+                    required
+                    spellCheck={false}
+                    type="text"
+                    value={values[row.name] ?? ""}
+                  />
+                  {error && (
+                    <p className="peephole__muted" id={`${inputId}-error`}>
+                      {error}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <code>{row.name}</code>:{" "}
+                  {row.acceptsInput
+                    ? "Needs a user-provided value, which this build does not accept"
+                    : `${row.source} — ${row.description}`}
+                </>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+      {hasInputs && (
+        <label className="peephole__branch-label">
+          <input
+            checked={confirmed}
+            disabled={disabled}
+            onChange={(event) => onConfirmedChange(event.currentTarget.checked)}
+            type="checkbox"
+          />{" "}
+          I understand these values are not kept secret from the preview.
+        </label>
       )}
     </section>
   )

@@ -134,6 +134,10 @@ because a fixture or interface for it exists.
 9. [x] frontend ↔ backend routing; production-verified in M9
 10. [x] ephemeral env / secrets
 11. [x] temporary database support
+12. [ ] user-provided preview configuration (M12) -- M12-A/M12-B implemented
+    behind default-off flags, not deployed, real-gVisor/Chrome E2E pending;
+    non-sensitive configuration only; M12-C (external API keys/secrets) is
+    design-only. See D-035 and docs/USER_PROVIDED_ENVIRONMENT.md
 
 Stage 10 is implemented and production-verified, narrowly: Peephole may
 *generate* and inject values for exactly four server-only secret names --

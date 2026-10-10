@@ -1177,3 +1177,45 @@ transport so the direct and gateway quotas never block each other. Signed-out us
 path. Both sides are off by default (`PEEPHOLE_GITHUB_GATEWAY_ENABLED`,
 `WXT_GITHUB_GATEWAY_ENABLED`). Private repositories remain out of scope. See
 `docs/GITHUB_API_REQUEST_OPTIMIZATION.md`.
+
+## D-035 - User-provided preview configuration (M12): non-sensitive values only, admitted with the full-stack request, delivered through a third tmpfs file
+
+**Status:** Accepted for implementation behind default-off flags; NOT
+deployed; real-gVisor and Chrome E2E verification pending. Does not change
+D-032 or D-033.
+
+Repositories declare variables M9-M11 cannot provide. Accepting a value is
+not the same as keeping it secret: the backend is untrusted code and the
+full-stack origin is public, so anything delivered can be echoed to
+visitors. M12 therefore admits only **non-sensitive configuration** and
+treats every value as public:
+
+- eligible names are declared at the exact commit (server re-derivation),
+  strictly uppercase, not platform/generated/database names, not
+  client-public, not process/toolchain/proxy controls, and not secret-like,
+  database-like, or endpoint-like by token -- with the analyzer's own
+  classification also required to agree (`core/userEnvironment/`); at most
+  16 per backend, never truncated;
+- values travel only in the authenticated `POST /v1/fullstack-previews`
+  body (`userEnvironment: [{name, value}]`) and are bound in a process-local
+  broker to the freshly minted preview id, requester, repository, commit,
+  backend source root, and names; the durable row, queue payload, plan, and
+  fingerprint hold names at most (values never), and replay with different
+  values is a 409 via an HMAC under a per-process random key;
+- the backend supervisor takes them once at START and they reach the
+  sandbox only as `/run/secrets/user-env` (tmpfs, read-only bind, one JSON
+  object) read by the trusted bootstrap behind a fixed flag; M10's
+  `/run/secrets/env` and M11's `/run/secrets/database-url` are unchanged;
+- a restart, binding mismatch, or retried START fails closed with
+  `CONFIGURATION_UNAVAILABLE`, never a default; standalone `backend-v1`
+  stays unable to receive configuration;
+- `PEEPHOLE_USER_ENVIRONMENT=1` (server, with a rootfs/bootstrap/tmpfs
+  preflight) and `WXT_USER_ENVIRONMENT_ENABLED=true` (extension) are both
+  required; both default off.
+
+A separate configuration-session/handle API was rejected (no security
+property beyond the single authenticated admission step, a second
+lifecycle to clean up). External API keys and other secrets (M12-C) need
+per-service egress, non-public or proxy-injected credential handling,
+consent, revocation, and abuse controls first and are not implemented. See
+docs/USER_PROVIDED_ENVIRONMENT.md.

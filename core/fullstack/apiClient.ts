@@ -7,6 +7,7 @@ import {
   type FullStackPreviewStatus,
 } from "../../types/fullstackPreview"
 import type { PreviewRepositoryRef } from "../../types/preview"
+import type { UserEnvironmentEntry } from "../../types/userEnvironment"
 import { isSafePreviewSourceRoot } from "../preview/sourceRoot"
 import type { StoredPreviewSession } from "../preview/sessionStorage"
 
@@ -33,6 +34,7 @@ const PREVIEW_ERROR_CODES = new Set<FullStackPreviewErrorCode>([
   "BACKEND_FAILED",
   "PROVISIONING_TIMEOUT",
   "ORCHESTRATION_UNAVAILABLE",
+  "CONFIGURATION_UNAVAILABLE",
 ])
 const API_ERROR_CODES = new Set<FullStackPreviewApiErrorCode>([
   "INVALID_REQUEST",
@@ -358,11 +360,22 @@ export function createFullStackPreviewRequest(input: {
   repository: PreviewRepositoryRef
   frontendSourceRoot: string
   backendSourceRoot: string
+  /** M12: sent only when non-empty, so requests for backends without
+   * user-provided configuration are byte-for-byte unchanged. */
+  userEnvironment?: readonly UserEnvironmentEntry[]
 }): CreateFullStackPreviewRequest {
   return {
     contractVersion: FULLSTACK_PREVIEW_CONTRACT_VERSION,
     repository: input.repository,
     frontendTarget: { sourceRoot: input.frontendSourceRoot },
     backendSourceRoot: input.backendSourceRoot,
+    ...(input.userEnvironment && input.userEnvironment.length > 0
+      ? {
+          userEnvironment: input.userEnvironment.map(({ name, value }) => ({
+            name,
+            value,
+          })),
+        }
+      : {}),
   }
 }

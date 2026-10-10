@@ -42,6 +42,7 @@ import {
   temporaryDatabaseBackendDependencies,
   temporaryDatabaseMaintenanceTasks,
 } from "./temporaryDatabaseRuntime"
+import { initializeProductionUserEnvironmentRuntime } from "./userEnvironmentRuntime"
 import {
   ensureProductionDiskLayout,
   ensureProductionPreflight,
@@ -137,6 +138,22 @@ async function main(): Promise<void> {
     },
   )
 
+  // M12 (default OFF): null broker unless PEEPHOLE_USER_ENVIRONMENT=1. Even
+  // while disabled it clears leftover user-env files at startup. When
+  // enabled, the capability gate (tmpfs root, rootfs placeholder, M12-aware
+  // bootstrap) must pass before any listener or worker exists.
+  const userEnvironment = await initializeProductionUserEnvironmentRuntime({
+    config: productionConfig.userEnvironment,
+    baseRootfsImage: productionConfig.baseRootfsImage,
+    forbiddenRoots: [
+      productionConfig.bundlesRootDir,
+      productionConfig.artifactStorageDir,
+      productionConfig.generatedSecretRootDir,
+      productionConfig.temporaryDatabases.credentialRootDir,
+    ],
+    orphanReaperMaxAgeMs: productionConfig.orphanReaperMaxAgeMs,
+  })
+
   const artifactStore = new PostgresProductionArtifactStore(database)
   const routing = createProductionFullStackRoutingInfrastructure({
     database,
@@ -178,6 +195,9 @@ async function main(): Promise<void> {
     frontendPlanResolver: planResolver,
     backendPlanResolver,
     quota: previewQuota,
+    controlPlane: userEnvironment.enabled
+      ? { userEnvironmentBroker: userEnvironment.broker }
+      : undefined,
   })
   const routingActivator = routing.createActivator(
     fullStackComposition.controlPlane,
@@ -208,6 +228,12 @@ async function main(): Promise<void> {
       secretBroker: generatedSecrets.secretBroker,
       generatedSecretFilesystem: generatedSecrets.filesystem,
       ...temporaryDatabaseBackendDependencies(temporaryDatabases),
+      ...(userEnvironment.enabled
+        ? {
+            userEnvironmentSource: userEnvironment.broker,
+            userEnvironmentFilesystem: userEnvironment.filesystem,
+          }
+        : {}),
     },
   )
   const fullStackSupervisor = new FullStackPreviewSupervisor(
@@ -320,6 +346,7 @@ async function main(): Promise<void> {
       generatedSecrets.orphanReaper.reap(),
       routing.artifactHost.reap(),
       ...temporaryDatabaseMaintenanceTasks(temporaryDatabases),
+      ...(userEnvironment.enabled ? [userEnvironment.orphanReaper.reap()] : []),
     ])
       .then(() => undefined)
       .catch((error: unknown) =>

@@ -19,6 +19,15 @@ import {
 } from "../../core/preview/backendRuntimePlanValidator"
 import { isSafePreviewSourceRoot } from "../../core/preview/sourceRoot"
 import { classifyGitHubUpstreamError } from "../../core/github/upstreamAvailability"
+import {
+  InvalidUserEnvironmentError,
+  assertUserEnvironmentMatchesNames,
+} from "../../core/userEnvironment/userEnvironmentPolicy"
+import type { UserEnvironmentEntry } from "../../types/userEnvironment"
+import {
+  UserEnvironmentAdmissionError,
+  type UserEnvironmentBroker,
+} from "../user-environment/userEnvironmentBroker"
 import { FullStackPreviewControlError } from "./errors"
 import { FULLSTACK_PREVIEW_ID_PATTERN, createFullStackPreviewId } from "./id"
 import type {
@@ -78,6 +87,8 @@ const SAFE_ERROR_MESSAGES: Record<FullStackPreviewErrorCode, string> = {
     "The full-stack preview did not finish provisioning in time.",
   ORCHESTRATION_UNAVAILABLE:
     "No full-stack preview orchestration worker was available.",
+  CONFIGURATION_UNAVAILABLE:
+    "The configuration values for this preview are no longer available. Start a new preview and enter them again.",
 }
 
 export interface FullStackPreviewControlPlaneOptions {
@@ -96,6 +107,10 @@ export interface FullStackPreviewControlPlaneOptions {
   maxActiveFullStackPreviewsPerRequester?: number
   now?: () => Date
   createId?: () => string
+  /** M12 activation seam. Absent: any backend that declares user-provided
+   * configuration is unsupported, exactly as before M12. Present: the same
+   * process-local instance the backend supervisor takes from. */
+  userEnvironmentBroker?: UserEnvironmentBroker
 }
 
 export interface CreateFullStackPreviewResult {
@@ -115,6 +130,7 @@ export class FullStackPreviewControlPlane {
   private readonly maxActiveFullStackPreviewsPerRequester: number
   private readonly now: () => Date
   private readonly createId: () => string
+  private readonly userEnvironmentBroker: UserEnvironmentBroker | undefined
 
   constructor(
     private readonly frontendPlanResolver: FrontendPlanResolver,
@@ -129,6 +145,7 @@ export class FullStackPreviewControlPlane {
       options.maxActiveFullStackPreviewsPerRequester ?? 1
     this.now = options.now ?? (() => new Date())
     this.createId = options.createId ?? createFullStackPreviewId
+    this.userEnvironmentBroker = options.userEnvironmentBroker
   }
 
   async create(
@@ -138,6 +155,7 @@ export class FullStackPreviewControlPlane {
   ): Promise<CreateFullStackPreviewResult> {
     validateRequester(requester)
     validateCreateInput(request, idempotencyKey)
+    const userEnvironment = request.userEnvironment ?? []
 
     const requestFingerprint = await createRequestFingerprint(request)
     const existing = await this.store.getByIdempotencyKey(
@@ -149,6 +167,11 @@ export class FullStackPreviewControlPlane {
       assertSameIdempotentRequest(
         existing.requestFingerprint,
         requestFingerprint,
+      )
+      this.assertSameReplayedEnvironment(
+        existing.preview.id,
+        requester.subject,
+        userEnvironment,
       )
       return {
         created: false,
@@ -175,7 +198,12 @@ export class FullStackPreviewControlPlane {
     // future worker phase independently re-resolves both again, exactly
     // like every other trust boundary in this codebase.
     await resolveFrontendPlan(this.frontendPlanResolver, request, this.now)
-    await resolveBackendPlan(this.backendPlanResolver, request, this.now)
+    const backendPlan = await resolveBackendPlan(
+      this.backendPlanResolver,
+      request,
+      this.now,
+    )
+    this.assertAdmissibleEnvironment(backendPlan, userEnvironment)
 
     const now = this.now()
     const id = this.createId()
@@ -199,13 +227,50 @@ export class FullStackPreviewControlPlane {
       expiresAt: expiresAt.toISOString(),
     }
 
-    const persisted = await this.store.createOrGetWithCapacity({
-      requesterId: requester.subject,
-      idempotencyKey,
-      requestFingerprint,
-      preview,
-      maxActive: this.maxActiveFullStackPreviewsPerRequester,
-    })
+    // Registered under the freshly minted id BEFORE the durable row and
+    // its queue row exist, so a worker leasing the row immediately can
+    // never observe the preview without its configuration. Every path that
+    // does not end with this id persisted and queued discards it again.
+    if (userEnvironment.length > 0) {
+      this.registerEnvironment(
+        {
+          previewId: id,
+          requesterId: requester.subject,
+          repository: preview.repository,
+          backendSourceRoot: backendPlan.sourceRoot,
+          names: backendPlan.userEnvironmentNames,
+        },
+        userEnvironment,
+        expiresAt,
+      )
+    }
+
+    let persisted: Awaited<
+      ReturnType<FullStackPreviewStore["createOrGetWithCapacity"]>
+    >
+    try {
+      persisted = await this.store.createOrGetWithCapacity({
+        requesterId: requester.subject,
+        idempotencyKey,
+        requestFingerprint,
+        preview,
+        maxActive: this.maxActiveFullStackPreviewsPerRequester,
+      })
+    } catch (error) {
+      this.userEnvironmentBroker?.discard(id)
+      throw error
+    }
+
+    if (!persisted.created || persisted.preview.id !== id) {
+      // A concurrent request with the same key won admission; it owns the
+      // preview and its own configuration.
+      this.userEnvironmentBroker?.discard(id)
+      this.assertSameReplayedEnvironment(
+        persisted.preview.id,
+        requester.subject,
+        userEnvironment,
+      )
+    }
 
     if (
       persisted.created &&
@@ -220,6 +285,7 @@ export class FullStackPreviewControlPlane {
           backendSourceRoot: persisted.preview.backendSourceRoot,
         })
       } catch {
+        this.userEnvironmentBroker?.discard(persisted.preview.id)
         const failed = await this.fail(
           persisted.preview.id,
           "ORCHESTRATION_UNAVAILABLE",
@@ -263,7 +329,94 @@ export class FullStackPreviewControlPlane {
           : "cancelled"
       return transition(preview, target, this.now())
     })
+    // A cancelled or stopping preview never needs its configuration again.
+    this.userEnvironmentBroker?.discard(previewId)
     return toPublicPreview(updated)
+  }
+
+  /** Worker-only: drops any configuration still retained for a preview
+   * whose orchestration run has ended. Idempotent. */
+  discardUserEnvironment(previewId: string): void {
+    this.userEnvironmentBroker?.discard(previewId)
+  }
+
+  private assertAdmissibleEnvironment(
+    plan: BackendRuntimePlan,
+    userEnvironment: readonly UserEnvironmentEntry[],
+  ): void {
+    if (plan.userEnvironmentNames.length > 0 && !this.userEnvironmentBroker) {
+      throw new FullStackPreviewControlError(
+        "UNSUPPORTED_BACKEND",
+        "This backend requires user-provided configuration, which this server does not accept.",
+        422,
+      )
+    }
+    try {
+      assertUserEnvironmentMatchesNames(
+        userEnvironment,
+        plan.userEnvironmentNames,
+      )
+    } catch (error) {
+      if (error instanceof InvalidUserEnvironmentError) {
+        throw new FullStackPreviewControlError(
+          "INVALID_REQUEST",
+          error.message,
+          400,
+        )
+      }
+      throw error
+    }
+  }
+
+  private registerEnvironment(
+    binding: Parameters<UserEnvironmentBroker["register"]>[0],
+    userEnvironment: readonly UserEnvironmentEntry[],
+    expiresAt: Date,
+  ): void {
+    if (!this.userEnvironmentBroker) {
+      throw new FullStackPreviewControlError(
+        "UNSUPPORTED_BACKEND",
+        "This backend requires user-provided configuration, which this server does not accept.",
+        422,
+      )
+    }
+    try {
+      this.userEnvironmentBroker.register(binding, userEnvironment, expiresAt)
+    } catch (error) {
+      if (error instanceof UserEnvironmentAdmissionError) {
+        throw new FullStackPreviewControlError(
+          "RATE_LIMITED",
+          "Full-stack preview configuration could not be accepted right now. Try again later.",
+          429,
+          30,
+        )
+      }
+      throw error
+    }
+  }
+
+  /** Same key, same names (the fingerprint already proved that), but
+   * different values is a conflict -- never a silent switch to either set.
+   * `unknown` (nothing retained) keeps the existing replay behavior. */
+  private assertSameReplayedEnvironment(
+    previewId: string,
+    requesterId: string,
+    userEnvironment: readonly UserEnvironmentEntry[],
+  ): void {
+    if (userEnvironment.length === 0 || !this.userEnvironmentBroker) return
+    if (
+      this.userEnvironmentBroker.compare(
+        previewId,
+        requesterId,
+        userEnvironment,
+      ) === "different"
+    ) {
+      throw new FullStackPreviewControlError(
+        "CONFLICT",
+        "The idempotency key was already used with different configuration values.",
+        409,
+      )
+    }
   }
 
   /** Generic teardown transitions. Provisioning transitions use the narrow
@@ -508,6 +661,7 @@ export class FullStackPreviewControlPlane {
     previewId: string,
     code: FullStackPreviewErrorCode,
   ): Promise<void> {
+    this.userEnvironmentBroker?.discard(previewId)
     await this.store.update(previewId, (preview) =>
       ACTIVE_STATUSES.has(preview.status)
         ? {
@@ -820,6 +974,15 @@ async function createRequestFingerprint(
     contractVersion: request.contractVersion,
     frontendSourceRoot: request.frontendTarget.sourceRoot,
     backendSourceRoot: request.backendSourceRoot,
+    // Names only, and only when present, so every pre-M12 request keeps
+    // its exact fingerprint. Values never enter a durable fingerprint.
+    ...(request.userEnvironment && request.userEnvironment.length > 0
+      ? {
+          userEnvironmentNames: request.userEnvironment
+            .map((entry) => entry.name)
+            .sort(),
+        }
+      : {}),
   })
   const digest = await crypto.subtle.digest(
     "SHA-256",

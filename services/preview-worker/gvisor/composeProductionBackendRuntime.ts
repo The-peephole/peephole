@@ -10,6 +10,8 @@ import type { resolveDnsConfig } from "./dnsConfig"
 import { GVisorBackendRuntimeProcess } from "./backendRuntimeProcess"
 import type { GeneratedSecretFilesystem } from "./generatedSecretFilesystem"
 import type { DatabaseCredentialFilesystem } from "./databaseCredentialFilesystem"
+import type { UserEnvironmentFilesystem } from "./userEnvironmentFilesystem"
+import type { UserEnvironmentSource } from "../../user-environment/userEnvironmentBroker"
 import { GVisorSandboxProvisioner } from "./gvisorSandboxProvisioner"
 import type { VethNatNetworkProvisioner } from "./networkNamespace"
 import type { ProcessRunner } from "./processRunner"
@@ -43,6 +45,11 @@ export interface ComposeProductionBackendRuntimeOptions {
    * and neither otherwise. */
   temporaryDatabaseProvisioner?: TemporaryDatabaseLifecycleProvisioner
   databaseCredentialFilesystem?: DatabaseCredentialFilesystem
+  /** M12 activation seam: both or neither, supplied only when
+   * PEEPHOLE_USER_ENVIRONMENT=1. The source must be the same broker
+   * instance full-stack admission registers into. */
+  userEnvironmentSource?: UserEnvironmentSource
+  userEnvironmentFilesystem?: UserEnvironmentFilesystem
   /** Process-local live-route registry the same-process full-stack proxy
    * resolver also reads from -- REQUIRED, not defaulted, and
    * deliberately never constructed by this function. The one process
@@ -80,6 +87,14 @@ export function composeProductionBackendRuntime(
       "Temporary-database provisioning and credential filesystem dependencies must be configured together.",
     )
   }
+  if (
+    Boolean(options.userEnvironmentSource) !==
+    Boolean(options.userEnvironmentFilesystem)
+  ) {
+    throw new Error(
+      "User environment source and filesystem dependencies must be configured together.",
+    )
+  }
   const byteStore = new ArchiveByteStore()
   const extraction = new ExtractionState()
 
@@ -107,6 +122,7 @@ export function composeProductionBackendRuntime(
     maxRuntimeMs: options.maxRuntimeMs,
     generatedSecretFilesystem: options.generatedSecretFilesystem,
     databaseCredentialFilesystem: options.databaseCredentialFilesystem,
+    userEnvironmentFilesystem: options.userEnvironmentFilesystem,
   })
 
   return new BackendRuntimeSupervisor(
@@ -125,6 +141,7 @@ export function composeProductionBackendRuntime(
       readinessTimeoutMs: options.readinessTimeoutMs,
       secretBroker: options.secretBroker,
       temporaryDatabaseProvisioner: options.temporaryDatabaseProvisioner,
+      userEnvironmentSource: options.userEnvironmentSource,
       cleanup: (runtimeId) => {
         extraction.delete(runtimeId)
       },

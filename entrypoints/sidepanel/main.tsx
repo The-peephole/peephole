@@ -56,6 +56,11 @@ const backendRuntimeEnabled =
   import.meta.env.WXT_BACKEND_RUNTIME_ENABLED === "true"
 const fullStackPreviewEnabled =
   import.meta.env.WXT_FULLSTACK_PREVIEW_ENABLED === "true"
+// M12 (D-035): off unless the build opts in AND the server enables
+// PEEPHOLE_USER_ENVIRONMENT; the server rejects configuration otherwise.
+const userEnvironmentEnabled =
+  fullStackPreviewEnabled &&
+  import.meta.env.WXT_USER_ENVIRONMENT_ENABLED === "true"
 
 try {
   const previewApiBaseUrl = parsePreviewApiBaseUrl(
@@ -138,6 +143,7 @@ createRoot(root).render(
       backendRuntimeEnabled={backendRuntimeEnabled}
       fullStackPreviewApi={fullStackPreviewApi}
       fullStackPreviewEnabled={fullStackPreviewEnabled}
+      userEnvironmentEnabled={userEnvironmentEnabled}
       connectGitHub={reconnectGitHub}
       previewApi={previewApi}
       previewArtifactBaseDomain={previewArtifactBaseDomain}
