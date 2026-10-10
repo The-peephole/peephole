@@ -381,6 +381,17 @@ describe("production journal inspection", () => {
     ).rejects.toMatchObject({ check: "service errors" })
   })
 
+  it("still rejects the maintenance reaper failure seen beside a Stop on 2026-10-10", async () => {
+    const { runner } = journalRunner({
+      stdout:
+        '[peephole] cleanup failed; will retry Error: ip netns exec peephole-5846 ip -j addr show failed (exit 255): Cannot open network namespace "peephole-5846": No such file or directory\n',
+    })
+
+    await expect(
+      assertNoKnownServiceErrors(runner, "now"),
+    ).rejects.toMatchObject({ check: "service errors" })
+  })
+
   it("fails closed on a non-zero journal exit", async () => {
     const { runner } = journalRunner({ exitCode: 1 })
 

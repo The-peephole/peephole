@@ -5,7 +5,11 @@ import {
 import type { ProcessRunner, ProcessRunResult } from "./processRunner"
 import { NodeProcessRunner } from "./nodeProcessRunner"
 import { NetworkAllocationRegistry } from "./networkAllocationRegistry"
-import { NetworkLeaseManager, type NetworkLease } from "./subnetAllocator"
+import {
+  NetworkLeaseManager,
+  sameNetworkLease,
+  type NetworkLease,
+} from "./subnetAllocator"
 
 const COMMAND_TIMEOUT_MS = 10_000
 const IPTABLES_LOCK_WAIT_SECONDS = "5"
@@ -79,11 +83,35 @@ export class NetworkOrphanReaper {
 
   private async reconcile(failOnLiveOwner: boolean): Promise<void> {
     await this.leases.recoverAllocationLock()
-    const leases = await this.leases.listOwnedLeases()
+    const listed = await this.leases.listOwnedLeases()
     const snapshot = await this.inspectHost()
-    await this.validateSnapshot(snapshot, leases)
-    for (const lease of leases) {
-      await this.activity.runExclusive(lease.allocationId, async () => {
+    // Only checks decidable from this snapshot alone run unlocked. A normal
+    // teardown may delete a listed lease's resources at any moment after the
+    // snapshot, so each lease's live host inspection is repeated under that
+    // lease's mutex against a fresh snapshot.
+    this.validateSnapshotShape(snapshot, listed)
+    const leases: NetworkLease[] = []
+    for (const lease of listed) {
+      const current = await this.activity.runExclusive(
+        lease.allocationId,
+        async () => {
+          const owned = await this.currentLeaseUnlocked(lease)
+          if (owned) {
+            await this.validateSnapshot(
+              await this.inspectHost(),
+              [owned],
+              false,
+            )
+          }
+          return owned
+        },
+      )
+      if (current) leases.push(current)
+    }
+    for (const listedLease of leases) {
+      await this.activity.runExclusive(listedLease.allocationId, async () => {
+        const lease = await this.currentLeaseUnlocked(listedLease)
+        if (!lease) return
         const liveness = await this.leases.ownerLiveness(lease)
         if (liveness.state === "UNKNOWN") {
           throw new Error(
@@ -106,6 +134,28 @@ export class NetworkOrphanReaper {
         await this.cleanupLeaseUnlocked(lease, { allowLiveOwner: false })
       })
     }
+  }
+
+  /**
+   * Re-reads a listed lease under its mutex. A lease that no longer exists was
+   * released by a verified teardown; that is accepted only after a fresh
+   * snapshot proves none of its resources remain. A lease that changed
+   * identity, or any other unreadable state, fails closed.
+   */
+  private async currentLeaseUnlocked(
+    listed: NetworkLease,
+  ): Promise<NetworkLease | null> {
+    const current = await this.leases.findOwnedLease(listed.leaseDir)
+    if (current === null) {
+      this.assertLeaseAbsent(await this.inspectHost(), listed)
+      return null
+    }
+    if (!sameNetworkLease(current, listed)) {
+      throw new Error(
+        `Network lease ${String(listed.index)} changed identity during reconciliation; refusing.`,
+      )
+    }
+    return current
   }
 
   /** Normal teardown uses the same proof and verification path, but may clean
@@ -201,6 +251,18 @@ export class NetworkOrphanReaper {
     leases: readonly NetworkLease[],
     auditUnowned = true,
   ): Promise<void> {
+    this.validateSnapshotShape(snapshot, leases, auditUnowned)
+    for (const lease of leases) {
+      await this.validateLinkAndRouteIdentity(snapshot, lease)
+    }
+  }
+
+  /** Ownership and rule-shape checks that need no further host commands. */
+  private validateSnapshotShape(
+    snapshot: HostSnapshot,
+    leases: readonly NetworkLease[],
+    auditUnowned = true,
+  ): void {
     const namespaceOwners = new Map(
       leases.map((lease) => [lease.namespace, lease]),
     )
@@ -258,7 +320,6 @@ export class NetworkOrphanReaper {
     }
 
     for (const lease of leases) {
-      await this.validateLinkAndRouteIdentity(snapshot, lease)
       const expected = expectedRules(lease)
       const relevantIpv4 = snapshot.ipv4.filter((rule) =>
         rule.some(

@@ -280,9 +280,12 @@ export class NetworkLeaseManager {
     })
   }
 
+  /** Holds the allocation lock so a concurrent `release()` cannot remove a
+   * lease between `readdir` and its per-entry validation. Must not be called
+   * from inside `withAllocationLock` (the lock is not reentrant). */
   async listOwnedLeases(): Promise<NetworkLease[]> {
     const root = await this.getLeaseRoot()
-    return this.listOwnedLeasesUnlocked(root)
+    return this.withAllocationLock(() => this.listOwnedLeasesUnlocked(root))
   }
 
   async requireOwnedLease(candidate: string): Promise<NetworkLease> {
@@ -357,10 +360,29 @@ export class NetworkLeaseManager {
     return expected
   }
 
+  /**
+   * Like `requireOwnedLease`, but reports a lease directory that no longer
+   * exists (a completed release) as `null`. Every other malformed, unsafe, or
+   * unreadable state still throws.
+   */
+  async findOwnedLease(candidate: string): Promise<NetworkLease | null> {
+    try {
+      return await this.requireOwnedLease(candidate)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      try {
+        await lstat(candidate)
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === "ENOENT") return null
+      }
+      throw error
+    }
+  }
+
   async release(lease: NetworkLease): Promise<void> {
     await this.withAllocationLock(async () => {
       const owned = await this.requireOwnedLease(lease.leaseDir)
-      if (JSON.stringify(toMarker(owned)) !== JSON.stringify(toMarker(lease))) {
+      if (!sameNetworkLease(owned, lease)) {
         throw new Error("Refusing to release a different network lease.")
       }
       const root = await this.getLeaseRoot()
@@ -1136,6 +1158,14 @@ export function deriveNetworkNames(
     returnChain: `ppr${suffix}`,
     iptablesComment: `peephole-${allocationId}-${suffix}`,
   }
+}
+
+/** Exact durable identity: same allocation, resources, policy, and creator. */
+export function sameNetworkLease(
+  left: NetworkLease,
+  right: NetworkLease,
+): boolean {
+  return JSON.stringify(toMarker(left)) === JSON.stringify(toMarker(right))
 }
 
 function toMarker(lease: NetworkLease): NetworkLeaseMarker {
