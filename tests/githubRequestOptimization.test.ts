@@ -217,7 +217,8 @@ describe("GitHub request optimization", () => {
 
     responses[0]?.(fileResponse("package.json", '{"version":"old"}'))
     await oldRejection
-    await Promise.resolve()
+    // Let the old loader's fetch -> json -> cache chain fully settle.
+    await new Promise((resolve) => setTimeout(resolve, 0))
 
     await expect(
       client.getRepositoryTextFile(metadata, "package.json", 1024),
