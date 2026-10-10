@@ -139,6 +139,20 @@ export interface GitHubClientOptions {
   mutableResponseTtlMs?: number
   missingContentTtlMs?: number
   now?: () => number
+  /**
+   * For a client that reaches GitHub through more than one quota (the
+   * extension's direct path vs. the signed-in gateway): `current()` names the
+   * path the next request is expected to take, and is checked before it is
+   * sent; `of(response)` names the path that actually produced a response,
+   * which may differ when the transport falls back, and receives any
+   * cooldown. One path's limit never blocks the other. Omitted: one scope.
+   */
+  rateLimitScope?: RateLimitScope
+}
+
+export interface RateLimitScope {
+  current(): string | Promise<string>
+  of(response: Response): string
 }
 
 interface RequestCachePolicy {
@@ -153,13 +167,18 @@ export class GitHubClient {
   private readonly mutableResponseTtlMs: number
   private readonly missingContentTtlMs: number
   private readonly now: () => number
-  private rateLimitRetryAt: Date | null = null
+  private readonly rateLimitScope: RateLimitScope
+  private readonly rateLimitRetryAt = new Map<string, Date>()
 
   constructor(options: GitHubClientOptions = {}) {
     this.apiBaseUrl = options.apiBaseUrl ?? DEFAULT_API_BASE_URL
     this.fetcher = (options.fetcher ?? globalThis.fetch).bind(globalThis)
     this.getToken = async () => options.getToken?.()
     this.now = options.now ?? Date.now
+    this.rateLimitScope = options.rateLimitScope ?? {
+      current: () => "default",
+      of: () => "default",
+    }
     this.requestCache = options.requestCache
       ? new GitHubRequestCache({
           ...options.requestCache,
@@ -605,7 +624,7 @@ export class GitHubClient {
   }
 
   private async fetch(path: string, signal: AbortSignal): Promise<Response> {
-    this.throwIfRateLimited()
+    this.throwIfRateLimited(await this.rateLimitScope.current())
 
     let response: Response
 
@@ -622,20 +641,9 @@ export class GitHubClient {
       )
     }
 
-    const retryAt = getRetryAt(response.headers, this.now)
-    if (
-      response.headers.get("x-ratelimit-remaining") === "0" &&
-      retryAt &&
-      retryAt.getTime() > this.now()
-    ) {
-      this.rateLimitRetryAt = retryAt
-    }
-
-    if (!response.ok) {
-      const error = createResponseError(response, this.now)
-      if (error.code === "rate-limited" && error.retryAt) {
-        this.rateLimitRetryAt = error.retryAt
-      }
+    const cooldown = getRateLimitCooldown(response, this.now)
+    if (cooldown) {
+      this.rateLimitRetryAt.set(this.rateLimitScope.of(response), cooldown)
     }
 
     return response
@@ -657,20 +665,42 @@ export class GitHubClient {
     return loader(options.signal ?? new AbortController().signal)
   }
 
-  private throwIfRateLimited(): void {
-    if (!this.rateLimitRetryAt) return
-    if (this.rateLimitRetryAt.getTime() <= this.now()) {
-      this.rateLimitRetryAt = null
+  private throwIfRateLimited(scope: string): void {
+    const retryAt = this.rateLimitRetryAt.get(scope)
+    if (!retryAt) return
+    if (retryAt.getTime() <= this.now()) {
+      this.rateLimitRetryAt.delete(scope)
       return
     }
 
     throw new GitHubApiError(
       "rate-limited",
-      formatRateLimitMessage(this.rateLimitRetryAt),
+      formatRateLimitMessage(retryAt),
       429,
-      this.rateLimitRetryAt,
+      retryAt,
     )
   }
+}
+
+/**
+ * The instant until which this response says no further request should be
+ * sent: a rate-limited error's retry time, or an exhausted-quota success's
+ * reset. Null when the response imposes no cooldown.
+ */
+export function getRateLimitCooldown(
+  response: Response,
+  now: () => number = Date.now,
+): Date | null {
+  if (!response.ok) {
+    const error = createResponseError(response, now)
+    if (error.code === "rate-limited" && error.retryAt) return error.retryAt
+  }
+  const retryAt = getRetryAt(response.headers, now)
+  return response.headers.get("x-ratelimit-remaining") === "0" &&
+    retryAt &&
+    retryAt.getTime() > now()
+    ? retryAt
+    : null
 }
 
 function createResponseError(
@@ -710,7 +740,8 @@ function createResponseError(
   )
 }
 
-function getRetryAt(
+/** `Retry-After` (seconds or HTTP-date) first, then `X-RateLimit-Reset`. */
+export function getRetryAt(
   headers: Headers,
   now: () => number = Date.now,
 ): Date | null {
@@ -770,7 +801,7 @@ function normalizeHomepage(value: string | null): string | null {
   }
 }
 
-function isGitHubRepositoryResponse(
+export function isGitHubRepositoryResponse(
   value: unknown,
 ): value is GitHubRepositoryResponse {
   if (!isObject(value) || !isObject(value.owner)) {
@@ -787,7 +818,7 @@ function isGitHubRepositoryResponse(
   )
 }
 
-function isGitHubBranchListResponse(
+export function isGitHubBranchListResponse(
   value: unknown,
 ): value is GitHubBranchListEntry[] {
   return (
@@ -801,7 +832,9 @@ function isGitHubBranchListResponse(
   )
 }
 
-function isGitHubBranchResponse(value: unknown): value is GitHubBranchResponse {
+export function isGitHubBranchResponse(
+  value: unknown,
+): value is GitHubBranchResponse {
   return (
     isObject(value) &&
     isObject(value.commit) &&
@@ -818,7 +851,7 @@ function isGitHubCommitResponse(value: unknown): value is GitHubCommitResponse {
   )
 }
 
-function isGitHubDeploymentListResponse(
+export function isGitHubDeploymentListResponse(
   value: unknown,
 ): value is GitHubDeploymentResponse[] {
   return Array.isArray(value) && value.every(isGitHubDeploymentResponse)
@@ -845,7 +878,7 @@ function isGitHubDeploymentResponse(
   )
 }
 
-function isGitHubDeploymentStatusListResponse(
+export function isGitHubDeploymentStatusListResponse(
   value: unknown,
 ): value is GitHubDeploymentStatusResponse[] {
   return Array.isArray(value) && value.every(isGitHubDeploymentStatusResponse)
@@ -867,7 +900,7 @@ function isGitHubDeploymentStatusResponse(
   )
 }
 
-function isGitHubContentEntriesResponse(
+export function isGitHubContentEntriesResponse(
   value: unknown,
 ): value is GitHubContentEntry[] {
   return Array.isArray(value) && value.every(isGitHubContentEntry)
@@ -884,7 +917,7 @@ function isGitHubContentEntry(value: unknown): value is GitHubContentEntry {
   )
 }
 
-function isGitHubFileContentResponse(
+export function isGitHubFileContentResponse(
   value: unknown,
 ): value is GitHubFileContentResponse {
   return (

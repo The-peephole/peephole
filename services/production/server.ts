@@ -10,6 +10,7 @@ import { readPostgresConfig } from "../preview-api/postgres/config"
 import { applyPostgresMigrations } from "../preview-api/postgres/migrate"
 import { composePostgresControlPlane } from "../preview-api/postgres/compose"
 import { readPreviewApiServerConfig } from "../preview-api/serverConfig"
+import { GitHubGateway } from "../preview-api/githubGateway"
 import { startNodePreviewApi } from "../preview-api/startNodeServer"
 import { composeProductionWorker } from "../preview-worker/gvisor/composeProductionWorker"
 import { GVisorOrphanReaper } from "../preview-worker/gvisor/gvisorOrphanReaper"
@@ -241,9 +242,19 @@ async function main(): Promise<void> {
     readGitHubAppOAuthConfig(process.env),
   )
   const apiConfig = readPreviewApiServerConfig(process.env)
+  // Off unless explicitly enabled; it also self-disables unless the token is
+  // proven public-only (see docs/GITHUB_API_REQUEST_OPTIMIZATION.md).
+  const githubGatewayToken = process.env.PEEPHOLE_GITHUB_TOKEN
+  const githubGateway =
+    process.env.PEEPHOLE_GITHUB_GATEWAY_ENABLED === "true" && githubGatewayToken
+      ? new GitHubGateway({ token: githubGatewayToken })
+      : null
   const api = await startNodePreviewApi({
     controlPlane: composition.controlPlane,
     fullStackControlPlane: fullStackComposition.controlPlane,
+    githubGateway: githubGateway
+      ? (request) => githubGateway.handle(request)
+      : undefined,
     config: apiConfig,
     resolveRequester: (request) => sessionAuth.resolve(request),
     beginGitHubAuth: (request) =>

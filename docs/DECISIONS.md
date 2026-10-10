@@ -1130,3 +1130,50 @@ There is no Prisma, MySQL, MongoDB, or other client/engine, no general
 outbound backend networking, and no user-supplied database credentials.
 This decision is not a claim of arbitrary database support. M11
 (`docs/MVP_ROADMAP.md` stage 11) is checked complete.
+
+## D-034 - Signed-in GitHub reads use a public-only server gateway with the server-owned token
+
+**Status:** Accepted
+
+The extension's unauthenticated GitHub REST reads share a 60/hour budget per
+IP. Signed-in users now read through `POST /v1/github/rest` on the Preview
+API, which performs the same fixed operations with the server-owned
+`PEEPHOLE_GITHUB_TOKEN` (5,000/hour) and a shared cache.
+
+| | A: server-owned token (chosen) | B: GitHub App user token | C: App installation token |
+| --- | --- | --- | --- |
+| Any public repository | Yes | Yes | Only installed repositories |
+| App installation needed | No | No | Yes, per owner |
+| Repository access | Public-only, enforced (below) | Everything the user can see, incl. private | Installed repositories |
+| Rate limit | 5,000/h shared by all users and admission | 5,000/h per user | 5,000–12,500/h per installation |
+| Per-user quota isolation | Gateway limits only | Natural | Per installation |
+| Secret storage/rotation | One existing server secret | Must start storing per-user tokens (D-025 discards them), refresh, encrypt, revoke | App private key + token minting |
+| Complexity / OAuth compatibility | Small; OAuth unchanged | Large; changes D-025 | Large; installation UX |
+
+Option B would reverse D-025's "discard the user token" rule and could expose
+private data the user can see; Option C cannot read arbitrary public
+repositories. Option A needs no new secret, but the shared token must not
+become a channel to private data, so:
+
+- every operation re-checks `private === false && visibility === "public"`
+  (30 s TTL) before returning anything, including immutable cached content.
+  This bounds new exposure after a Public → Private change to that TTL; it
+  cannot recall data a browser already cached, and immediate enforcement is
+  not claimed;
+- a credential guard keeps the gateway disabled unless the token is a classic
+  PAT (`ghp_`) whose `X-OAuth-Scopes` header is present and empty and which
+  lists no private repositories. Any scope, fine-grained PATs, and GitHub
+  App/OAuth credentials are refused; preview admission only reads public
+  data, so a scope-less token also serves it;
+- only the extension's fixed operations are accepted; the upstream URL is
+  rebuilt from validated fields; redirects are refused; responses are reduced
+  to the fields the client reads;
+- per-subject/per-IP limits, a concurrency cap, cooldown on GitHub limits,
+  and a 500-call reserve protect admission's share of the token.
+
+The extension keeps `GitHubClient` and only swaps its transport, so PR #49's
+cache and error contracts hold; rate-limit cooldowns are tracked per
+transport so the direct and gateway quotas never block each other. Signed-out users keep the direct
+path. Both sides are off by default (`PEEPHOLE_GITHUB_GATEWAY_ENABLED`,
+`WXT_GITHUB_GATEWAY_ENABLED`). Private repositories remain out of scope. See
+`docs/GITHUB_API_REQUEST_OPTIMIZATION.md`.

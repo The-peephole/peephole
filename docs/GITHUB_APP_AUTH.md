@@ -86,11 +86,21 @@ owns browser persistence. A production refresh design should add:
 
 Until those controls exist, reconnect is the supported and safer MVP.
 
+## Public GitHub reads for signed-in users
+
+The Peephole session also authorizes `POST /v1/github/rest`, an optional,
+public-only read gateway that performs the extension's fixed GitHub REST
+operations with the server-owned `PEEPHOLE_GITHUB_TOKEN`. The GitHub App user
+access token is still discarded after `GET /user`; the gateway never uses or
+stores it. A 401 from the gateway clears the session exactly like a preview
+API 401, and the extension continues with direct unauthenticated reads. See
+D-034 and `docs/GITHUB_API_REQUEST_OPTIMIZATION.md`.
+
 ## Production environment
 
 All entries below are server-side deployment secrets or configuration except
 the already-public API base URL. None may use a `WXT_` prefix except
-`WXT_PREVIEW_API_BASE_URL`.
+`WXT_PREVIEW_API_BASE_URL` and the `WXT_GITHUB_GATEWAY_ENABLED` flag.
 
 | Variable | Secret | Purpose |
 | --- | --- | --- |
@@ -101,6 +111,9 @@ the already-public API base URL. None may use a `WXT_` prefix except
 | `PEEPHOLE_GITHUB_OAUTH_STATE_SECRET` | Yes | HMAC key for redirect, nonce, PKCE challenge, and expiry state |
 | `PEEPHOLE_SESSION_SIGNING_SECRET` | Yes | HMAC key for short-lived Peephole access sessions |
 | `WXT_PREVIEW_API_BASE_URL` | No | Public Preview API origin compiled into the extension |
+| `PEEPHOLE_GITHUB_TOKEN` | Yes | Server-owned GitHub credential for admission; the read gateway additionally requires a scope-less classic PAT |
+| `PEEPHOLE_GITHUB_GATEWAY_ENABLED` | No | `true` enables `POST /v1/github/rest`; unset answers `disabled` |
+| `WXT_GITHUB_GATEWAY_ENABLED` | No | `true` builds the extension to use the gateway when signed in |
 
 The GitHub App Client Secret, any GitHub App private key, and both signing
 secrets must live in the server secret manager. They must never be named with
@@ -110,6 +123,7 @@ client responses.
 ## Explicit non-goals
 
 - GitHub App Installation Access Tokens and private repository access
-- changes to public repository resolution or archive fetching
+- changes to public repository resolution or archive fetching (the optional
+  read gateway changes only the transport for signed-in users)
 - authentication, authorization, or credentials inside the preview sandbox
 - changes to the preview queue, worker, gVisor, artifact, or cache pipelines
