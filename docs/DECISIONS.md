@@ -1219,3 +1219,15 @@ lifecycle to clean up). External API keys and other secrets (M12-C) need
 per-service egress, non-public or proxy-injected credential handling,
 consent, revocation, and abuse controls first and are not implemented. See
 docs/USER_PROVIDED_ENVIRONMENT.md.
+
+**Review correction (2026-10-12, PR #52):** four review findings were
+reproduced by failing tests and fixed before merge: (B-001) fused
+secret-like names such as `STRIPESECRET`/`OPENAIKEY`/`DATABASEURL` were
+eligible -- the policy now refuses unambiguous stems inside a token and
+short secret/endpoint words at a token's end; (C-001) expired broker
+entries are now also released by the existing maintenance tick; (D-001) the
+Side Panel acknowledgement resets on every value edit; (E-001) the value
+total is 6 KiB so the worst-case JSON-escaped request fits the unchanged
+16 KiB API body limit. Scope (non-sensitive configuration only, M12-C not
+implemented) is unchanged.
+

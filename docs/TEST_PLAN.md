@@ -581,6 +581,13 @@ full-stack supervisor additions, `tests/productionUserEnvironment.test.ts`,
 `tests/fullStackUserEnvironmentClient.test.ts`. Synthetic sentinel:
 `PEEPHOLE_E2E_SYNTHETIC_VALUE_2026`; no real credential is used.
 
+Review corrections (2026-10-12): failing-first reproductions for B-001
+(fused secret-like names, through the analyzer), C-001 (expiry without
+broker traffic + maintenance task), D-001 (re-acknowledgement on edit), and
+E-001 (worst-case escaped payload over a real listener at the default
+16 KiB body limit, plus one byte over); all eight M10/M11/M12 material
+combinations and a three-file bootstrap merge.
+
 Real Linux/gVisor and Chrome E2E: **NOT_RUN** -- see
 docs/USER_PROVIDED_ENVIRONMENT.md section 12 for the required harness.
 

@@ -237,7 +237,7 @@ describe("parseUserEnvironmentEntries", () => {
       })),
     ],
     [
-      "a total payload over 8 KiB",
+      "a total payload over the total bound",
       Array.from({ length: 9 }, (_, index) => ({
         name: `SETTING_${String(index)}`,
         value: "x".repeat(1_000),

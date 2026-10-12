@@ -133,12 +133,23 @@ A name is user-configurable only if all hold:
    `SALT`, `SIGNING`, `DSN`, `WEBHOOK`, `SESSION`, `COOKIE`, `JWT`, `CSRF`,
    `OAUTH`, ...), a database (`DATABASE`, `DB`, `POSTGRES`, `PG`, `REDIS`,
    `MONGO`, ...), or an endpoint/network coordinate (`URL`, `URI`,
-   `ENDPOINT`, `HOST`, `PORT`, `DOMAIN`, `ORIGIN`, `PROXY`, `ADDR`, ...);
+   `ENDPOINT`, `HOST`, `PORT`, `DOMAIN`, `ORIGIN`, `PROXY`, `ADDR`, ...).
+   Because a name can fuse words without `_` (`STRIPESECRET`, `OPENAIKEY`,
+   `GITHUBPAT`, `DATABASEURL`), a token is also refused when it **contains**
+   an unambiguous stem (`SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`,
+   `TOKEN`, `CREDENTIAL`, `APIKEY`, `PRIVATEKEY`, `ACCESSKEY`, `SIGNINGKEY`,
+   `DATABASE`, `POSTGRES`, `MONGO`, `REDIS`, `MYSQL`, ...) or **ends with** a
+   short one (`KEY`, `PAT`, `PASS`, `PWD`, `AUTH`, `CERT`, `DSN`, `DB`;
+   endpoints `URL`, `URI`, `HOST`, `PORT`, `ADDR`, `DOMAIN`). Only a few
+   common words that merely end in a short word are exempt (`MONKEY`,
+   `HOTKEY`, `COMPAT`, `COMPASS`, `SUPPORT`, `REPORT`, ...), so
+   `KEYBOARD_LAYOUT` and `MONKEY_MODE` stay eligible. False positives
+   (`TOKENIZER_MODE`) only make a name unsupported (finding B-001);
 7. the analyzer agrees: `exposure: "server"`, `requirementKind: "unknown"`,
    `sensitivity` not `secret-like`.
 
 At most 16 names per backend; a commit declaring more is unsupported, never
-truncated. Values: non-empty, at most 1,024 UTF-8 bytes each and 8,192 in
+truncated. Values: non-empty, at most 1,024 UTF-8 bytes each and 6,144 in
 total; no C0/C1 controls (NUL, CR, LF, TAB, ...), DEL, U+2028/U+2029, BOM, or
 lone surrogates; any other Unicode is allowed. Submissions are an array of
 `{name, value}` (an object map would let `JSON.parse` silently collapse
@@ -146,8 +157,25 @@ duplicates); duplicates and extra fields are rejected. Values are never
 concatenated into a shell command, never parsed by an env-file parser, and
 never `eval`/`source`d.
 
+**Payload bound (finding E-001).** The Preview API keeps its default 16 KiB
+JSON body limit (DoS bound, unchanged). Allowed characters expand under JSON
+only for `"` and `\` (two bytes each; every control character is refused,
+and JSON leaves other Unicode unescaped), so the worst admissible request is
+2 × 6,144 bytes of values + 16 × 64-byte names + framing ≈ 14 KB. One byte
+over the total is a value-free `400` naming the bound, never a `413`. An
+operator who lowers `PEEPHOLE_API_MAX_BODY_BYTES` below ~14 KB reintroduces
+413s for large submissions.
+
 This is not "arbitrary environment variables": eligible names are what is
 left after excluding everything above, and secrets are excluded by design.
+
+**Authority.** The analyzer (`environmentRequirements.ts`) is unchanged and
+still governs `SECRET_ENV_REQUIRED` for static builds; it may only make a
+name *less* eligible here. The M12 policy is the single authority for
+user-configurable eligibility: the adapter, plan validator, HTTP parser,
+tmpfs writer, and Side Panel rows all call it, so they never disagree. The
+in-sandbox bootstrap keeps only an independent structural subset (grammar,
+reserved and Peephole-owned names, bounds) as defense in depth.
 
 ## 6. Lifecycle
 
@@ -183,7 +211,10 @@ Backend supervisor
             spawn(entry, {env: base + user + generated + database, shell:false})
 Cleanup: file removed on exit/stop (independently of M10/M11 cleanup);
   broker discard on every supervisor exit path, full-stack run end, cancel,
-  worker failure; TTL sweep; startup + periodic tmpfs reaper.
+  worker failure; TTL expiry swept on every broker call AND on each
+  production maintenance tick (finding C-001), so retention after the
+  deadline is at most one maintenance interval (default 60 s) even with no
+  further traffic; startup + periodic tmpfs reaper.
 ```
 
 `/run/secrets/env` and `/run/secrets/database-url` keep their exact formats
@@ -211,7 +242,9 @@ Behind `WXT_USER_ENVIRONMENT_ENABLED`, the Full-stack preview section lists
 every declared name with its source (Peephole / You / Unsupported) and
 reason, shows text inputs only for user-configurable names, requires every
 value plus an explicit acknowledgement ("not kept secret from the preview")
-before Run, keeps values in React state only (no `localStorage`/
+before Run (the acknowledgement resets whenever a value changes, finding
+D-001), shows the total-size bound before submission, keeps values in React
+state only (no `localStorage`/
 `chrome.storage`), clears them on repository/commit/target change and after
 admission, issues a new Idempotency-Key when a value changes, and shows no
 input for secret-like names such as `OPENAI_API_KEY` (the backend stays
@@ -224,6 +257,8 @@ secrecy the design explicitly does not provide.
 | --- | --- |
 | Policy, broker, admission, HTTP auth (missing/forged/expired session), ownership, idempotency, non-leakage of a synthetic sentinel (`PEEPHOLE_E2E_SYNTHETIC_VALUE_2026`) through responses, errors, durable row, queue payload, fingerprint, `config.json`, argv, runsc calls | PASS (portable unit/integration tests) |
 | Supervisor take/fail-closed/discard paths, process starter mount/cleanup, tmpfs writer + reaper, bootstrap parser and flag semantics, production config/preflight/composition | PASS (portable; tmpfs check and chown stubbed) |
+| Review findings B-001 (fused names), C-001 (retention without traffic), D-001 (re-acknowledgement), E-001 (worst-case payload over a real 16 KiB listener) | PASS after fix; each reproduced by a failing test first |
+| All eight M10/M11/M12 material combinations (mounts, `config.json`, argv, cleanup) and three-file bootstrap merge | PASS (portable) |
 | Side Panel UI | PASS (jsdom) |
 | PostgreSQL integration | No schema change; existing suite environment-gated, NOT_RUN locally |
 | Real Linux root + gVisor (actual child env, tmpfs lifetime, `/proc` and `runsc --root` non-persistence, rootfs placeholder) | **NOT_RUN** |
@@ -234,9 +269,15 @@ Portable tests with stubs do not prove whole-host non-exposure.
 ## 10. Performance and complexity
 
 - No new table, queue, worker, background job, or service. One in-memory
-  map (≤256 entries, TTL-swept on access), one tmpfs file per runtime that
-  needs it, one more reaper sweep in the existing maintenance tick (only when
-  enabled; the startup sweep is a no-op `lstat` when the root is absent).
+  map (≤256 entries), one tmpfs file per runtime that needs it, and two
+  bounded tasks in the existing maintenance tick (reaper + broker sweep,
+  only when enabled; the startup sweep is a no-op `lstat` when the root is
+  absent).
+- Known duplication kept deliberately: `userEnvironmentFilesystem.ts` and
+  `userEnvironmentOrphanReaper.ts` mirror M11's credential filesystem and
+  reaper (~150 lines of path/ownership helpers). Sharing them would require
+  refactoring production-verified M11 code; a later, separately reviewed
+  extraction can merge them without behavior change.
 - Previews without user configuration: identical request body, fingerprint,
   plan contents (empty `userEnvironmentNames`), OCI spec, and bootstrap path.
 - Simpler alternatives considered: reusing the M10 file would require
@@ -274,6 +315,17 @@ Portable tests with stubs do not prove whole-host non-exposure.
 
 ## 13. Future: external API credentials (M12-C, not implemented)
 
+User consent does not make credential handling safe: trusting a repository
+says nothing about what its code (or its dependencies) does with a key at
+run time. Two delivery models are possible, with different guarantees:
+
+| | Direct injection (key in the backend's env) | Server-held credential proxy |
+| --- | --- | --- |
+| Who sees the key | The untrusted repository code (and anything it echoes to public visitors) | Only a host-side proxy; the app sees a placeholder |
+| Containment | None once delivered; revocation is the only remedy | Proxy enforces destination, method, rate, and spend limits per preview |
+| Needs | Egress for the sandbox to the vendor | Egress only from the proxy; the sandbox reaches the proxy, not the internet |
+| Cost | Small implementation, large exposure | New proxy surface (destination pinning, TLS, bypass prevention) |
+
 Prerequisites before any secret value is accepted:
 
 1. **Egress policy per service** (e.g. an authenticated forward proxy that
@@ -287,5 +339,9 @@ Prerequisites before any secret value is accepted:
    restricted/test keys, and immediate destruction on stop.
 4. **Abuse prevention**: quotas and destinations bound per requester so a
    preview cannot become a credential-laundering relay.
-5. Then: a separate secret-name class, masked input, and the same
-   tmpfs/bootstrap delivery, with M10's values-never-hashed-durably rule.
+5. **Destination pinning and bypass prevention** (DNS rebinding, alternate
+   hosts, raw IPs), **usage and cost limits**, and a **real external-API
+   golden path** verified end to end.
+6. Then: a separate secret-name class, masked input, and either the proxy or
+   the same tmpfs/bootstrap delivery, with M10's values-never-hashed-durably
+   rule.
