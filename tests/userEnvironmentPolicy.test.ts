@@ -10,6 +10,7 @@ import {
   parseUserEnvironmentEntries,
   resolveUserEnvironmentNames,
 } from "../core/userEnvironment/userEnvironmentPolicy"
+import { detectEnvironmentRequirements } from "../core/analyzer/environmentRequirements"
 import type { EnvironmentRequirement } from "../types/environment"
 
 const SENTINEL = "PEEPHOLE_E2E_SYNTHETIC_VALUE_2026"
@@ -289,5 +290,68 @@ describe("assertUserEnvironmentMatchesNames", () => {
       InvalidUserEnvironmentError,
     )
     expect(() => assertUserEnvironmentMatchesNames([], [])).not.toThrow()
+  })
+})
+
+describe("B-001: secret-like names without underscore separators", () => {
+  // End-to-end through the analyzer, exactly as the server derives names at
+  // the exact commit: the analyzer's own pattern needs `_` boundaries, so
+  // these all arrive as `unknown` and only the M12 policy can refuse them.
+  function eligibleNames(names: readonly string[]): string[] {
+    return (
+      resolveUserEnvironmentNames(
+        detectEnvironmentRequirements(".", [".env.example"], {
+          ".env.example": names.map((name) => `${name}=`).join("\n"),
+        }),
+      ) ?? []
+    )
+  }
+
+  it.each([
+    "STRIPESECRET",
+    "OPENAIKEY",
+    "GITHUBPAT",
+    "SERVICEPASSWORD",
+    "ACCESSTOKEN",
+    "ADMINCREDENTIAL",
+    "AUTHTOKEN",
+    "MYAPITOKEN",
+    "SECRETKEY",
+    "CLIENTSECRET",
+    "PRIVATEKEY",
+    "SIGNINGKEY",
+    "WEBHOOKSECRET",
+    "PASSPHRASE",
+    "DBPASSWORD",
+    "ADMINPASS",
+    "APP_ADMINPASS",
+    "SERVICE_APITOKEN",
+    "DATABASEURL",
+    "REDISURL",
+    "MONGODBURI",
+    "APIURL",
+    "BACKENDHOST",
+    "APIPORT",
+  ])("refuses the compound name %s", (name) => {
+    expect(isEligibleUserEnvironmentName(name)).toBe(false)
+    expect(eligibleNames([name])).toEqual([])
+  })
+
+  it.each([
+    "APP_GREETING",
+    "FEATURE_MODE",
+    "APP_THEME",
+    "DISPLAY_MODE",
+    "KEYBOARD_LAYOUT",
+    "MONKEY_MODE",
+    "HOTKEY_HINTS",
+    "COMPAT_MODE",
+    "COMPASS_HEADING",
+    "REPORT_FORMAT",
+    "SUPPORT_EMAIL",
+    "WELCOME_MESSAGE",
+  ])("still accepts the ordinary name %s", (name) => {
+    expect(isEligibleUserEnvironmentName(name)).toBe(true)
+    expect(eligibleNames([name])).toEqual([name])
   })
 })

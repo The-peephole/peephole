@@ -24,7 +24,10 @@ import {
 } from "../services/preview-api/startNodeServer"
 import { InMemoryUserEnvironmentBroker } from "../services/user-environment/userEnvironmentBroker"
 import type { BackendRuntimePlan } from "../types/backendRuntime"
-import type { UserEnvironmentEntry } from "../types/userEnvironment"
+import {
+  USER_ENVIRONMENT_LIMITS,
+  type UserEnvironmentEntry,
+} from "../types/userEnvironment"
 import {
   FakeBackendPlanResolver,
   FakeFrontendPlanResolver,
@@ -571,5 +574,204 @@ describe("authenticated listener for user-provided configuration", () => {
     expect(accepted.status).toBe(202)
     expect(await accepted.text()).not.toContain(SENTINEL)
     expect(take()).not.toBeNull()
+  })
+})
+
+describe("E-001: the largest admissible submission fits the default API body limit", () => {
+  let api: RunningNodePreviewApi | undefined
+  afterEach(async () => api?.stop())
+
+  // 16 maximal-length eligible names, sorted.
+  const names = Array.from(
+    { length: USER_ENVIRONMENT_LIMITS.maxEntries },
+    (_, index) =>
+      `SETTING_${String(index).padStart(2, "0")}_${"A".repeat(USER_ENVIRONMENT_LIMITS.maxNameLength - 11)}`,
+  )
+
+  // Worst JSON expansion for an allowed value: `"` and `\` serialize to two
+  // bytes each (control characters, the only other escapes, are refused).
+  function worstCase(totalBytes: number): UserEnvironmentEntry[] {
+    const base = Math.floor(totalBytes / names.length)
+    let remainder = totalBytes - base * names.length
+    return names.map((name, index) => {
+      const length = base + (remainder-- > 0 ? 1 : 0)
+      return { name, value: (index % 2 ? '"' : "\\").repeat(length) }
+    })
+  }
+
+  async function listen() {
+    const store = new FakeFullStackPreviewStore()
+    const backendResolver = new FakeBackendPlanResolver()
+    backendResolver.nextPlan = {
+      ...validBackendPlan,
+      userEnvironmentNames: names,
+    }
+    const broker = new InMemoryUserEnvironmentBroker()
+    const controlPlane = new FullStackPreviewControlPlane(
+      new FakeFrontendPlanResolver(),
+      backendResolver,
+      store,
+      new FakeFullStackPreviewQueue(),
+      { consume: async () => ({ allowed: true as const }) },
+      { userEnvironmentBroker: broker },
+    )
+    api = await startNodePreviewApi({
+      controlPlane: new PreviewControlPlane(
+        { resolve: async () => validFrontendPlan },
+        new InMemoryPreviewJobStore(),
+        new InMemoryPreviewQueue(),
+        new InMemoryPreviewArtifactCache(),
+        new HmacPreviewArtifactSigner(
+          "peephole.run",
+          "test-signing-secret-with-at-least-32-bytes",
+        ),
+        new FixedWindowPreviewQuota(),
+        { runnerVersion: "production-test" },
+      ),
+      fullStackControlPlane: controlPlane,
+      // The production default (services/preview-api/serverConfig.ts).
+      config: {
+        host: "127.0.0.1",
+        port: 0,
+        maxBodyBytes: 16 * 1024,
+        requestTimeoutMs: 5_000,
+      },
+      resolveRequester: () => requester,
+      isReady: () => true,
+    })
+    return `http://127.0.0.1:${String(api.address.port)}/v1/fullstack-previews`
+  }
+
+  async function send(
+    url: string,
+    userEnvironment: UserEnvironmentEntry[],
+    key: string,
+  ) {
+    const body = JSON.stringify(request(userEnvironment))
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": key },
+      body,
+    })
+    return {
+      response,
+      bodyBytes: Buffer.byteLength(body),
+      text: await response.text(),
+    }
+  }
+
+  it("admits the worst-case escaped maximum instead of failing with 413", async () => {
+    const url = await listen()
+    const { response, bodyBytes } = await send(
+      url,
+      worstCase(USER_ENVIRONMENT_LIMITS.maxTotalValueBytes),
+      "payload-max-key-000001",
+    )
+    expect(bodyBytes).toBeLessThanOrEqual(16 * 1024)
+    expect(response.status).toBe(202)
+  })
+
+  it("rejects one byte over the total with a value-free 400, not 413", async () => {
+    const url = await listen()
+    const { response, text } = await send(
+      url,
+      worstCase(USER_ENVIRONMENT_LIMITS.maxTotalValueBytes + 1),
+      "payload-over-key-00001",
+    )
+    expect(response.status).toBe(400)
+    expect(text).toContain("in total")
+    expect(text).not.toContain("\\\\\\\\")
+  })
+
+  it("counts multi-byte Unicode by UTF-8 bytes, which JSON does not expand", async () => {
+    const url = await listen()
+    const perName = Math.floor(
+      USER_ENVIRONMENT_LIMITS.maxTotalValueBytes / names.length / 3,
+    )
+    const { response, bodyBytes } = await send(
+      url,
+      names.map((name) => ({ name, value: "가".repeat(perName) })),
+      "payload-unicode-key-001",
+    )
+    expect(bodyBytes).toBeLessThanOrEqual(16 * 1024)
+    expect(response.status).toBe(202)
+  })
+})
+
+describe("F: idempotency scenarios not covered above", () => {
+  it("same requester and key for another commit is a conflict and registers nothing new", async () => {
+    const { controlPlane, broker } = compose()
+    const first = await controlPlane.create(
+      request(entries),
+      idempotencyKey,
+      requester,
+    )
+    await expect(
+      controlPlane.create(
+        {
+          ...request(entries),
+          repository: { ...repository, commitSha: "b".repeat(40) },
+        },
+        idempotencyKey,
+        requester,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    expect(
+      broker!.take(previewIds[1]!, {
+        runtimeId,
+        repository: { ...repository, commitSha: "b".repeat(40) },
+        backendSourceRoot: "backend",
+        names: configurablePlan.userEnvironmentNames,
+      }),
+    ).toBeNull()
+    expect(broker!.compare(first.preview.id, requester.subject, entries)).toBe(
+      "same",
+    )
+  })
+
+  it("after the digest expires, a replay returns the original preview and never re-registers values", async () => {
+    let clock = Date.parse("2026-01-01T00:00:00.000Z")
+    const broker = new InMemoryUserEnvironmentBroker({
+      now: () => new Date(clock),
+    })
+    const backendResolver = new FakeBackendPlanResolver()
+    backendResolver.nextPlan = configurablePlan
+    const store = new FakeFullStackPreviewStore()
+    const controlPlane = new FullStackPreviewControlPlane(
+      new FakeFrontendPlanResolver(),
+      backendResolver,
+      store,
+      new FakeFullStackPreviewQueue(),
+      { consume: async () => ({ allowed: true as const }) },
+      {
+        now: () => new Date(clock),
+        createId: () => previewIds[0]!,
+        userEnvironmentBroker: broker,
+      },
+    )
+    const first = await controlPlane.create(
+      request(entries),
+      idempotencyKey,
+      requester,
+    )
+    clock += 15 * 60_000
+    broker.sweepExpired()
+    const replay = await controlPlane.create(
+      request([{ ...entries[0]!, value: "changed" }, entries[1]!]),
+      idempotencyKey,
+      requester,
+    )
+    expect(replay.created).toBe(false)
+    expect(replay.preview.id).toBe(first.preview.id)
+    // Expired provisioning, and no values for anyone to take.
+    expect(replay.preview.status).toBe("failed")
+    expect(
+      broker.take(first.preview.id, {
+        runtimeId,
+        repository,
+        backendSourceRoot: "backend",
+        names: configurablePlan.userEnvironmentNames,
+      }),
+    ).toBeNull()
   })
 })

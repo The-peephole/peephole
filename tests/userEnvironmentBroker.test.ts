@@ -213,3 +213,55 @@ describe("InMemoryUserEnvironmentBroker", () => {
     expect(String(material.values.get("APP_GREETING"))).not.toContain(SENTINEL)
   })
 })
+
+describe("C-001: expired entries are released without further broker traffic", () => {
+  function retained(broker: InMemoryUserEnvironmentBroker): number {
+    // Test-only view of the private map; values are never read here.
+    return (broker as unknown as { entries: Map<string, unknown> }).entries.size
+  }
+
+  it("drops an expired, never-consumed entry on a maintenance sweep", () => {
+    const { broker, advance, expiresAt } = compose()
+    broker.register(binding, entries, expiresAt)
+    advance(60_000)
+    expect(broker.sweepExpired()).toBe(1)
+    expect(retained(broker)).toBe(0)
+    expect(broker.take(previewId, expected)).toBeNull()
+    broker.discard(previewId)
+    expect(broker.sweepExpired()).toBe(0)
+  })
+
+  it("drops the retained replay digest of a consumed entry once expired", () => {
+    const { broker, advance, expiresAt } = compose()
+    broker.register(binding, entries, expiresAt)
+    expect(broker.take(previewId, expected)).not.toBeNull()
+    advance(59_999)
+    expect(broker.sweepExpired()).toBe(0)
+    expect(broker.compare(previewId, "github:1", entries)).toBe("same")
+    advance(1)
+    expect(broker.sweepExpired()).toBe(1)
+    expect(retained(broker)).toBe(0)
+  })
+
+  it("keeps unexpired entries and bounds one sweep", () => {
+    let now = 0
+    const broker = new InMemoryUserEnvironmentBroker({
+      now: () => new Date(now),
+      maxEntries: 8,
+    })
+    for (let index = 0; index < 5; index += 1) {
+      broker.register(
+        {
+          ...binding,
+          previewId: `fullstack-${String(index).padStart(8, "0")}-2222-3333-4444-555555555555`,
+        },
+        entries,
+        new Date(now + (index < 3 ? 1_000 : 5_000)),
+      )
+    }
+    now = 1_000
+    expect(broker.sweepExpired(2)).toBe(2)
+    expect(broker.sweepExpired()).toBe(1)
+    expect(retained(broker)).toBe(2)
+  })
+})

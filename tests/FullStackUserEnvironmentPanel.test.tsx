@@ -339,4 +339,62 @@ describe("FullStackPreviewPanel user-provided configuration (M12)", () => {
     )
     expect(runButton(container)).toBeUndefined()
   })
+
+  it("D-001: editing a value after confirming requires confirming again", async () => {
+    const api = createApi()
+    const { container } = await render(api)
+    await type(input(container, "APP_GREETING")!, "Hello")
+    await type(input(container, "FEATURE_MODE")!, "demo")
+    await confirm(container)
+    expect(runButton(container)?.disabled).toBe(false)
+
+    await type(input(container, "APP_GREETING")!, "Hello again")
+    const checkbox = container.querySelector<HTMLInputElement>(
+      'input[type="checkbox"]',
+    )!
+    expect(checkbox.checked).toBe(false)
+    expect(runButton(container)?.disabled).toBe(true)
+    await act(async () => runButton(container)!.click())
+    expect(api.create).not.toHaveBeenCalled()
+
+    await confirm(container)
+    await act(async () => runButton(container)!.click())
+    expect(api.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userEnvironment: [
+          { name: "APP_GREETING", value: "Hello again" },
+          { name: "FEATURE_MODE", value: "demo" },
+        ],
+      }),
+      expect.anything(),
+    )
+  })
+
+  it("clears values and confirmation when the backend target changes", async () => {
+    const second = { ...backend, sourceRoot: "services/api" }
+    const { container } = await render(createApi(), {
+      value: createAnalysis([backend, second]),
+    })
+    const select = container.querySelector<HTMLSelectElement>(
+      'select[name="fullstack-backend-target"]',
+    )!
+    const choose = async (value: string) =>
+      act(async () => {
+        Object.getOwnPropertyDescriptor(
+          window.HTMLSelectElement.prototype,
+          "value",
+        )?.set?.call(select, value)
+        select.dispatchEvent(new Event("change", { bubbles: true }))
+      })
+    await choose("backend")
+    await type(input(container, "APP_GREETING")!, SENTINEL)
+    await confirm(container)
+    await choose("services/api")
+    expect(input(container, "APP_GREETING")?.value).toBe("")
+    expect(
+      container.querySelector<HTMLInputElement>('input[type="checkbox"]')
+        ?.checked,
+    ).toBe(false)
+    expect(container.innerHTML).not.toContain(SENTINEL)
+  })
 })
