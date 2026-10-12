@@ -62,6 +62,7 @@ import {
   M12HarnessPreflightError,
   combineScanStatuses,
   createOwnedRunSet,
+  destroyWorkspaces,
   findProductionHostMarkers,
   deriveM12ComponentPaths,
   formatM12PreflightSummary,
@@ -74,6 +75,7 @@ import {
   scanFileForRawValueStatus,
   scanForRawValueStatus,
   sha256,
+  stopRuntimeHandles,
   type M12ComponentPaths,
   type M12HarnessConfig,
   type M12RunDirectories,
@@ -319,16 +321,10 @@ describe.skipIf(!m12RealSuiteEnabled(process.env))(
       await runWithOwnedCleanup(
         () => scenario(environment),
         [
-          async () => {
-            for (const handle of environment.handles.reverse()) {
-              await handle.stop().catch(() => undefined)
-            }
-          },
-          async () => {
-            for (const workspace of environment.workspaces.reverse()) {
-              await workspace.destroy().catch(() => undefined)
-            }
-          },
+          // Every step runs; any failure fails the test (Finding 1), and
+          // removeRunsIfClean then preserves whatever is not provably clean.
+          () => stopRuntimeHandles(environment.handles),
+          () => destroyWorkspaces(environment.workspaces),
           () => removeRunsIfClean(environment),
         ],
       )

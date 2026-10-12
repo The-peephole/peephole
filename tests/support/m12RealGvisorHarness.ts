@@ -3,8 +3,11 @@ import {
   lstat as fsLstat,
   mkdtemp as fsMkdtemp,
   readFile as fsReadFile,
+  readdir as fsReaddir,
   realpath as fsRealpath,
   rm as fsRm,
+  rmdir as fsRmdir,
+  unlink as fsUnlink,
   writeFile as fsWriteFile,
 } from "node:fs/promises"
 import path from "node:path/posix"
@@ -43,6 +46,18 @@ export class M12HarnessPreflightError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "M12HarnessPreflightError"
+  }
+}
+
+/** A directory this run created but could not prove safe to remove. Its
+ * exact path is reported, never deleted on a guess. */
+export class M12HarnessPreservedDirectoryError extends M12HarnessPreflightError {
+  constructor(
+    message: string,
+    readonly preservedPath: string,
+  ) {
+    super(`${message} It is preserved for manual review: ${preservedPath}`)
+    this.name = "M12HarnessPreservedDirectoryError"
   }
 }
 
@@ -252,12 +267,18 @@ export function formatM12PreflightSummary(
 // ------------------------------------------------ Production host guard
 
 /**
- * Paths whose presence means this host runs (or ran) Peephole production.
+ * Fixed paths whose presence means this host runs (or ran) Peephole
+ * production: the production state, credential, and configuration roots.
  * The harness also creates host-global network state (netns, veth, iptables
  * chains), so path isolation alone is not enough: on such a host it refuses
  * outright, with no override.
+ *
+ * Absence is NOT proof the host never ran Peephole (a removed installation
+ * leaves no trace here); the dedicated-host requirement stays mandatory.
  */
 export const PRODUCTION_HOST_MARKERS: readonly string[] = [
+  "/etc/peephole",
+  "/var/lib/peephole",
   "/var/lib/peephole/jobs",
   "/var/lib/peephole/base-rootfs",
   "/var/lib/peephole/artifacts",
@@ -265,28 +286,85 @@ export const PRODUCTION_HOST_MARKERS: readonly string[] = [
   "/run/peephole/db-credentials",
   "/run/peephole/user-env",
   "/var/run/peephole/runsc",
-  "/etc/systemd/system/peephole.service",
-  "/lib/systemd/system/peephole.service",
-  "/etc/systemd/system/peephole-tenant-network.service",
 ]
 
+/** systemd's unit search path for system units (systemd.unit(5)): any entry
+ * named `peephole*` (a unit, a `.d` drop-in, or an enablement link one level
+ * down in a `*.wants`/`*.requires` directory) counts as a marker. Listings
+ * are bounded; an unlistable or oversized directory is treated as a marker. */
+export const SYSTEMD_UNIT_DIRECTORIES: readonly string[] = [
+  "/etc/systemd/system",
+  "/run/systemd/system",
+  "/usr/local/lib/systemd/system",
+  "/usr/lib/systemd/system",
+  "/lib/systemd/system",
+]
+
+const MAX_UNIT_DIRECTORY_ENTRIES = 4_096
+
+export interface HostMarkerInspection {
+  lstat(candidate: string): Promise<unknown>
+  readdir(candidate: string): Promise<string[]>
+}
+
+const defaultHostMarkerInspection: HostMarkerInspection = {
+  lstat: (candidate) => fsLstat(candidate),
+  readdir: (candidate) => fsReaddir(candidate),
+}
+
 export async function findProductionHostMarkers(
-  lstat: (candidate: string) => Promise<unknown> = (candidate) =>
-    fsLstat(candidate),
+  inspection: HostMarkerInspection = defaultHostMarkerInspection,
 ): Promise<string[]> {
   const found: string[] = []
   for (const marker of PRODUCTION_HOST_MARKERS) {
     try {
-      await lstat(marker)
+      await inspection.lstat(marker)
       found.push(marker)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
-        // Cannot prove absence: treat as present (fail closed).
-        found.push(marker)
+      // Cannot prove absence: treat as present (fail closed).
+      if (!isMissing(error)) found.push(marker)
+    }
+  }
+  for (const directory of SYSTEMD_UNIT_DIRECTORIES) {
+    const entries = await listBounded(directory, inspection)
+    if (entries === "unknown") {
+      found.push(directory)
+      continue
+    }
+    for (const entry of entries) {
+      if (entry.startsWith("peephole")) {
+        found.push(path.join(directory, entry))
+      } else if (entry.endsWith(".wants") || entry.endsWith(".requires")) {
+        const child = path.join(directory, entry)
+        const linked = await listBounded(child, inspection)
+        if (linked === "unknown") {
+          found.push(child)
+          continue
+        }
+        for (const link of linked) {
+          if (link.startsWith("peephole")) found.push(path.join(child, link))
+        }
       }
     }
   }
   return found
+}
+
+async function listBounded(
+  directory: string,
+  inspection: HostMarkerInspection,
+): Promise<string[] | "unknown"> {
+  let entries: string[]
+  try {
+    entries = await inspection.readdir(directory)
+  } catch (error) {
+    return isMissing(error) ? [] : "unknown"
+  }
+  return entries.length > MAX_UNIT_DIRECTORY_ENTRIES ? "unknown" : entries
+}
+
+function isMissing(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT"
 }
 
 /** Mount points at or below `root` according to `/proc/self/mountinfo`
@@ -402,6 +480,9 @@ export interface OwnedDirectoryOperations extends PathInspection {
   writeFile(candidate: string, contents: string): Promise<void>
   readFile(candidate: string): Promise<string>
   rm(candidate: string): Promise<void>
+  /** Non-recursive: used only to undo a just-created, still-empty directory. */
+  rmdir(candidate: string): Promise<void>
+  unlink(candidate: string): Promise<void>
   /** `/proc/self/mountinfo`; unreadable means removal is refused. */
   readMountInfo(): Promise<string>
 }
@@ -413,6 +494,8 @@ export const defaultOwnedDirectoryOperations: OwnedDirectoryOperations = {
     fsWriteFile(candidate, contents, { flag: "wx", mode: 0o600 }),
   readFile: (candidate) => fsReadFile(candidate, "utf8"),
   rm: (candidate) => fsRm(candidate, { recursive: true, force: false }),
+  rmdir: (candidate) => fsRmdir(candidate),
+  unlink: (candidate) => fsUnlink(candidate),
   readMountInfo: () => fsReadFile("/proc/self/mountinfo", "utf8"),
 }
 
@@ -427,34 +510,96 @@ export async function createOwnedRunDirectory(
   kind: M12RootKind,
   operations: OwnedDirectoryOperations = defaultOwnedDirectoryOperations,
 ): Promise<OwnedRunDirectory> {
+  // mkdtemp either creates the directory or nothing. From here until the
+  // marker exists, every failure must either undo exactly this directory or
+  // report its path -- it may never become a silent orphan (Finding 2).
   const created = await operations.mkdtemp(
     path.join(parent, `peephole-m12-${kind}-`),
   )
-  const canonical = await operations.realpath(created)
-  if (path.dirname(canonical) !== parent) {
-    throw new M12HarnessPreflightError(
-      "A created run directory is not a direct child of its validated root.",
-    )
-  }
-  const stats = await operations.lstat(canonical)
-  if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new M12HarnessPreflightError(
-      "A created run directory is not an ordinary directory.",
+  let stats: Awaited<ReturnType<PathInspection["lstat"]>>
+  try {
+    const canonical = await operations.realpath(created)
+    if (canonical !== created || path.dirname(canonical) !== parent) {
+      throw new M12HarnessPreservedDirectoryError(
+        "A created run directory does not resolve to a direct child of its validated root.",
+        created,
+      )
+    }
+    stats = await operations.lstat(created)
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw new M12HarnessPreservedDirectoryError(
+        "A created run directory is not an ordinary directory.",
+        created,
+      )
+    }
+  } catch (error) {
+    if (error instanceof M12HarnessPreservedDirectoryError) throw error
+    throw new M12HarnessPreservedDirectoryError(
+      "A created run directory could not be inspected.",
+      created,
     )
   }
   const owned: OwnedRunDirectory = {
     kind,
     parent,
-    path: canonical,
+    path: created,
     runId: randomUUID(),
     dev: stats.dev,
     ino: stats.ino,
   }
-  await operations.writeFile(
-    path.join(canonical, OWNER_MARKER_FILE),
-    markerContents(owned),
-  )
+  try {
+    await operations.writeFile(
+      path.join(created, OWNER_MARKER_FILE),
+      markerContents(owned),
+    )
+  } catch {
+    if (await undoUnmarkedDirectory(owned, operations)) {
+      throw new M12HarnessPreflightError(
+        "A run directory's ownership marker could not be written; the directory was removed.",
+      )
+    }
+    throw new M12HarnessPreservedDirectoryError(
+      "A run directory's ownership marker could not be written, and the directory could not be proven safe to remove.",
+      created,
+    )
+  }
   return owned
+}
+
+/**
+ * Undoes a directory this call just created whose marker write failed --
+ * only if it is still the same ordinary, canonical, direct child (same
+ * device/inode). A partial marker is unlinked; the directory is removed with
+ * a NON-recursive rmdir, so any unexpected content makes removal fail and
+ * the directory is preserved instead.
+ */
+async function undoUnmarkedDirectory(
+  owned: OwnedRunDirectory,
+  operations: OwnedDirectoryOperations,
+): Promise<boolean> {
+  try {
+    const stats = await operations.lstat(owned.path)
+    if (
+      stats.isSymbolicLink() ||
+      !stats.isDirectory() ||
+      stats.dev !== owned.dev ||
+      stats.ino !== owned.ino ||
+      (await operations.realpath(owned.path)) !== owned.path ||
+      path.dirname(owned.path) !== owned.parent
+    ) {
+      return false
+    }
+    const markerPath = path.join(owned.path, OWNER_MARKER_FILE)
+    const marker = await operations.lstat(markerPath).catch(() => null)
+    if (marker) {
+      if (marker.isSymbolicLink() || !marker.isFile()) return false
+      await operations.unlink(markerPath)
+    }
+    await operations.rmdir(owned.path)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Re-proves ownership immediately before cleanup. */
@@ -541,7 +686,15 @@ export async function createOwnedRunSet(
       )
     }
   } catch (error) {
-    await releaseOwnedRunDirectories(created, operations)
+    const preserved = [
+      ...(error instanceof M12HarnessPreservedDirectoryError
+        ? [error.preservedPath]
+        : []),
+      ...(await releaseOwnedRunDirectories(created, operations)),
+    ]
+    if (preserved.length > 0 && error instanceof Error) {
+      Object.assign(error, { preservedRunDirectories: preserved })
+    }
     throw error
   }
   const [workspace, runsc, tmpfs] = created as [
@@ -736,6 +889,47 @@ export async function runWithOwnedCleanup<T>(
     throw new AggregateError(cleanupErrors, "M12 harness cleanup failed.")
   }
   return result as T
+}
+
+/** Stops every runtime (newest first), attempting all of them; any failure
+ * is reported, never swallowed (Finding 1). */
+export async function stopRuntimeHandles(
+  handles: ReadonlyArray<{ stop(): Promise<void> }>,
+): Promise<void> {
+  await attemptAll(
+    [...handles].reverse().map((handle) => () => handle.stop()),
+    "runtime(s) could not be stopped",
+  )
+}
+
+/** Destroys every workspace (newest first), attempting all of them. */
+export async function destroyWorkspaces(
+  workspaces: ReadonlyArray<{ destroy(): Promise<void> }>,
+): Promise<void> {
+  await attemptAll(
+    [...workspaces].reverse().map((workspace) => () => workspace.destroy()),
+    "workspace(s) could not be destroyed",
+  )
+}
+
+async function attemptAll(
+  actions: ReadonlyArray<() => Promise<void>>,
+  description: string,
+): Promise<void> {
+  const errors: unknown[] = []
+  for (const action of actions) {
+    try {
+      await action()
+    } catch (error) {
+      errors.push(error)
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(
+      errors,
+      `M12 harness cleanup: ${String(errors.length)} ${description}.`,
+    )
+  }
 }
 
 // -------------------------------------------------------------- helpers

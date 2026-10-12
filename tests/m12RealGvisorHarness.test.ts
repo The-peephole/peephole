@@ -840,20 +840,27 @@ async function retry<T>(action: () => Promise<T>): Promise<T> {
 
 describe("production host guard and mount-aware removal", () => {
   it("refuses a host with any Peephole production marker, and fails closed on inspection errors", async () => {
+    const missing = async () => {
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+    }
     await expect(
-      findProductionHostMarkers(async () => {
-        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
-      }),
+      findProductionHostMarkers({ lstat: missing, readdir: missing }),
     ).resolves.toEqual([])
     await expect(
-      findProductionHostMarkers(async (candidate) => {
-        if (candidate === "/etc/systemd/system/peephole.service") return {}
-        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+      findProductionHostMarkers({
+        lstat: async (candidate) => {
+          if (candidate === "/var/lib/peephole/jobs") return {}
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+        },
+        readdir: missing,
       }),
-    ).resolves.toEqual(["/etc/systemd/system/peephole.service"])
+    ).resolves.toEqual(["/var/lib/peephole/jobs"])
     await expect(
-      findProductionHostMarkers(async () => {
-        throw Object.assign(new Error("EACCES"), { code: "EACCES" })
+      findProductionHostMarkers({
+        lstat: async () => {
+          throw Object.assign(new Error("EACCES"), { code: "EACCES" })
+        },
+        readdir: missing,
       }),
     ).resolves.toEqual([...PRODUCTION_HOST_MARKERS])
   })
@@ -1002,7 +1009,7 @@ describe("Finding 2: a run directory whose marker write fails never becomes a si
       "/srv/m12/workspace",
       "workspaceRoot",
       fs.operations(),
-    ).catch((caught: unknown) => caught as Error)
+    ).then(unexpectedSuccess, rejectedWith)
     expect(error.message).toMatch(
       /marker could not be written; the directory was removed/,
     )
@@ -1066,7 +1073,7 @@ describe("Finding 2: a run directory whose marker write fails never becomes a si
       "/srv/m12/workspace",
       "workspaceRoot",
       fs.operations(),
-    ).catch((caught: unknown) => caught as Error & { preservedPath?: string })
+    ).then(unexpectedSuccess, rejectedWith)
     expect(error.message).toMatch(
       /preserved for manual review: \/srv\/m12\/workspace\/peephole-m12-workspaceRoot-/,
     )
@@ -1084,7 +1091,7 @@ describe("Finding 2: a run directory whose marker write fails never becomes a si
       "/srv/m12/workspace",
       "workspaceRoot",
       fs.operations(),
-    ).catch((caught: unknown) => caught as Error & { preservedPath?: string })
+    ).then(unexpectedSuccess, rejectedWith)
     expect(error.message).toMatch(/preserved for manual review/)
     expect(error.preservedPath).toBeDefined()
   })
@@ -1102,7 +1109,7 @@ describe("Finding 2: a run directory whose marker write fails never becomes a si
       "/srv/m12/workspace",
       "workspaceRoot",
       operations,
-    ).catch((caught: unknown) => caught as Error & { preservedPath?: string })
+    ).then(unexpectedSuccess, rejectedWith)
     expect(error.preservedPath).toMatch(
       /^\/srv\/m12\/workspace\/peephole-m12-workspaceRoot-/,
     )
@@ -1122,9 +1129,9 @@ describe("Finding 2: a run directory whose marker write fails never becomes a si
       }
       return undefined
     }
-    const error = await createOwnedRunSet(config, operations).catch(
-      (caught: unknown) =>
-        caught as Error & { preservedRunDirectories?: string[] },
+    const error = await createOwnedRunSet(config, operations).then(
+      unexpectedSuccess,
+      rejectedWith,
     )
     expect(error.preservedRunDirectories?.length).toBeGreaterThan(0)
   })
@@ -1227,3 +1234,16 @@ describe("Finding 4: production host detection covers the documented locations",
     ).toEqual([])
   })
 })
+
+type RejectedHarnessError = Error & {
+  preservedPath?: string
+  preservedRunDirectories?: string[]
+}
+
+function unexpectedSuccess(): never {
+  throw new Error("Expected the operation to fail.")
+}
+
+function rejectedWith(caught: unknown): RejectedHarnessError {
+  return caught as RejectedHarnessError
+}
