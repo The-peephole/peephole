@@ -46,7 +46,7 @@ const MAX_DATABASE_URL_BYTES = 4096
 const MAX_USER_ENVIRONMENT_FILE_BYTES = 64 * 1024
 const MAX_USER_ENVIRONMENT_ENTRIES = 16
 const MAX_USER_ENVIRONMENT_VALUE_BYTES = 1024
-const MAX_USER_ENVIRONMENT_TOTAL_BYTES = 8192
+const MAX_USER_ENVIRONMENT_TOTAL_BYTES = 6144
 // Independent copy of core/userEnvironment/userEnvironmentPolicy.ts's
 // structural name rules -- this file runs inside the sandbox and imports
 // nothing from the host codebase. Membership in the server-derived plan was

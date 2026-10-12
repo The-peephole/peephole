@@ -34,6 +34,7 @@ import {
 import type { BuildTargetAnalysis, RepositoryAnalysis } from "../types/analysis"
 import type { BackendCandidate } from "../types/backend"
 import type { FullStackPreview } from "../types/fullstackPreview"
+import { USER_ENVIRONMENT_LIMITS } from "../types/userEnvironment"
 import { UserEnvironmentEnabledContext } from "./userEnvironmentContext"
 
 const TERMINAL_STATUSES = new Set<FullStackPreview["status"]>([
@@ -181,9 +182,20 @@ export function FullStackPreviewPanel({
       }
     }),
   ) as Record<string, string>
+  const environmentTotalBytes = environmentNames.reduce(
+    (total, name) =>
+      total + new TextEncoder().encode(environmentValues[name] ?? "").length,
+    0,
+  )
+  const environmentTotalError =
+    environmentTotalBytes > USER_ENVIRONMENT_LIMITS.maxTotalValueBytes
+      ? `Values exceed ${String(USER_ENVIRONMENT_LIMITS.maxTotalValueBytes)} bytes in total.`
+      : null
   const environmentReady =
     environmentNames.length === 0 ||
-    (environmentConfirmed && Object.keys(environmentErrors).length === 0)
+    (environmentConfirmed &&
+      Object.keys(environmentErrors).length === 0 &&
+      environmentTotalError === null)
   const detectionIsComplete =
     analysis.backend.complete && !analysis.backend.truncated
   const frontendIsEligible = analysis.preview.mode === "native-static-build"
@@ -450,6 +462,7 @@ export function FullStackPreviewPanel({
             confirmed={environmentConfirmed}
             disabled={state.status === "creating"}
             errors={environmentErrors}
+            totalError={environmentTotalError}
             inputEnabled={userEnvironmentEnabled}
             onConfirmedChange={setEnvironmentConfirmed}
             onValueChange={(name, value) => {
@@ -603,6 +616,7 @@ function FullStackEnvironmentSection({
   rows,
   values,
   errors,
+  totalError,
   confirmed,
   disabled,
   inputEnabled,
@@ -612,6 +626,7 @@ function FullStackEnvironmentSection({
   rows: UserEnvironmentRow[]
   values: Record<string, string>
   errors: Record<string, string>
+  totalError: string | null
   confirmed: boolean
   disabled: boolean
   inputEnabled: boolean
@@ -679,6 +694,11 @@ function FullStackEnvironmentSection({
           )
         })}
       </ul>
+      {hasInputs && totalError && (
+        <p className="peephole__muted" role="alert">
+          {totalError}
+        </p>
+      )}
       {hasInputs && (
         <label className="peephole__branch-label">
           <input

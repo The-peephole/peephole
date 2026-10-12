@@ -23,8 +23,12 @@ export const USER_ENVIRONMENT_LIMITS = Object.freeze({
   maxNameLength: 64,
   /** UTF-8 bytes per value. */
   maxValueBytes: 1_024,
-  /** UTF-8 bytes across all values of one request. */
-  maxTotalValueBytes: 8_192,
+  /** UTF-8 bytes across all values of one request. Sized so the largest
+   * admissible request still fits the Preview API's default 16 KiB body
+   * limit after JSON escaping: only `"` and `\` expand (to two bytes; every
+   * control character is refused), so 2 x 6 KiB of values plus 16
+   * maximal names and framing stays near 14 KB (E-001). */
+  maxTotalValueBytes: 6_144,
 })
 
 /** One submitted name/value pair. An array (never an object map) so a

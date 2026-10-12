@@ -397,4 +397,31 @@ describe("FullStackPreviewPanel user-provided configuration (M12)", () => {
     ).toBe(false)
     expect(container.innerHTML).not.toContain(SENTINEL)
   })
+
+  it("E-001: blocks Run with a value-free message when values exceed the total", async () => {
+    const names = Array.from(
+      { length: 7 },
+      (_, index) => `SETTING_${String(index)}`,
+    )
+    const wide = {
+      ...backend,
+      databaseDependencies: [],
+      environmentRequirements: names.map((name) => requirement(name)),
+    }
+    const { container } = await render(createApi(), {
+      value: createAnalysis([wide]),
+    })
+    for (const name of names) {
+      await type(input(container, name)!, "x".repeat(1_000))
+    }
+    await confirm(container)
+    expect(container.textContent).toContain(
+      "Values exceed 6144 bytes in total.",
+    )
+    expect(runButton(container)?.disabled).toBe(true)
+    await type(input(container, names[0]!)!, "x".repeat(144))
+    await confirm(container)
+    expect(container.textContent).not.toContain("bytes in total")
+    expect(runButton(container)?.disabled).toBe(false)
+  })
 })
