@@ -94,3 +94,16 @@ export async function initializeProductionUserEnvironmentRuntime(
     orphanReaper,
   }
 }
+
+/** Per-tick work for the existing production maintenance loop -- nothing
+ * while disabled. The broker sweep is bounded by its own capacity, so one
+ * tick never walks more than that many entries. */
+export function userEnvironmentMaintenanceTasks(
+  runtime: ProductionUserEnvironmentRuntime,
+): Promise<unknown>[] {
+  if (!runtime.enabled) return []
+  return [
+    runtime.orphanReaper.reap(),
+    Promise.resolve().then(() => runtime.broker.sweepExpired()),
+  ]
+}

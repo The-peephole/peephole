@@ -42,7 +42,10 @@ import {
   temporaryDatabaseBackendDependencies,
   temporaryDatabaseMaintenanceTasks,
 } from "./temporaryDatabaseRuntime"
-import { initializeProductionUserEnvironmentRuntime } from "./userEnvironmentRuntime"
+import {
+  initializeProductionUserEnvironmentRuntime,
+  userEnvironmentMaintenanceTasks,
+} from "./userEnvironmentRuntime"
 import {
   ensureProductionDiskLayout,
   ensureProductionPreflight,
@@ -346,7 +349,7 @@ async function main(): Promise<void> {
       generatedSecrets.orphanReaper.reap(),
       routing.artifactHost.reap(),
       ...temporaryDatabaseMaintenanceTasks(temporaryDatabases),
-      ...(userEnvironment.enabled ? [userEnvironment.orphanReaper.reap()] : []),
+      ...userEnvironmentMaintenanceTasks(userEnvironment),
     ])
       .then(() => undefined)
       .catch((error: unknown) =>

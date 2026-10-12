@@ -66,6 +66,11 @@ export interface UserEnvironmentBroker extends UserEnvironmentSource {
     requesterId: string,
     entries: readonly UserEnvironmentEntry[],
   ): UserEnvironmentReplayMatch
+  /** Releases at most `maxEntries` expired entries (values and replay
+   * digest) and returns how many it released. Every other call already
+   * sweeps; production maintenance also calls this so expiry does not
+   * depend on later broker traffic (C-001). */
+  sweepExpired(maxEntries?: number): number
 }
 
 export interface InMemoryUserEnvironmentBrokerOptions {
@@ -206,11 +211,21 @@ export class InMemoryUserEnvironmentBroker implements UserEnvironmentBroker {
     this.entries.delete(previewId)
   }
 
-  private sweep(): void {
+  sweepExpired(maxEntries = Number.POSITIVE_INFINITY): number {
     const nowMs = this.now().getTime()
+    let released = 0
     for (const [previewId, retained] of this.entries) {
-      if (retained.expiresAtMs <= nowMs) this.entries.delete(previewId)
+      if (released >= maxEntries) break
+      if (retained.expiresAtMs <= nowMs) {
+        this.entries.delete(previewId)
+        released += 1
+      }
     }
+    return released
+  }
+
+  private sweep(): void {
+    this.sweepExpired()
   }
 
   private digest(entries: readonly UserEnvironmentEntry[]): Buffer {

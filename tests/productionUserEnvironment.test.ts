@@ -8,7 +8,10 @@ import {
   ensureUserEnvironmentCapability,
   type RootfsEntry,
 } from "../services/production/preflight"
-import { initializeProductionUserEnvironmentRuntime } from "../services/production/userEnvironmentRuntime"
+import {
+  initializeProductionUserEnvironmentRuntime,
+  userEnvironmentMaintenanceTasks,
+} from "../services/production/userEnvironmentRuntime"
 import { composeProductionBackendRuntime } from "../services/preview-worker/gvisor/composeProductionBackendRuntime"
 import { SANDBOX_USER_ENVIRONMENT_BOOTSTRAP_FLAG } from "../services/preview-worker/gvisor/sandboxIdentity"
 import type {
@@ -260,5 +263,46 @@ describe("composeProductionBackendRuntime user environment seam", () => {
         userEnvironmentFilesystem: new TmpfsUserEnvironmentFilesystem(),
       }),
     ).not.toThrow()
+  })
+})
+
+describe("userEnvironmentMaintenanceTasks (C-001)", () => {
+  it("adds nothing while disabled", () => {
+    expect(userEnvironmentMaintenanceTasks({ enabled: false })).toEqual([])
+  })
+
+  it("reaps stale files and sweeps expired broker entries each tick", async () => {
+    let now = 0
+    const broker = new InMemoryUserEnvironmentBroker({
+      now: () => new Date(now),
+    })
+    broker.register(
+      {
+        previewId: "fullstack-11111111-2222-3333-4444-555555555555",
+        requesterId: "github:1",
+        repository: {
+          repositoryId: 1,
+          owner: "acme",
+          name: "web",
+          commitSha: "a".repeat(40),
+        },
+        backendSourceRoot: "backend",
+        names: ["APP_GREETING"],
+      },
+      [{ name: "APP_GREETING", value: "Hello" }],
+      new Date(1_000),
+    )
+    const reap = vi.fn(async () => [])
+    const runtime = {
+      enabled: true as const,
+      broker,
+      filesystem: new TmpfsUserEnvironmentFilesystem(),
+      orphanReaper: { reap, reapAll: async () => [] },
+    }
+    now = 1_000
+    const results = await Promise.all(userEnvironmentMaintenanceTasks(runtime))
+    expect(reap).toHaveBeenCalledOnce()
+    expect(results[1]).toBe(1)
+    expect(broker.sweepExpired()).toBe(0)
   })
 })
