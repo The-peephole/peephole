@@ -13,16 +13,32 @@ Files:
 | `tests/realUserEnvironmentRuntime.test.ts` | Gated real-gVisor suite (E1–E5, G1–G5, H2/H3) |
 | `tests/support/m12RealGvisorHarness.ts` | Gates, root validation, production-host guard, owned run directories, rootfs check, scan status, cleanup ordering |
 | `tests/fixtures/m12-user-env-runtime/digest-server.cjs` | Fixture: reports presence + SHA-256 only, never a value |
-| `tests/m12RealGvisorHarness.test.ts` | Portable safety tests (run in normal CI) |
+| `tests/support/m12-test-host.sh` | Guarded setup / rootfs build / status / teardown of the dedicated test parent |
+| `tests/m12RealGvisorHarness.test.ts`, `tests/m12TestHostScript.test.ts` | Portable safety tests (run in normal CI) |
 
 ## 1. Preconditions
 
 - A **dedicated** Linux host or VM that has never run Peephole production.
-  The suite refuses to start if any of these exist:
-  `/var/lib/peephole/{jobs,base-rootfs,artifacts}`,
-  `/run/peephole/{secrets,db-credentials,user-env}`,
-  `/var/run/peephole/runsc`, or a `peephole.service` /
-  `peephole-tenant-network.service` unit. There is no override.
+  This is a mandatory precondition, not something the suite can prove. As a
+  fail-closed backstop the suite refuses to start (no override) when it finds
+  any of:
+  - the fixed paths `/etc/peephole`, `/var/lib/peephole`,
+    `/var/lib/peephole/{jobs,base-rootfs,artifacts}`,
+    `/run/peephole/{secrets,db-credentials,user-env}`,
+    `/var/run/peephole/runsc`;
+  - any entry whose name starts with `peephole` (a unit such as
+    `peephole.service` or `peephole-tenant-network.service`, a `.d` drop-in,
+    or a timer) directly in one of systemd's system unit directories
+    `/etc/systemd/system`, `/run/systemd/system`,
+    `/usr/local/lib/systemd/system`, `/usr/lib/systemd/system`,
+    `/lib/systemd/system`, or one level down in a `*.wants` / `*.requires`
+    directory there.
+  Each listing is bounded (4,096 entries); a path that cannot be inspected,
+  or a directory that cannot be listed or is larger than the bound, counts as
+  a marker. **Not covered:** user units, units under other names, a
+  Peephole checkout or process without these paths, containers/VMs on the
+  same hardware, and any former installation that was removed. Finding no
+  marker never proves the host is safe to use.
 - Root, cgroup v2, `net.ipv4.ip_forward=1`, and on `PATH`: `runsc`, `ip`,
   `iptables`, `ip6tables`, `findmnt`, `losetup`, `mkfs.ext4`, `mount`,
   `umount`, `debootstrap` (rootfs build only), Node 24 + this checkout with
@@ -51,26 +67,29 @@ cat /proc/sys/net/ipv4/ip_forward      # 1
 
 ## 3. Setup (test-owned resources only)
 
-Choose one dedicated parent that is **not** under `/var/lib/peephole`,
-`/run/peephole`, or `/var/run/peephole`:
+Setup goes only through the guarded script, run as a script (never paste
+its steps into an interactive shell). Choose a never-used parent that is not
+a system directory and not under `/run/peephole`, `/var/lib/peephole`,
+`/var/run/peephole`, `/run/netns`, or `/var/run/netns`:
 
 ```bash
-export M12_TEST_PARENT=/srv/peephole-m12-test
-test ! -e "$M12_TEST_PARENT" || { echo "parent already exists; pick a new one"; exit 1; }
-install -d -m 0700 "$M12_TEST_PARENT" \
-  "$M12_TEST_PARENT/workspace" "$M12_TEST_PARENT/runsc" "$M12_TEST_PARENT/tmpfs"
-mount -t tmpfs -o size=16m,mode=0700 tmpfs "$M12_TEST_PARENT/tmpfs"
-findmnt -n -o FSTYPE -T "$M12_TEST_PARENT/tmpfs"    # tmpfs
+sudo tests/support/m12-test-host.sh setup /srv/peephole-m12-test-20261012
 ```
 
-Build a **separate** rootfs. `build-base-rootfs.sh` deletes its output
-directory if it exists and defaults to the production path, so always pass a
-never-used path and check it first:
+`setup` refuses an existing path or a symlinked base directory, then
+creates `<parent>/{workspace,runsc,tmpfs}` (0700), mounts a 16 MiB tmpfs
+on `<parent>/tmpfs` and verifies its type, and writes a root-owned
+read-only marker (`.peephole-m12-test-parent`: schema, random token, the
+exact parent path). It prints the four `PEEPHOLE_M12_TEST_*` exports.
+
+Build the separate rootfs through the same script.
+`build-base-rootfs.sh` deletes an existing output directory and defaults
+to the production path, so the script only ever passes it
+`<parent>/rootfs`, and only after re-verifying the marker and that this
+path does not exist yet:
 
 ```bash
-export M12_TEST_ROOTFS="$M12_TEST_PARENT/rootfs-$(date +%Y%m%d%H%M%S)"
-test ! -e "$M12_TEST_ROOTFS" || { echo "rootfs path exists; refusing"; exit 1; }
-sudo ./scripts/gvisor/build-base-rootfs.sh "$M12_TEST_ROOTFS"
+sudo tests/support/m12-test-host.sh build-rootfs /srv/peephole-m12-test-20261012
 ```
 
 The suite then requires that rootfs to contain `usr/local/bin/node`, empty
@@ -84,10 +103,11 @@ a root-owned `0555` `opt/peephole/secret-bootstrap.mjs` that is
 ```bash
 export PEEPHOLE_REAL_GVISOR_TESTS=1
 export PEEPHOLE_M12_REAL_GVISOR_TESTS=1
-export PEEPHOLE_M12_TEST_WORKSPACE_ROOT="$M12_TEST_PARENT/workspace"
-export PEEPHOLE_M12_TEST_RUNSC_ROOT="$M12_TEST_PARENT/runsc"
-export PEEPHOLE_M12_TEST_BASE_ROOTFS="$M12_TEST_ROOTFS"
-export PEEPHOLE_M12_TEST_TMPFS_ROOT="$M12_TEST_PARENT/tmpfs"
+# The four exports printed by `setup`, e.g.:
+export PEEPHOLE_M12_TEST_WORKSPACE_ROOT=/srv/peephole-m12-test-20261012/workspace
+export PEEPHOLE_M12_TEST_RUNSC_ROOT=/srv/peephole-m12-test-20261012/runsc
+export PEEPHOLE_M12_TEST_BASE_ROOTFS=/srv/peephole-m12-test-20261012/rootfs
+export PEEPHOLE_M12_TEST_TMPFS_ROOT=/srv/peephole-m12-test-20261012/tmpfs
 
 npx vitest run tests/realUserEnvironmentRuntime.test.ts 2>&1 | tee m12-real.log
 ```
@@ -142,9 +162,10 @@ isolated journal — `NOT_RUN`), and host memory.
 
 Record for the report: the full log, `runsc --version`, kernel version, the
 rootfs path and its bootstrap SHA-256 (`sha256sum
-"$M12_TEST_ROOTFS/opt/peephole/secret-bootstrap.mjs"`), and the final
-`ls -la` of the three roots (each must contain no `peephole-m12-*` run
-directory after a passing run).
+<parent>/rootfs/opt/peephole/secret-bootstrap.mjs`), and the final
+output of `tests/support/m12-test-host.sh status <parent>` (each root must
+list no `peephole-m12-*` run directory after a passing run, and the only
+mount under the parent must be its tmpfs).
 
 ## 6. Cleanup
 
@@ -155,13 +176,34 @@ allocation, network lease, or container, reconciling the dedicated runsc
 `null-netns` mount, and finding no mount inside. Otherwise it **preserves**
 the directory and names it in the error.
 
-After all runs, remove only the dedicated parent you created:
+After all runs, remove the dedicated parent only through the script:
 
 ```bash
-umount "$M12_TEST_PARENT/tmpfs"
-findmnt -R "$M12_TEST_PARENT"           # must print nothing before removal
-rm -rf --one-file-system "$M12_TEST_PARENT"
+sudo tests/support/m12-test-host.sh status   /srv/peephole-m12-test-20261012
+sudo tests/support/m12-test-host.sh teardown /srv/peephole-m12-test-20261012
 ```
+
+`teardown` runs under `set -euo pipefail` and stops at the first failed
+check. It deletes nothing unless all of these hold:
+
+1. the parent passes the same syntax and protected-path checks as `setup`,
+   is an ordinary directory reached without symlinks, and holds a regular
+   (non-symlink) marker naming exactly this parent;
+2. it runs as root;
+3. `workspace`, `runsc`, and `tmpfs` are ordinary directories with no
+   `peephole-m12-*` run directory left (the harness preserves those when it
+   cannot prove them clean; inspect them first);
+4. no other process names the parent on its command line (nothing is
+   killed);
+5. `findmnt` can be read (otherwise it refuses), and the only mount under
+   the parent is its own tmpfs.
+
+It then unmounts that tmpfs, re-checks that no mount remains, removes the
+three now-empty children with a non-recursive `rmdir`, removes only
+`<parent>/rootfs` recursively (`rm -r --one-file-system`, which does not
+follow symlinks), removes the marker, and finally `rmdir`s the parent —
+which fails, leaving everything else in place, if anything unexpected is
+still there.
 
 ## 7. Failure recovery
 
@@ -169,9 +211,9 @@ Never restart or touch a production Peephole service for a test failure.
 
 | Symptom | Action |
 | --- | --- |
-| `runsc delete` failed | `runsc --root "$M12_TEST_PARENT/runsc/<run>/state" list`; delete only listed ids with the same `--root`; never the default root |
+| `runsc delete` failed | `runsc --root <parent>/runsc/<run>/state list`; delete only listed ids with the same `--root`; never the default root |
 | Mount busy / preserved run directory | `findmnt -R "<run dir>"`; unmount only those mount points; re-run removal |
 | Namespace or veth remains | Read the lease files under `<workspace run>/network-leases`; remove only the netns/veth/chains named there |
-| Credential tmpfs not empty | Inspect `<tmpfs run>/{user-env,secrets,db-credentials}`; `umount` the dedicated tmpfs to discard everything |
+| Credential tmpfs not empty | Inspect `<tmpfs run>/{user-env,secrets,db-credentials}`; `teardown` unmounts the dedicated tmpfs once no run directory or other mount remains |
 | Process ownership ambiguous | Stop; do not kill by name. Identify only `runsc` processes whose `--root` is the dedicated state dir |
 | Rootfs stale (bootstrap mismatch) | Build a new rootfs at a new path (section 3); never rebuild in place |
