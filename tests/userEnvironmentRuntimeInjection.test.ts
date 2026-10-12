@@ -17,6 +17,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createOpaqueSecretValue } from "../core/backendSecrets/generatedSecretValue"
 import {
+  TENANT_DATABASE_HOST,
+  TENANT_DATABASE_PORT,
+} from "../core/backendDatabase/databaseUrl"
+import {
+  deriveTemporaryDatabaseObjectName,
+  mintTemporaryDatabaseResourceId,
+} from "../core/backendDatabase/resourceIdentity"
+import {
+  TmpfsDatabaseCredentialFilesystem,
+  serializeDatabaseCredentialMaterial,
+} from "../services/preview-worker/gvisor/databaseCredentialFilesystem"
+import { serializeGeneratedSecretMaterial } from "../services/preview-worker/gvisor/generatedSecretFilesystem"
+import {
   parseUserEnvironmentMaterial,
   runSecretBootstrap,
 } from "../scripts/gvisor/secret-bootstrap.mjs"
@@ -632,5 +645,196 @@ describe("trusted bootstrap user environment delivery", () => {
     expect(
       parseUserEnvironmentMaterial(`{"APP_GREETING":"👋 $(id) \`x\` ; a=b"}\n`),
     ).toEqual({ APP_GREETING: "👋 $(id) `x` ; a=b" })
+  })
+})
+
+describe("G: independent M10 / M11 / M12 runtime material", () => {
+  const DATABASE_RESOURCE_ID = mintTemporaryDatabaseResourceId(() =>
+    new Uint8Array(14).fill(7),
+  )
+  const DATABASE_OBJECT_NAME =
+    deriveTemporaryDatabaseObjectName(DATABASE_RESOURCE_ID)
+  const DATABASE_URL = `postgresql://${DATABASE_OBJECT_NAME}:M11Marker_9Kp2-Z@${TENANT_DATABASE_HOST}:${String(TENANT_DATABASE_PORT)}/${DATABASE_OBJECT_NAME}`
+  const M10_MARKER = "M10Marker_4Rt8-W"
+
+  let server: Server
+  let port: number
+  let bundleDir: string
+  const roots: Record<"user" | "secret" | "db", string> = {
+    user: "",
+    secret: "",
+    db: "",
+  }
+
+  beforeEach(async () => {
+    server = createServer((socket) => socket.end())
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    port = (server.address() as { port: number }).port
+    bundleDir = await mkdtemp(path.join(os.tmpdir(), "peephole-m12g-bundle-"))
+    for (const key of Object.keys(roots) as Array<keyof typeof roots>) {
+      roots[key] = await mkdtemp(
+        path.join(os.tmpdir(), `peephole-m12g-${key}-`),
+      )
+    }
+  })
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    for (const dir of [bundleDir, ...Object.values(roots)]) {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  const seams = {
+    verifyMemoryBackedRoot: async () => undefined,
+    setOwnership: async () => undefined,
+  }
+
+  function runtime() {
+    return new GVisorBackendRuntimeProcess({
+      processRunner: new FakeProcessRunner(),
+      userEnvironmentFilesystem: new TmpfsUserEnvironmentFilesystem({
+        rootDir: roots.user,
+        ...seams,
+      }),
+      generatedSecretFilesystem: new TmpfsGeneratedSecretFilesystem({
+        rootDir: roots.secret,
+        ...seams,
+      }),
+      databaseCredentialFilesystem: new TmpfsDatabaseCredentialFilesystem({
+        rootDir: roots.db,
+        ...seams,
+      }),
+    })
+  }
+
+  const secrets = () => ({
+    runtimeId: RUNTIME_ID,
+    values: new Map([
+      ["SESSION_SECRET" as const, createOpaqueSecretValue(M10_MARKER)],
+    ]),
+  })
+  const database = () => ({
+    runtimeId: RUNTIME_ID,
+    resourceId: DATABASE_RESOURCE_ID,
+    databaseUrl: createOpaqueSecretValue(DATABASE_URL),
+  })
+
+  it.each([
+    ["none", { m10: false, m11: false, m12: false }],
+    ["M10 only", { m10: true, m11: false, m12: false }],
+    ["M11 only", { m10: false, m11: true, m12: false }],
+    ["M12 only", { m10: false, m11: false, m12: true }],
+    ["M10 + M11", { m10: true, m11: true, m12: false }],
+    ["M10 + M12", { m10: true, m11: false, m12: true }],
+    ["M11 + M12", { m10: false, m11: true, m12: true }],
+    ["M10 + M11 + M12", { m10: true, m11: true, m12: true }],
+  ])(
+    "%s: exactly the matching mounts, no values in config.json, full cleanup",
+    async (_label, use) => {
+      const handle = await runtime().start(
+        fakeWorkspace(bundleDir),
+        {
+          ...plan,
+          internalPort: port,
+          generatedSecretNames: use.m10 ? ["SESSION_SECRET"] : [],
+          databaseRequirement: use.m11 ? { name: "DATABASE_URL" } : null,
+          userEnvironmentNames: use.m12 ? plan.userEnvironmentNames : [],
+        },
+        use.m10 ? secrets() : null,
+        use.m11 ? database() : null,
+        use.m12 ? material() : null,
+      )
+      const serialized = await readFile(
+        path.join(bundleDir, "config.json"),
+        "utf8",
+      )
+      const config = JSON.parse(serialized)
+      for (const marker of [M10_MARKER, DATABASE_URL, "M11Marker", SENTINEL]) {
+        expect(serialized).not.toContain(marker)
+      }
+      expect(config.process.env).toEqual([
+        "PORT=3000",
+        "HOST=0.0.0.0",
+        "NODE_ENV=production",
+      ])
+      const expectedMounts = [
+        ...(use.m10 ? ["/run/secrets/env"] : []),
+        ...(use.m11 ? ["/run/secrets/database-url"] : []),
+        ...(use.m12 ? ["/run/secrets/user-env"] : []),
+      ]
+      expect(
+        config.mounts
+          .map((mount: { destination: string }) => mount.destination)
+          .filter((destination: string) =>
+            destination.startsWith("/run/secrets"),
+          ),
+      ).toEqual(expectedMounts)
+      const usesBootstrap = use.m10 || use.m11 || use.m12
+      expect(config.process.args).toEqual([
+        "/usr/local/bin/node",
+        ...(usesBootstrap ? ["/opt/peephole/secret-bootstrap.mjs"] : []),
+        ...(use.m12 ? [SANDBOX_USER_ENVIRONMENT_BOOTSTRAP_FLAG] : []),
+        "src/server.js",
+      ])
+      await handle.stop()
+      for (const root of Object.values(roots)) {
+        await expect(readdir(root)).resolves.toEqual([])
+      }
+    },
+  )
+
+  it("bootstrap delivers all three files to one child environment, independently parsed", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "peephole-m12g-boot-"))
+    try {
+      const files = {
+        secretFile: path.join(dir, "env"),
+        databaseCredentialFile: path.join(dir, "database-url"),
+        userEnvironmentFile: path.join(dir, "user-env"),
+      }
+      await writeFile(
+        files.secretFile,
+        serializeGeneratedSecretMaterial(secrets()),
+      )
+      await writeFile(
+        files.databaseCredentialFile,
+        serializeDatabaseCredentialMaterial(database()),
+      )
+      await writeFile(
+        files.userEnvironmentFile,
+        serializeUserEnvironmentMaterial(material()),
+      )
+      const child = new FakeChild()
+      let env: NodeJS.ProcessEnv | undefined
+      let args: string[] | undefined
+      await runSecretBootstrap({
+        ...files,
+        nodeBinary: process.execPath,
+        childArgs: [SANDBOX_USER_ENVIRONMENT_BOOTSTRAP_FLAG, "server.js"],
+        baseEnvironment: {
+          PORT: "3000",
+          HOST: "0.0.0.0",
+          NODE_ENV: "production",
+        },
+        spawnChild: (_command, childArgs, options) => {
+          env = options.env
+          args = childArgs
+          queueMicrotask(() => child.emit("close", 0, null))
+          return child as unknown as ChildProcess
+        },
+      })
+      expect(args).toEqual(["server.js"])
+      expect(env).toEqual({
+        PORT: "3000",
+        HOST: "0.0.0.0",
+        NODE_ENV: "production",
+        SESSION_SECRET: M10_MARKER,
+        DATABASE_URL,
+        APP_GREETING: SENTINEL,
+        FEATURE_MODE: "demo",
+      })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })
