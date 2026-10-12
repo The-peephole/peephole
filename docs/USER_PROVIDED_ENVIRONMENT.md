@@ -303,7 +303,8 @@ Portable tests with stubs do not prove whole-host non-exposure.
    (new `/run/secrets/user-env` placeholder and M12-aware bootstrap).
 2. Ensure `PEEPHOLE_USER_ENVIRONMENT_ROOT` (default `/run/peephole/user-env`)
    is on tmpfs; startup preflight enforces it.
-3. Run the real-gVisor verification: a fixture backend declaring a
+3. Run the real-gVisor verification (harness and runbook:
+   docs/M12_REAL_GVISOR_VERIFICATION.md): a fixture backend declaring a
    non-sensitive name that reports only a SHA-256 digest of the value;
    assert child env delivery, `config.json`/argv/journal non-leakage, file
    removal on stop/crash, startup reap after `SIGKILL` of the actual server
