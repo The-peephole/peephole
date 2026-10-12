@@ -341,3 +341,172 @@ describe.skipIf(!linuxProc)(
     })
   },
 )
+
+// ------------------------------------- Finding 1/3: fake /proc trees
+
+const posixBash =
+  process.platform !== "win32" && spawnSync("bash", ["--version"]).status === 0
+
+describe.skipIf(!posixBash)(
+  "assert_no_processes_reference (sourced, fake /proc)",
+  () => {
+    const roots: string[] = []
+    afterEach(async () => {
+      for (const root of roots.splice(0))
+        await rm(root, { recursive: true, force: true })
+    })
+
+    const PARENT = "/srv/peephole-m12-test-x"
+    type Proc = {
+      ppid?: number
+      argv?: string[]
+      cmdlineIsDirectory?: boolean
+      noStatus?: boolean
+      vanished?: boolean
+    }
+
+    async function procTree(processes: Record<number, Proc>): Promise<string> {
+      const root = await mkdtemp(path.join(os.tmpdir(), "m12-proc-"))
+      roots.push(root)
+      for (const [pid, proc] of Object.entries(processes)) {
+        const dir = path.join(root, pid)
+        if (proc.vanished) {
+          await symlinkTo(path.join(root, "gone"), dir)
+          continue
+        }
+        await mkdir(dir)
+        if (!proc.noStatus) {
+          await writeFile(
+            path.join(dir, "status"),
+            `Name:\tx\nPPid:\t${String(proc.ppid ?? 1)}\n`,
+          )
+        }
+        if (proc.cmdlineIsDirectory) await mkdir(path.join(dir, "cmdline"))
+        else
+          await writeFile(
+            path.join(dir, "cmdline"),
+            (proc.argv ?? []).map((arg) => `${arg}\0`).join(""),
+          )
+      }
+      return root
+    }
+
+    function check(root: string, self: number) {
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          // $0 is a label, not the script, so sourcing never runs main().
+          'source "$1"; assert_no_processes_reference "$2" "$3" "$4"; echo CLEAN',
+          "m12-proc-test",
+          SCRIPT,
+          PARENT,
+          root,
+          String(self),
+        ],
+        { encoding: "utf8" },
+      )
+      return {
+        status: result.status,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      }
+    }
+
+    const launcherTree = (): Record<number, Proc> => ({
+      1: { ppid: 0, argv: ["/sbin/init"] },
+      2: { ppid: 0, argv: [] }, // kernel thread: empty cmdline
+      100: {
+        ppid: 1,
+        argv: ["sudo", "bash", "m12-test-host.sh", "teardown", PARENT],
+      },
+      101: {
+        ppid: 100,
+        argv: ["sudo", "bash", "m12-test-host.sh", "teardown", PARENT],
+      },
+      200: {
+        ppid: 101,
+        argv: ["bash", "m12-test-host.sh", "teardown", PARENT],
+      },
+      201: {
+        ppid: 200,
+        argv: ["bash", "m12-test-host.sh", "teardown", PARENT],
+      }, // own helper
+      300: { ppid: 1, argv: ["sshd: operator"] },
+    })
+
+    it("excludes only itself, its launcher ancestors, and its own helpers", async () => {
+      const result = check(await procTree(launcherTree()), 200)
+      expect(result.stderr).toBe("")
+      expect(result.stdout).toContain("CLEAN")
+    })
+
+    it("still refuses a leftover runsc that is not an ancestor, without printing its argv", async () => {
+      const tree = launcherTree()
+      tree[4242] = {
+        ppid: 1,
+        argv: [
+          "runsc",
+          "--root",
+          `${PARENT}/runsc/state`,
+          "run",
+          "TOPSECRET-ARG",
+        ],
+      }
+      const result = check(await procTree(tree), 200)
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toMatch(/process 4242 still references/)
+      expect(result.stderr).not.toContain("TOPSECRET-ARG")
+      expect(result.stderr).not.toContain("runsc --root")
+    })
+
+    it("refuses a leftover that is a sibling of the launcher", async () => {
+      const tree = launcherTree()
+      tree[150] = { ppid: 100, argv: ["bash", "-c", `sleep 60 ${PARENT}`] }
+      expect(check(await procTree(tree), 200).stderr).toMatch(
+        /process 150 still references/,
+      )
+    })
+
+    it("ignores a process that exited during inspection", async () => {
+      const tree = launcherTree()
+      tree[700] = { vanished: true }
+      expect(check(await procTree(tree), 200).stdout).toContain("CLEAN")
+    })
+
+    it("refuses when a live process cannot be inspected", async () => {
+      const tree = launcherTree()
+      tree[500] = { ppid: 1, cmdlineIsDirectory: true }
+      const result = check(await procTree(tree), 200)
+      expect(result.stderr).toMatch(/process 500 could not be inspected/)
+    })
+
+    it("refuses when its own ancestry cannot be inspected", async () => {
+      const tree = launcherTree()
+      tree[101] = { ...tree[101]!, noStatus: true }
+      expect(check(await procTree(tree), 200).stderr).toMatch(
+        /ancestry of process 200 could not be inspected/,
+      )
+    })
+
+    it("refuses when a referencing process's ancestry is unprovable", async () => {
+      const tree = launcherTree()
+      tree[900] = { ppid: 901, argv: ["runsc", "--root", `${PARENT}/runsc`] }
+      tree[901] = { ppid: 1, noStatus: true, argv: ["containerd-shim"] }
+      expect(check(await procTree(tree), 200).stderr).toMatch(
+        /process 900 could not be inspected/,
+      )
+    })
+
+    it("refuses an unreadable or missing process table", async () => {
+      expect(
+        check(path.join(os.tmpdir(), "m12-no-such-proc"), 200).stderr,
+      ).toMatch(/process table .* is not readable/)
+    })
+  },
+)
+
+async function symlinkTo(target: string, link: string): Promise<void> {
+  const { symlink } = await import("node:fs/promises")
+  await symlink(target, link)
+}

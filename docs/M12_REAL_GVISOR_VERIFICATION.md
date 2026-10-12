@@ -82,6 +82,16 @@ on `<parent>/tmpfs` and verifies its type, and writes a root-owned
 read-only marker (`.peephole-m12-test-parent`: schema, random token, the
 exact parent path). It prints the four `PEEPHOLE_M12_TEST_*` exports.
 
+If any step after creating the parent fails (directory creation, the
+mount, the tmpfs type check, or writing/finalizing the marker), `setup`
+rolls back only what this run created: it unmounts its own tmpfs, removes
+a partial marker, and removes the directories with a non-recursive
+`rmdir`, and only while the parent is still the same inode. If it cannot
+prove that (or `umount`/`rmdir` fails), it removes nothing further and
+prints `setup failed; preserved for manual recovery: <parent>` with the
+exact inspection and recovery commands. A path that already existed is
+never touched.
+
 Build the separate rootfs through the same script.
 `build-base-rootfs.sh` deletes an existing output directory and defaults
 to the production path, so the script only ever passes it
@@ -165,7 +175,9 @@ rootfs path and its bootstrap SHA-256 (`sha256sum
 <parent>/rootfs/opt/peephole/secret-bootstrap.mjs`), and the final
 output of `tests/support/m12-test-host.sh status <parent>` (each root must
 list no `peephole-m12-*` run directory after a passing run, and the only
-mount under the parent must be its tmpfs).
+mount under the parent must be its tmpfs). `status` prints `INCOMPLETE` and
+exits non-zero whenever the mount table or a root cannot be listed; an
+INCOMPLETE status is never evidence of a clean parent.
 
 ## 6. Cleanup
 
@@ -190,13 +202,22 @@ check. It deletes nothing unless all of these hold:
    is an ordinary directory reached without symlinks, and holds a regular
    (non-symlink) marker naming exactly this parent;
 2. it runs as root;
-3. `workspace`, `runsc`, and `tmpfs` are ordinary directories with no
-   `peephole-m12-*` run directory left (the harness preserves those when it
-   cannot prove them clean; inspect them first);
-4. no other process names the parent on its command line (nothing is
-   killed);
+3. `workspace`, `runsc`, and `tmpfs` are ordinary directories that can be
+   listed and hold no `peephole-m12-*` run directory (the harness preserves
+   those when it cannot prove them clean; inspect them first);
+4. no process names the parent on its command line except the script
+   itself, its own ancestors (the legitimate launchers, e.g. `sudo` and its
+   pty monitor, found by following `PPid` in `/proc/<pid>/status`), and its
+   own descendants. Any other process -- such as a leftover `runsc` with a
+   `--root` under the parent, even a sibling of `sudo` -- blocks teardown;
+   it is reported by PID only (never its command line) and never killed. A
+   process that exits during inspection is ignored; one that exists but
+   cannot be inspected, an unreadable or empty `/proc`, or an ancestry that
+   cannot be proven also blocks teardown;
 5. `findmnt` can be read (otherwise it refuses), and the only mount under
-   the parent is its own tmpfs.
+   the parent is its own tmpfs; after unmounting it, the mount table must be
+   readable again and show nothing under the parent, or the parent is
+   preserved.
 
 It then unmounts that tmpfs, re-checks that no mount remains, removes the
 three now-empty children with a non-recursive `rmdir`, removes only
