@@ -177,6 +177,118 @@ const ENDPOINT_TOKENS: ReadonlySet<string> = new Set([
   "ADDRESS",
 ])
 
+/**
+ * B-001: one `_`-separated token can fuse a secret-like word with another
+ * (`STRIPESECRET`, `ACCESSTOKEN`, `DATABASEURL`). These stems are
+ * unambiguous enough to refuse wherever they appear inside a token. A false
+ * positive (`TOKENIZER_MODE`, `SECRETARY_NAME`) only makes a name
+ * unsupported, never less safe.
+ */
+const FUSED_SECRET_STEMS = [
+  "SECRET",
+  "PASSWORD",
+  "PASSWD",
+  "PASSPHRASE",
+  "TOKEN",
+  "CREDENTIAL",
+  "APIKEY",
+  "PRIVATEKEY",
+  "ACCESSKEY",
+  "SIGNINGKEY",
+] as const
+
+const FUSED_DATABASE_STEMS = [
+  "DATABASE",
+  "POSTGRES",
+  "MONGO",
+  "REDIS",
+  "MYSQL",
+  "MARIADB",
+  "SQLITE",
+  "SUPABASE",
+  "FIREBASE",
+] as const
+
+/** Short words that are secret-like (or endpoint-like) only as the END of a
+ * fused token (`OPENAIKEY`, `GITHUBPAT`, `ADMINPASS`, `APIURL`). A bare
+ * substring check would also refuse `MONKEY` or `SUPPORT`, so the few common
+ * words that merely end in them are exempt; anything else is refused. */
+const SECRET_SUFFIX_EXEMPTIONS: ReadonlyMap<
+  string,
+  ReadonlySet<string>
+> = new Map([
+  [
+    "KEY",
+    new Set([
+      "MONKEY",
+      "DONKEY",
+      "HOCKEY",
+      "JOCKEY",
+      "TURKEY",
+      "WHISKEY",
+      "HOTKEY",
+    ]),
+  ],
+  ["PAT", new Set(["COMPAT", "EXPAT"])],
+  ["PASS", new Set(["BYPASS", "COMPASS", "SURPASS", "OVERPASS", "UNDERPASS"])],
+  ["PWD", new Set()],
+  ["AUTH", new Set()],
+  ["CERT", new Set(["CONCERT"])],
+  ["DSN", new Set()],
+  ["DB", new Set()],
+])
+
+const ENDPOINT_SUFFIX_EXEMPTIONS: ReadonlyMap<
+  string,
+  ReadonlySet<string>
+> = new Map([
+  ["URL", new Set(["CURL"])],
+  ["URI", new Set()],
+  ["ENDPOINT", new Set()],
+  ["HOST", new Set(["GHOST"])],
+  [
+    "PORT",
+    new Set([
+      "REPORT",
+      "SUPPORT",
+      "EXPORT",
+      "IMPORT",
+      "TRANSPORT",
+      "PASSPORT",
+      "AIRPORT",
+      "SPORT",
+      "VIEWPORT",
+      "TELEPORT",
+    ]),
+  ],
+  ["ADDR", new Set()],
+  ["DOMAIN", new Set()],
+])
+
+function endsWithFusedWord(
+  token: string,
+  suffixes: ReadonlyMap<string, ReadonlySet<string>>,
+): boolean {
+  for (const [suffix, exemptions] of suffixes) {
+    if (
+      token.length > suffix.length &&
+      token.endsWith(suffix) &&
+      !exemptions.has(token)
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+function isFusedSecretLikeToken(token: string): boolean {
+  return (
+    FUSED_SECRET_STEMS.some((stem) => token.includes(stem)) ||
+    FUSED_DATABASE_STEMS.some((stem) => token.includes(stem)) ||
+    endsWithFusedWord(token, SECRET_SUFFIX_EXEMPTIONS)
+  )
+}
+
 /** C0 controls (NUL, CR, LF, TAB, ...), DEL, C1 controls, the Unicode line
  * and paragraph separators, the byte-order mark, and any lone surrogate.
  * Iterating by code point keeps a well-formed astral pair intact. */
@@ -217,12 +329,21 @@ export function classifyUserEnvironmentName(
   const tokens = name.split("_").filter(Boolean)
   if (
     tokens.some(
-      (token) => SECRET_LIKE_TOKENS.has(token) || DATABASE_TOKENS.has(token),
+      (token) =>
+        SECRET_LIKE_TOKENS.has(token) ||
+        DATABASE_TOKENS.has(token) ||
+        isFusedSecretLikeToken(token),
     )
   ) {
     return "secret-like-unsupported"
   }
-  if (tokens.some((token) => ENDPOINT_TOKENS.has(token))) {
+  if (
+    tokens.some(
+      (token) =>
+        ENDPOINT_TOKENS.has(token) ||
+        endsWithFusedWord(token, ENDPOINT_SUFFIX_EXEMPTIONS),
+    )
+  ) {
     return "external-routing-unsupported"
   }
   return "user-configurable"
