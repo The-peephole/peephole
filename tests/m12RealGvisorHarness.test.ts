@@ -13,6 +13,8 @@ import {
   PRODUCTION_HOST_MARKERS,
   combineScanStatuses,
   createOwnedRunDirectory,
+  destroyWorkspaces,
+  stopRuntimeHandles,
   findProductionHostMarkers,
   mountsWithin,
   createOwnedRunSet,
@@ -52,6 +54,11 @@ type FakeEntry =
 class FakeFs {
   readonly entries = new Map<string, FakeEntry>()
   readonly removed: string[] = []
+  readonly unlinked: string[] = []
+  failRmdir = false
+  /** Return an error to make the next marker write fail (after optional
+   * side effects such as a partial file or a swapped directory). */
+  onWriteFile?: (candidate: string) => Error | undefined
   mountInfo = "25 1 8:1 / / rw - ext4 /dev/sda1 rw\n"
   private nextIno = 100
 
@@ -91,6 +98,8 @@ class FakeFs {
         return created
       },
       writeFile: async (candidate, contents) => {
+        const injected = this.onWriteFile?.(candidate)
+        if (injected) throw injected
         this.entries.set(candidate, { kind: "file", content: contents })
       },
       readFile: async (candidate) => {
@@ -99,6 +108,19 @@ class FakeFs {
         return entry.content
       },
       readMountInfo: async () => this.mountInfo,
+      rmdir: async (candidate) => {
+        if (this.failRmdir) throw new Error("EBUSY")
+        const children = [...this.entries.keys()].filter((key) =>
+          key.startsWith(`${candidate}/`),
+        )
+        if (children.length > 0) throw new Error("ENOTEMPTY")
+        this.removed.push(candidate)
+        this.entries.delete(candidate)
+      },
+      unlink: async (candidate) => {
+        this.unlinked.push(candidate)
+        this.entries.delete(candidate)
+      },
       rm: async (candidate) => {
         this.removed.push(candidate)
         for (const key of [...this.entries.keys()]) {
@@ -883,5 +905,325 @@ describe("production host guard and mount-aware removal", () => {
       reason: "mount table could not be read",
     })
     expect(fs.removed).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------- Finding 1
+
+describe("Finding 1: runtime cleanup never swallows failures", () => {
+  it("attempts every stop in reverse order and reports each failure", async () => {
+    const calls: string[] = []
+    const handles = [
+      { stop: async () => void calls.push("first") },
+      {
+        stop: async () => {
+          calls.push("second")
+          throw new Error("runsc kill failed")
+        },
+      },
+      { stop: async () => void calls.push("third") },
+    ]
+    const error = await stopRuntimeHandles(handles).catch(
+      (caught: unknown) => caught,
+    )
+    expect(calls).toEqual(["third", "second", "first"])
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error as AggregateError).errors).toHaveLength(1)
+  })
+
+  it("attempts every destroy and reports each failure", async () => {
+    const calls: string[] = []
+    const workspaces = [
+      {
+        destroy: async () => {
+          calls.push("a")
+          throw new Error("loop device busy")
+        },
+      },
+      {
+        destroy: async () => {
+          calls.push("b")
+          throw new Error("netns busy")
+        },
+      },
+    ]
+    const error = await destroyWorkspaces(workspaces).catch(
+      (caught: unknown) => caught,
+    )
+    expect(calls).toEqual(["b", "a"])
+    expect((error as AggregateError).errors).toHaveLength(2)
+    await expect(destroyWorkspaces([])).resolves.toBeUndefined()
+  })
+
+  it("a passing scenario is reported as failed when runtime cleanup fails, and later cleanup still runs", async () => {
+    const removeRuns = vi.fn(async () => undefined)
+    await expect(
+      runWithOwnedCleanup(
+        async () => "scenario passed",
+        [
+          () =>
+            stopRuntimeHandles([
+              {
+                stop: async () => {
+                  throw new Error("stop failed")
+                },
+              },
+            ]),
+          () => destroyWorkspaces([{ destroy: async () => undefined }]),
+          removeRuns,
+        ],
+      ),
+    ).rejects.toBeInstanceOf(AggregateError)
+    expect(removeRuns).toHaveBeenCalledOnce()
+  })
+
+  it("the real suite wires the reporting helpers instead of swallowing errors", async () => {
+    const source = await readFile(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "realUserEnvironmentRuntime.test.ts",
+      ),
+      "utf8",
+    )
+    expect(source).toContain("stopRuntimeHandles(environment.handles)")
+    expect(source).toContain("destroyWorkspaces(environment.workspaces)")
+    expect(source).not.toMatch(/\.stop\(\)\.catch\(\(\) => undefined\)/)
+    expect(source).not.toMatch(/\.destroy\(\)\.catch\(\(\) => undefined\)/)
+  })
+})
+
+// ---------------------------------------------------------- Finding 2
+
+describe("Finding 2: a run directory whose marker write fails never becomes a silent orphan", () => {
+  it("removes the just-created empty directory after re-proving its identity", async () => {
+    const fs = fakeWithRoots()
+    fs.onWriteFile = () => new Error("ENOSPC")
+    const error = await createOwnedRunDirectory(
+      "/srv/m12/workspace",
+      "workspaceRoot",
+      fs.operations(),
+    ).catch((caught: unknown) => caught as Error)
+    expect(error.message).toMatch(
+      /marker could not be written; the directory was removed/,
+    )
+    expect(fs.removed).toHaveLength(1)
+    expect(
+      [...fs.entries.keys()].filter((key) =>
+        key.startsWith("/srv/m12/workspace/"),
+      ),
+    ).toEqual([])
+  })
+
+  it("unlinks a partially written marker before removing the directory", async () => {
+    const fs = fakeWithRoots()
+    fs.onWriteFile = (candidate) => {
+      fs.entries.set(candidate, { kind: "file", content: '{"sche' })
+      return new Error("EIO")
+    }
+    await expect(
+      createOwnedRunDirectory(
+        "/srv/m12/workspace",
+        "workspaceRoot",
+        fs.operations(),
+      ),
+    ).rejects.toThrow(/the directory was removed/)
+    expect(fs.unlinked).toHaveLength(1)
+    expect(fs.removed).toHaveLength(1)
+  })
+
+  it.each([
+    [
+      "the directory was replaced (inode changed)",
+      (fs: FakeFs, candidate: string) => {
+        fs.dir(path.posix.dirname(candidate))
+      },
+    ],
+    [
+      "the directory was swapped for a symlink",
+      (fs: FakeFs, candidate: string) => {
+        fs.entries.set(path.posix.dirname(candidate), {
+          kind: "symlink",
+          target: "/run/peephole/user-env",
+        })
+      },
+    ],
+    [
+      "an unexpected entry appeared inside",
+      (fs: FakeFs, candidate: string) => {
+        fs.entries.set(`${path.posix.dirname(candidate)}/other`, {
+          kind: "file",
+          content: "x",
+        })
+      },
+    ],
+  ])("preserves and reports the exact path when %s", async (_label, tamper) => {
+    const fs = fakeWithRoots()
+    fs.onWriteFile = (candidate) => {
+      tamper(fs, candidate)
+      return new Error("EIO")
+    }
+    const error = await createOwnedRunDirectory(
+      "/srv/m12/workspace",
+      "workspaceRoot",
+      fs.operations(),
+    ).catch((caught: unknown) => caught as Error & { preservedPath?: string })
+    expect(error.message).toMatch(
+      /preserved for manual review: \/srv\/m12\/workspace\/peephole-m12-workspaceRoot-/,
+    )
+    expect(error.preservedPath).toMatch(
+      /^\/srv\/m12\/workspace\/peephole-m12-workspaceRoot-/,
+    )
+    expect(fs.removed).toEqual([])
+  })
+
+  it("preserves and reports the path when the rollback itself fails", async () => {
+    const fs = fakeWithRoots()
+    fs.onWriteFile = () => new Error("ENOSPC")
+    fs.failRmdir = true
+    const error = await createOwnedRunDirectory(
+      "/srv/m12/workspace",
+      "workspaceRoot",
+      fs.operations(),
+    ).catch((caught: unknown) => caught as Error & { preservedPath?: string })
+    expect(error.message).toMatch(/preserved for manual review/)
+    expect(error.preservedPath).toBeDefined()
+  })
+
+  it("reports a created path whose canonical form escapes the root, without touching it", async () => {
+    const fs = fakeWithRoots()
+    const operations = {
+      ...fs.operations(),
+      realpath: async (candidate: string) =>
+        candidate.includes("peephole-m12-")
+          ? "/run/peephole/user-env/x"
+          : candidate,
+    }
+    const error = await createOwnedRunDirectory(
+      "/srv/m12/workspace",
+      "workspaceRoot",
+      operations,
+    ).catch((caught: unknown) => caught as Error & { preservedPath?: string })
+    expect(error.preservedPath).toMatch(
+      /^\/srv\/m12\/workspace\/peephole-m12-workspaceRoot-/,
+    )
+    expect(fs.removed).toEqual([])
+  })
+
+  it("a run-set rollback reports any directory it had to preserve", async () => {
+    const fs = fakeWithRoots()
+    const operations = fs.operations()
+    const config = await readM12HarnessConfig(validRoots, operations)
+    let writes = 0
+    fs.onWriteFile = () => {
+      writes += 1
+      if (writes === 2) {
+        fs.failRmdir = true
+        return new Error("ENOSPC")
+      }
+      return undefined
+    }
+    const error = await createOwnedRunSet(config, operations).catch(
+      (caught: unknown) =>
+        caught as Error & { preservedRunDirectories?: string[] },
+    )
+    expect(error.preservedRunDirectories?.length).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------- Finding 4
+
+describe("Finding 4: production host detection covers the documented locations", () => {
+  function inspection(present: Record<string, string[] | true>) {
+    const enoent = () => Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+    return {
+      lstat: async (candidate: string) => {
+        if (candidate in present) return {}
+        throw enoent()
+      },
+      readdir: async (candidate: string) => {
+        const listing = present[candidate]
+        if (Array.isArray(listing)) return listing
+        throw enoent()
+      },
+    }
+  }
+
+  it.each([
+    "/etc/peephole",
+    "/var/lib/peephole",
+    "/var/lib/peephole/jobs",
+    "/run/peephole/secrets",
+    "/var/run/peephole/runsc",
+  ])("detects the fixed marker %s", async (marker) => {
+    expect(
+      await findProductionHostMarkers(inspection({ [marker]: true })),
+    ).toContain(marker)
+  })
+
+  it.each([
+    ["/etc/systemd/system", "peephole.service"],
+    ["/etc/systemd/system", "peephole-staging.service"],
+    ["/etc/systemd/system", "peephole.service.d"],
+    ["/usr/lib/systemd/system", "peephole.service"],
+    ["/lib/systemd/system", "peephole-tenant-network.service"],
+    ["/run/systemd/system", "peephole.timer"],
+    ["/usr/local/lib/systemd/system", "peephole.service"],
+  ])("detects %s/%s by a bounded listing", async (directory, entry) => {
+    expect(
+      await findProductionHostMarkers(
+        inspection({ [directory]: ["sshd.service", entry] }),
+      ),
+    ).toEqual([`${directory}/${entry}`])
+  })
+
+  it("detects an enablement link under a .wants directory", async () => {
+    expect(
+      await findProductionHostMarkers(
+        inspection({
+          "/etc/systemd/system": ["multi-user.target.wants"],
+          "/etc/systemd/system/multi-user.target.wants": [
+            "ssh.service",
+            "peephole.service",
+          ],
+        }),
+      ),
+    ).toEqual(["/etc/systemd/system/multi-user.target.wants/peephole.service"])
+  })
+
+  it("fails closed when a unit directory cannot be listed or is too large", async () => {
+    const unreadable = {
+      lstat: async () => {
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+      },
+      readdir: async (candidate: string) => {
+        if (candidate === "/etc/systemd/system") {
+          throw Object.assign(new Error("EACCES"), { code: "EACCES" })
+        }
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+      },
+    }
+    expect(await findProductionHostMarkers(unreadable)).toEqual([
+      "/etc/systemd/system",
+    ])
+    const huge = inspection({
+      "/etc/systemd/system": Array.from(
+        { length: 5_000 },
+        (_, index) => `unit-${String(index)}.service`,
+      ),
+    })
+    expect(await findProductionHostMarkers(huge)).toEqual([
+      "/etc/systemd/system",
+    ])
+  })
+
+  it("reports nothing on a clean host", async () => {
+    expect(
+      await findProductionHostMarkers(
+        inspection({
+          "/etc/systemd/system": ["sshd.service"],
+          "/lib/systemd/system": [],
+        }),
+      ),
+    ).toEqual([])
   })
 })
