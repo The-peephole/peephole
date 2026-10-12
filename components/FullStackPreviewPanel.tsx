@@ -453,8 +453,10 @@ export function FullStackPreviewPanel({
             inputEnabled={userEnvironmentEnabled}
             onConfirmedChange={setEnvironmentConfirmed}
             onValueChange={(name, value) => {
-              // A changed value is a different request, not a retry.
+              // A changed value is a different request, not a retry, and
+              // the exposure acknowledgement covered the previous values.
               createKey.current = null
+              setEnvironmentConfirmed(false)
               setEnvironmentValues((current) => ({ ...current, [name]: value }))
             }}
             rows={environmentRows}
