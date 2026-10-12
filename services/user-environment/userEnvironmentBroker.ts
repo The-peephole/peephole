@@ -120,7 +120,7 @@ export class InMemoryUserEnvironmentBroker implements UserEnvironmentBroker {
     entries: readonly UserEnvironmentEntry[],
     expiresAt: Date,
   ): void {
-    this.sweep()
+    this.sweepExpired()
     if (!PREVIEW_ID_PATTERN.test(binding.previewId)) {
       throw new UserEnvironmentAdmissionError("Invalid preview identity.")
     }
@@ -171,7 +171,7 @@ export class InMemoryUserEnvironmentBroker implements UserEnvironmentBroker {
     requesterId: string,
     entries: readonly UserEnvironmentEntry[],
   ): UserEnvironmentReplayMatch {
-    this.sweep()
+    this.sweepExpired()
     const retained = this.entries.get(previewId)
     if (!retained || retained.binding.requesterId !== requesterId) {
       return "unknown"
@@ -185,7 +185,7 @@ export class InMemoryUserEnvironmentBroker implements UserEnvironmentBroker {
     previewId: string,
     expected: Parameters<UserEnvironmentSource["take"]>[1],
   ): UserEnvironmentMaterial | null {
-    this.sweep()
+    this.sweepExpired()
     if (!RUNTIME_ID_PATTERN.test(expected.runtimeId)) return null
     const retained = this.entries.get(previewId)
     if (!retained?.values) return null
@@ -222,10 +222,6 @@ export class InMemoryUserEnvironmentBroker implements UserEnvironmentBroker {
       }
     }
     return released
-  }
-
-  private sweep(): void {
-    this.sweepExpired()
   }
 
   private digest(entries: readonly UserEnvironmentEntry[]): Buffer {

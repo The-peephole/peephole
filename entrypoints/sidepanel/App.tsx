@@ -4,7 +4,6 @@ import { RepositoryAnalysisView } from "../../components/RepositoryAnalysisView"
 import { BackendRuntimeControl } from "../../components/BackendRuntimeControl"
 import { FullStackPreviewPanel } from "../../components/FullStackPreviewPanel"
 import { PreviewJobPanel } from "../../components/PreviewJobPanel"
-import { UserEnvironmentEnabledContext } from "../../components/userEnvironmentContext"
 import type { BackendRuntimeApi } from "../../core/backendRuntime/apiClient"
 import type { FullStackPreviewApi } from "../../core/fullstack/apiClient"
 import type { PreviewApi } from "../../core/preview/apiClient"
@@ -39,8 +38,6 @@ interface SidePanelAppProps {
   /** Separate from backend-v1. Kept build-time opt-in until production E2E
    * has been explicitly approved and completed for the extension build. */
   fullStackPreviewEnabled?: boolean
-  /** M12 user-provided configuration; build-time opt-in. */
-  userEnvironmentEnabled?: boolean
 }
 
 interface RetainedFullStackControl {
@@ -62,7 +59,6 @@ export function SidePanelApp({
   backendRuntimeEnabled = false,
   fullStackPreviewApi = null,
   fullStackPreviewEnabled = false,
-  userEnvironmentEnabled = false,
 }: SidePanelAppProps) {
   const [retainedFullStackControl, setRetainedFullStackControl] =
     useState<RetainedFullStackControl | null>(null)
@@ -76,89 +72,87 @@ export function SidePanelApp({
   )
 
   return (
-    <UserEnvironmentEnabledContext.Provider value={userEnvironmentEnabled}>
-      <main className="peephole-panel">
-        <header className="peephole__header">
-          <div>
-            <p className="peephole__eyebrow">Repository analysis</p>
-            <h1 className="peephole__title">Peephole</h1>
-          </div>
-        </header>
+    <main className="peephole-panel">
+      <header className="peephole__header">
+        <div>
+          <p className="peephole__eyebrow">Repository analysis</p>
+          <h1 className="peephole__title">Peephole</h1>
+        </div>
+      </header>
 
-        {fullStackPreviewEnabled && retainedFullStackControl && (
-          <FullStackPreviewPanel
-            analysis={retainedFullStackControl.analysis}
-            configurationError={previewConfigurationError}
-            connectGitHub={connectGitHub}
-            fullStackPreviewApi={fullStackPreviewApi}
-            key={`active:${retainedFullStackControl.preview.id}`}
-            onRetainedPreviewChange={updateRetainedFullStackPreview}
-            previewArtifactBaseDomain={previewArtifactBaseDomain}
-            retainedPreview={retainedFullStackControl.preview}
-          />
-        )}
+      {fullStackPreviewEnabled && retainedFullStackControl && (
+        <FullStackPreviewPanel
+          analysis={retainedFullStackControl.analysis}
+          configurationError={previewConfigurationError}
+          connectGitHub={connectGitHub}
+          fullStackPreviewApi={fullStackPreviewApi}
+          key={`active:${retainedFullStackControl.preview.id}`}
+          onRetainedPreviewChange={updateRetainedFullStackPreview}
+          previewArtifactBaseDomain={previewArtifactBaseDomain}
+          retainedPreview={retainedFullStackControl.preview}
+        />
+      )}
 
-        {repository ? (
-          <RepositoryAnalysisView
-            hasRetainedFullStackPreview={Boolean(retainedFullStackControl)}
-            loadRepositoryAnalysis={loadRepositoryAnalysis}
-            loadBuildTargetAnalysis={loadBuildTargetAnalysis}
-            loadRepositoryBranches={loadRepositoryBranches}
-            loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
-            repository={repository}
-            renderBackendRuntimeControls={
-              backendRuntimeEnabled
-                ? ({ candidate, repository: repo }) => (
-                    <BackendRuntimeControl
-                      backendRuntimeApi={backendRuntimeApi}
-                      candidate={candidate}
+      {repository ? (
+        <RepositoryAnalysisView
+          hasRetainedFullStackPreview={Boolean(retainedFullStackControl)}
+          loadRepositoryAnalysis={loadRepositoryAnalysis}
+          loadBuildTargetAnalysis={loadBuildTargetAnalysis}
+          loadRepositoryBranches={loadRepositoryBranches}
+          loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
+          repository={repository}
+          renderBackendRuntimeControls={
+            backendRuntimeEnabled
+              ? ({ candidate, repository: repo }) => (
+                  <BackendRuntimeControl
+                    backendRuntimeApi={backendRuntimeApi}
+                    candidate={candidate}
+                    connectGitHub={connectGitHub}
+                    key={`${repo.repositoryId}:${repo.commitSha}:${candidate.sourceRoot}`}
+                    repository={repo}
+                  />
+                )
+              : undefined
+          }
+          renderFullStackPreviewControls={
+            fullStackPreviewEnabled
+              ? (analysis, options) =>
+                  retainedFullStackControl ? null : (
+                    <FullStackPreviewPanel
+                      analysis={analysis}
+                      configurationError={previewConfigurationError}
                       connectGitHub={connectGitHub}
-                      key={`${repo.repositoryId}:${repo.commitSha}:${candidate.sourceRoot}`}
-                      repository={repo}
+                      fullStackPreviewApi={fullStackPreviewApi}
+                      key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
+                      onCreatePendingChange={options?.onCreatePendingChange}
+                      onRetainedPreviewChange={(preview) =>
+                        setRetainedFullStackControl(
+                          preview ? { analysis, preview } : null,
+                        )
+                      }
+                      previewArtifactBaseDomain={previewArtifactBaseDomain}
+                      retainedPreview={null}
                     />
                   )
-                : undefined
-            }
-            renderFullStackPreviewControls={
-              fullStackPreviewEnabled
-                ? (analysis, options) =>
-                    retainedFullStackControl ? null : (
-                      <FullStackPreviewPanel
-                        analysis={analysis}
-                        configurationError={previewConfigurationError}
-                        connectGitHub={connectGitHub}
-                        fullStackPreviewApi={fullStackPreviewApi}
-                        key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
-                        onCreatePendingChange={options?.onCreatePendingChange}
-                        onRetainedPreviewChange={(preview) =>
-                          setRetainedFullStackControl(
-                            preview ? { analysis, preview } : null,
-                          )
-                        }
-                        previewArtifactBaseDomain={previewArtifactBaseDomain}
-                        retainedPreview={null}
-                      />
-                    )
-                : undefined
-            }
-            renderPreviewControls={(analysis) => (
-              <PreviewJobPanel
-                analysis={analysis}
-                configurationError={previewConfigurationError}
-                connectGitHub={connectGitHub}
-                key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
-                previewApi={previewApi}
-                previewArtifactBaseDomain={previewArtifactBaseDomain}
-              />
-            )}
-          />
-        ) : (
-          <section className="peephole__empty">
-            <strong>No repository selected</strong>
-            <p>Open a GitHub repository and click its Peephole button.</p>
-          </section>
-        )}
-      </main>
-    </UserEnvironmentEnabledContext.Provider>
+              : undefined
+          }
+          renderPreviewControls={(analysis) => (
+            <PreviewJobPanel
+              analysis={analysis}
+              configurationError={previewConfigurationError}
+              connectGitHub={connectGitHub}
+              key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
+              previewApi={previewApi}
+              previewArtifactBaseDomain={previewArtifactBaseDomain}
+            />
+          )}
+        />
+      ) : (
+        <section className="peephole__empty">
+          <strong>No repository selected</strong>
+          <p>Open a GitHub repository and click its Peephole button.</p>
+        </section>
+      )}
+    </main>
   )
 }

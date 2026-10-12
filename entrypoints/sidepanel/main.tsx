@@ -26,6 +26,7 @@ import {
   subscribeToGitHubThemeUpdates,
 } from "../../core/sidepanel/themeMessages"
 import { SidePanelApp } from "./App"
+import { UserEnvironmentEnabledContext } from "../../components/userEnvironmentContext"
 import { SidePanelThemeController } from "./SidePanelThemeController"
 import "./style.css"
 
@@ -134,21 +135,22 @@ if (sourceTabId !== null) {
 
 createRoot(root).render(
   <StrictMode>
-    <SidePanelApp
-      loadRepositoryAnalysis={loadRepositoryAnalysis}
-      loadBuildTargetAnalysis={loadBuildTargetAnalysis}
-      loadRepositoryBranches={loadRepositoryBranches}
-      loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
-      backendRuntimeApi={backendRuntimeApi}
-      backendRuntimeEnabled={backendRuntimeEnabled}
-      fullStackPreviewApi={fullStackPreviewApi}
-      fullStackPreviewEnabled={fullStackPreviewEnabled}
-      userEnvironmentEnabled={userEnvironmentEnabled}
-      connectGitHub={reconnectGitHub}
-      previewApi={previewApi}
-      previewArtifactBaseDomain={previewArtifactBaseDomain}
-      previewConfigurationError={previewConfigurationError}
-      repository={repository}
-    />
+    <UserEnvironmentEnabledContext.Provider value={userEnvironmentEnabled}>
+      <SidePanelApp
+        loadRepositoryAnalysis={loadRepositoryAnalysis}
+        loadBuildTargetAnalysis={loadBuildTargetAnalysis}
+        loadRepositoryBranches={loadRepositoryBranches}
+        loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
+        backendRuntimeApi={backendRuntimeApi}
+        backendRuntimeEnabled={backendRuntimeEnabled}
+        fullStackPreviewApi={fullStackPreviewApi}
+        fullStackPreviewEnabled={fullStackPreviewEnabled}
+        connectGitHub={reconnectGitHub}
+        previewApi={previewApi}
+        previewArtifactBaseDomain={previewArtifactBaseDomain}
+        previewConfigurationError={previewConfigurationError}
+        repository={repository}
+      />
+    </UserEnvironmentEnabledContext.Provider>
   </StrictMode>,
 )
