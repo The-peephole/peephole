@@ -1230,4 +1230,3 @@ Side Panel acknowledgement resets on every value edit; (E-001) the value
 total is 6 KiB so the worst-case JSON-escaped request fits the unchanged
 16 KiB API body limit. Scope (non-sensitive configuration only, M12-C not
 implemented) is unchanged.
-
