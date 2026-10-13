@@ -1,10 +1,16 @@
 # M12 Real Linux/gVisor Verification — Operator Runbook
 
-**Status (2026-10-13): E1–E5 passed on a dedicated EC2 host; G1/G2/G3
-failed during runtime-handle cleanup; G4/G5 passed; H2/H3 remain NOT_RUN.**
-The cleanup fix below still requires a new Linux run. A green GitHub CI means only that the harness is
-skipped safely and its portable safety tests pass — not that real-host
-behavior was verified. Design: docs/USER_PROVIDED_ENVIRONMENT.md (D-035).
+**REAL_GVISOR_VERIFIED (2026-10-13, commit
+`5ed0f925c4d8e3d9c7a549fda926b4983d087253`): Linux host checks 306 PASS;
+E1–E5 5/5, G1–G5 6/6, H2/H3 1/1 — 12/12 PASS.**
+The final execution (`reverify-20261013-3a2e1079/FINAL_REPORT.md`) also
+verified the Guard's actual EC2 termination and zero newly created residual
+AWS resources. This is not production deployment. H1 actual SIGKILL, actual
+PostgreSQL connectivity and Chrome extension E2E remain **NOT_VERIFIED**.
+The later concurrent-exit/SIGTERM correction has portable regressions only;
+the 12/12 result above does not attest to that newer code. Recheck G lifecycle
+and H2/H3 on Linux before production activation. A green GitHub CI alone is
+not real-host verification. Design: docs/USER_PROVIDED_ENVIRONMENT.md (D-035).
 
 Files:
 
@@ -155,7 +161,7 @@ Subsets (vitest `-t`):
 
 ## 5. Evidence
 
-### Follow-up after the 2026-10-13 G cleanup failure
+### Historical failure and completed follow-up (2026-10-13)
 
 E1–E5 passed on the dedicated EC2 host. G1/G2/G3 reached their scenario
 assertions but failed when owned cleanup called `stop()` after
@@ -183,7 +189,23 @@ node node_modules/vitest/vitest.mjs run tests/realUserEnvironmentRuntime.test.ts
 Run under the same root, credential-free environment as the initial run.
 Require six passing G cases and one passing H2/H3 case, their evidence
 records, and clean parent status; retain failures and stop rather than
-weakening cleanup. This follow-up has not yet been executed on Linux.
+weakening cleanup. This follow-up was completed at `5ed0f92`: all six G
+cases and H2/H3 passed, as did E1–E5 and parent teardown (12/12 total).
+The initial failure is retained above as history, not the current result.
+
+### Subsequent concurrent-exit correction (portable verification only)
+
+The final review reproduced natural exit while a SIGTERM request is pending.
+Even with successful deletion and credential cleanup, the failed signal
+could make `stop()` report failure. The subsequent correction suppresses
+that signal error only for a confirmed exit observed before forced cleanup
+and successful deletion and credential cleanup. Live-process signal errors,
+unknown/timed-out exits and cleanup failures remain errors; independent
+cleanup failures are preserved. Deterministic portable tests cover the
+interleavings and repeated `stop()`/`waitForExit()` calls. No AWS or real-gVisor
+execution was performed for this correction. The commands above define the
+remaining Linux lifecycle recheck; retain the historical 12/12 evidence at
+its exact commit rather than attributing it to the newer branch HEAD.
 
 The log contains only booleans, statuses, and paths:
 

@@ -460,6 +460,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     // Deliberately not awaited: `runsc run` blocks until the sandboxed
     // process exits, which for a backend server is "until stopped."
     let runExited = false
+    let runExitConfirmed = false
     const runPromise: Promise<ProcessRunResult> = this.processRunner
       .run(
         this.runscBinaryPath,
@@ -477,6 +478,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       }))
       .then((result) => {
         runExited = true
+        runExitConfirmed = result.exitCode !== null && !result.timedOut
         return result
       })
 
@@ -496,15 +498,37 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       })()
       return deletePromise
     }
+    const cleanupContainerAndCredentials = async (): Promise<Error[]> => {
+      const errors: Error[] = []
+      try {
+        await deleteContainer()
+      } catch (error) {
+        errors.push(
+          new Error("Backend runtime container cleanup failed.", {
+            cause: error,
+          }),
+        )
+      }
+      try {
+        await cleanupCredentials()
+      } catch (error) {
+        errors.push(
+          new Error("Backend runtime credential cleanup failed.", {
+            cause: error,
+          }),
+        )
+      }
+      return errors
+    }
     let cleanupAfterExitPromise: Promise<void> | null = null
     const cleanupAfterExit = (): Promise<void> => {
       cleanupAfterExitPromise ??= (async () => {
         await runPromise
-        try {
-          await deleteContainer()
-        } finally {
-          await cleanupCredentials()
+        const errors = await cleanupContainerAndCredentials()
+        if (errors.length > 1) {
+          throw new AggregateError(errors, "Backend runtime cleanup failed.")
         }
+        if (errors.length === 1) throw errors[0]
       })()
       return cleanupAfterExitPromise
     }
@@ -544,28 +568,21 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         // wait for the foreground `runsc run` promise here: if kill failed or
         // timed out, that wait could consume the full runtime backstop and
         // block workspace/network teardown.
-        let deleteError: unknown
-        try {
-          await deleteContainer()
-        } catch {
-          deleteError = new Error("Backend runtime container cleanup failed.")
-        } finally {
-          try {
-            await cleanupCredentials()
-          } catch {
-            deleteError = new Error(
-              "Backend runtime credential cleanup failed.",
-            )
-          }
+        // Capture before forced deletion: an exit caused by that backstop
+        // must not turn an actual failed signal to a live process into success.
+        const exitedBeforeCleanup = runExitConfirmed
+        const cleanupErrors = await cleanupContainerAndCredentials()
+        if (killError && exitedBeforeCleanup && cleanupErrors.length === 0) {
+          killError = undefined
         }
-        if (killError && deleteError) {
+        const errors = killError ? [killError, ...cleanupErrors] : cleanupErrors
+        if (errors.length > 1) {
           throw new AggregateError(
-            [killError, deleteError],
+            errors,
             "Backend runtime stop and cleanup failed.",
           )
         }
-        if (killError) throw killError
-        if (deleteError) throw deleteError
+        if (errors.length === 1) throw errors[0]
       })()
       return stopPromise
     }
