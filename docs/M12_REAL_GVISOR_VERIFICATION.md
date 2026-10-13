@@ -1,8 +1,8 @@
 # M12 Real Linux/gVisor Verification — Operator Runbook
 
-**Status (2026-10-12): harness implemented, never executed.** Every
-real-host result below is `NOT_RUN` until an operator runs this procedure on
-a dedicated test host. A green GitHub CI means only that the harness is
+**Status (2026-10-13): E1–E5 passed on a dedicated EC2 host; G1/G2/G3
+failed during runtime-handle cleanup; G4/G5 passed; H2/H3 remain NOT_RUN.**
+The cleanup fix below still requires a new Linux run. A green GitHub CI means only that the harness is
 skipped safely and its portable safety tests pass — not that real-host
 behavior was verified. Design: docs/USER_PROVIDED_ENVIRONMENT.md (D-035).
 
@@ -154,6 +154,36 @@ Subsets (vitest `-t`):
   is covered by portable tests only. No `SIGKILL` is sent by this harness.
 
 ## 5. Evidence
+
+### Follow-up after the 2026-10-13 G cleanup failure
+
+E1–E5 passed on the dedicated EC2 host. G1/G2/G3 reached their scenario
+assertions but failed when owned cleanup called `stop()` after
+`waitForExit()` had already deleted the container. G4/G5 passed; H2/H3
+were not run. Scenario evidence printed before cleanup is not a test PASS.
+
+The runtime now skips SIGTERM only after observing process exit, while
+retaining shared container deletion and credential cleanup error reporting.
+Use a source archive containing this fix on a newly approved dedicated host;
+do not replay the old EC2 creation manifest. Complete sections 1–3 and the
+AWS guard/timer checks before running these commands. Include `/usr/sbin`
+and `/sbin` in the clean test PATH so host iptables is discoverable.
+
+With the four explicit test roots exported as in section 4, execute G first
+and H2/H3 only after G and its owned cleanup pass:
+
+```bash
+set -o pipefail
+node node_modules/vitest/vitest.mjs run tests/realUserEnvironmentRuntime.test.ts \
+  -t 'G[1-5]:' 2>&1 | tee "$EVIDENCE/G-recheck.log" &&
+node node_modules/vitest/vitest.mjs run tests/realUserEnvironmentRuntime.test.ts \
+  -t 'H2/H3:' 2>&1 | tee "$EVIDENCE/H2-H3-recheck.log"
+```
+
+Run under the same root, credential-free environment as the initial run.
+Require six passing G cases and one passing H2/H3 case, their evidence
+records, and clean parent status; retain failures and stop rather than
+weakening cleanup. This follow-up has not yet been executed on Linux.
 
 The log contains only booleans, statuses, and paths:
 

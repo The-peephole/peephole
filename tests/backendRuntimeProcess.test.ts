@@ -344,6 +344,75 @@ describe("GVisorBackendRuntimeProcess", () => {
     )
   })
 
+  it.each([0, 3, 1])(
+    "stop after exit %i does not signal the already deleted container",
+    async (exitCode) => {
+      const processRunner = new FakeProcessRunner()
+      processRunner.crashResult = {
+        exitCode,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+      }
+      // Real runsc rejects kill after natural/bootstrap-exit cleanup has
+      // deleted the container. The old fake accepted this invalid signal.
+      processRunner.killResult = {
+        exitCode: 1,
+        timedOut: false,
+        stdout: "",
+        stderr: "container does not exist",
+      }
+      const workspace = fakeWorkspace(bundleDir, "127.0.0.1")
+      const runtime = new GVisorBackendRuntimeProcess({ processRunner })
+      const handle = await runtime.start(workspace, {
+        ...plan,
+        internalPort: port,
+      })
+
+      await expect(handle.waitForExit()).resolves.toEqual({ exitCode })
+      await expect(handle.stop()).resolves.toBeUndefined()
+      await expect(handle.stop()).resolves.toBeUndefined()
+      expect(workspace.listContainers()).toEqual([])
+      expect(
+        processRunner.calls.filter((call) => call.args.includes("kill")),
+      ).toHaveLength(0)
+      expect(
+        processRunner.calls.filter((call) => call.args.includes("delete")),
+      ).toHaveLength(1)
+    },
+  )
+
+  it("stop after exit still reports a failed container deletion", async () => {
+    const processRunner = new FakeProcessRunner()
+    processRunner.crashResult = {
+      exitCode: 0,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+    }
+    processRunner.deleteResult = {
+      exitCode: 1,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+    }
+    const workspace = fakeWorkspace(bundleDir, "127.0.0.1")
+    const runtime = new GVisorBackendRuntimeProcess({ processRunner })
+    const handle = await runtime.start(workspace, {
+      ...plan,
+      internalPort: port,
+    })
+
+    await expect(handle.waitForExit()).rejects.toThrow(
+      "container cleanup failed",
+    )
+    await expect(handle.stop()).rejects.toThrow("container cleanup failed")
+    expect(workspace.listContainers()).toHaveLength(1)
+    expect(
+      processRunner.calls.filter((call) => call.args.includes("delete")),
+    ).toHaveLength(1)
+  })
+
   it("stop() is idempotent and only deletes the container once", async () => {
     const processRunner = new FakeProcessRunner()
     const runtime = new GVisorBackendRuntimeProcess({ processRunner })

@@ -459,6 +459,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
 
     // Deliberately not awaited: `runsc run` blocks until the sandboxed
     // process exits, which for a backend server is "until stopped."
+    let runExited = false
     const runPromise: Promise<ProcessRunResult> = this.processRunner
       .run(
         this.runscBinaryPath,
@@ -474,6 +475,10 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         stdout: "",
         stderr: error instanceof Error ? error.message : String(error),
       }))
+      .then((result) => {
+        runExited = true
+        return result
+      })
 
     let deletePromise: Promise<void> | null = null
     let stopPromise: Promise<void> | null = null
@@ -506,28 +511,33 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     const stop = (): Promise<void> => {
       stopPromise ??= (async () => {
         let killError: Error | undefined
-        try {
-          const killed = await this.processRunner.run(
-            this.runscBinaryPath,
-            runscKillArgs(
-              { runscRootDir: this.runscRootDir },
-              containerId,
-              "SIGTERM",
-            ),
-            { timeoutMs: 10_000 },
-          )
-          if (killed.exitCode !== 0 || killed.timedOut) {
+        // Natural/bootstrap exit cleanup may already have deleted the
+        // container. Signal only a process whose exit has not been observed;
+        // still await the shared deletion and credential cleanup below.
+        if (!runExited) {
+          try {
+            const killed = await this.processRunner.run(
+              this.runscBinaryPath,
+              runscKillArgs(
+                { runscRootDir: this.runscRootDir },
+                containerId,
+                "SIGTERM",
+              ),
+              { timeoutMs: 10_000 },
+            )
+            if (killed.exitCode !== 0 || killed.timedOut) {
+              killError = new Error("Backend runtime stop command failed.")
+            } else {
+              // A bounded chance for the trusted secret bootstrap (or a plain
+              // Node process) to catch SIGTERM and exit on its own. Racing
+              // against runPromise means a process that exits sooner does not
+              // pay the full grace window; one that never exits still hits the
+              // unconditional `delete --force` backstop below.
+              await Promise.race([runPromise, sleep(this.stopGraceMs)])
+            }
+          } catch {
             killError = new Error("Backend runtime stop command failed.")
-          } else {
-            // A bounded chance for the trusted secret bootstrap (or a plain
-            // Node process) to catch SIGTERM and exit on its own. Racing
-            // against runPromise means a process that exits sooner does not
-            // pay the full grace window; one that never exits still hits the
-            // unconditional `delete --force` backstop below.
-            await Promise.race([runPromise, sleep(this.stopGraceMs)])
           }
-        } catch {
-          killError = new Error("Backend runtime stop command failed.")
         }
 
         // `runsc delete --force` is the independent cleanup attempt. Do not
