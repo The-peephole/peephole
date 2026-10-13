@@ -112,6 +112,19 @@ class FakeProcessRunner implements ProcessRunner {
     stderr: "",
   }
   killThrows = false
+  onKill: (() => void | Promise<void>) | null = null
+  onDelete: (() => void) | null = null
+  finishRun(
+    result: ProcessRunResult = {
+      exitCode: 0,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+    },
+  ): void {
+    this.runResolve?.(result)
+    this.runResolve = null
+  }
   /** Models whether the sandboxed process actually reacts to the delivered
    * signal. Real SIGKILL always does; a test proving SIGTERM's bounded grace
    * period sets this to false to model a process that never exits on its
@@ -122,6 +135,7 @@ class FakeProcessRunner implements ProcessRunner {
   async run(command: string, args: string[]): Promise<ProcessRunResult> {
     this.calls.push({ command, args })
     if (args.includes("kill")) {
+      if (this.onKill) await this.onKill()
       if (this.killThrows) throw new Error("kill failed")
       if (
         this.killResolvesRun &&
@@ -139,6 +153,7 @@ class FakeProcessRunner implements ProcessRunner {
       return this.killResult
     }
     if (args.includes("delete")) {
+      this.onDelete?.()
       return this.deleteResult
     }
     if (args.includes("run")) {
@@ -343,6 +358,251 @@ describe("GVisorBackendRuntimeProcess", () => {
       false,
     )
   })
+
+  it.each([0, 3, 1])(
+    "stop after exit %i does not signal the already deleted container",
+    async (exitCode) => {
+      const processRunner = new FakeProcessRunner()
+      processRunner.crashResult = {
+        exitCode,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+      }
+      // Real runsc rejects kill after natural/bootstrap-exit cleanup has
+      // deleted the container. The old fake accepted this invalid signal.
+      processRunner.killResult = {
+        exitCode: 1,
+        timedOut: false,
+        stdout: "",
+        stderr: "container does not exist",
+      }
+      const workspace = fakeWorkspace(bundleDir, "127.0.0.1")
+      const runtime = new GVisorBackendRuntimeProcess({ processRunner })
+      const handle = await runtime.start(workspace, {
+        ...plan,
+        internalPort: port,
+      })
+
+      await expect(handle.waitForExit()).resolves.toEqual({ exitCode })
+      await expect(handle.stop()).resolves.toBeUndefined()
+      await expect(handle.stop()).resolves.toBeUndefined()
+      expect(workspace.listContainers()).toEqual([])
+      expect(
+        processRunner.calls.filter((call) => call.args.includes("kill")),
+      ).toHaveLength(0)
+      expect(
+        processRunner.calls.filter((call) => call.args.includes("delete")),
+      ).toHaveLength(1)
+    },
+  )
+
+  it("stop after exit still reports a failed container deletion", async () => {
+    const processRunner = new FakeProcessRunner()
+    processRunner.crashResult = {
+      exitCode: 0,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+    }
+    processRunner.deleteResult = {
+      exitCode: 1,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+    }
+    const workspace = fakeWorkspace(bundleDir, "127.0.0.1")
+    const runtime = new GVisorBackendRuntimeProcess({ processRunner })
+    const handle = await runtime.start(workspace, {
+      ...plan,
+      internalPort: port,
+    })
+
+    await expect(handle.waitForExit()).rejects.toThrow(
+      "container cleanup failed",
+    )
+    await expect(handle.stop()).rejects.toThrow("container cleanup failed")
+    expect(workspace.listContainers()).toHaveLength(1)
+    expect(
+      processRunner.calls.filter((call) => call.args.includes("delete")),
+    ).toHaveLength(1)
+  })
+
+  it.each(["immediately before signal", "during pending signal"])(
+    "accepts confirmed natural exit %s with successful cleanup",
+    async (timing) => {
+      const runner = new FakeProcessRunner()
+      runner.killResult = {
+        exitCode: 1,
+        timedOut: false,
+        stdout: "",
+        stderr: "not found",
+      }
+      const entered = Promise.withResolvers<void>()
+      const release = Promise.withResolvers<void>()
+      runner.onKill = async () => {
+        entered.resolve()
+        if (timing === "immediately before signal") runner.finishRun()
+        await release.promise
+      }
+      const workspace = fakeWorkspace(bundleDir, "127.0.0.1")
+      const realFs = databaseCredentialFilesystem()
+      const remove = vi.fn((runtimeId: string) => realFs.remove(runtimeId))
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner: runner,
+        databaseCredentialFilesystem: {
+          rootDir: realFs.rootDir,
+          create: (material) => realFs.create(material),
+          remove,
+        },
+      })
+      const handle = await runtime.start(
+        workspace,
+        { ...databasePlan, internalPort: port },
+        null,
+        databaseCredential(),
+      )
+      const firstStop = handle.stop()
+      const secondStop = handle.stop()
+      expect(secondStop).toBe(firstStop)
+      await entered.promise
+      if (timing === "during pending signal") runner.finishRun()
+      // Observe the successful exit and shared delete before releasing kill.
+      await expect(handle.waitForExit()).resolves.toEqual({ exitCode: 0 })
+      release.resolve()
+      await expect(firstStop).resolves.toBeUndefined()
+      await expect(handle.waitForExit()).resolves.toEqual({ exitCode: 0 })
+      await expect(handle.stop()).resolves.toBeUndefined()
+      expect(workspace.listContainers()).toEqual([])
+      expect(remove).toHaveBeenCalledTimes(1)
+      await expect(readdir(dbCredentialRoot)).resolves.toEqual([])
+      expect(
+        runner.calls.filter((call) => call.args.includes("kill")),
+      ).toHaveLength(1)
+      expect(
+        runner.calls.filter((call) => call.args.includes("delete")),
+      ).toHaveLength(1)
+    },
+  )
+
+  it.each(["forced deletion", "unconfirmed exit"])(
+    "retains signal failure after %s",
+    async (mode) => {
+      const runner = new FakeProcessRunner()
+      runner.killResult = {
+        exitCode: 1,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+      }
+      if (mode === "forced deletion") runner.onDelete = () => runner.finishRun()
+      else
+        runner.onKill = async () => {
+          runner.finishRun({
+            exitCode: null,
+            timedOut: false,
+            stdout: "",
+            stderr: "runner rejected",
+          })
+          await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+      const runtime = new GVisorBackendRuntimeProcess({ processRunner: runner })
+      const handle = await runtime.start(
+        fakeWorkspace(bundleDir, "127.0.0.1"),
+        { ...plan, internalPort: port },
+      )
+      await expect(handle.stop()).rejects.toThrow("stop command failed")
+    },
+  )
+
+  it.each([
+    { deletionFails: true, credentialFails: false },
+    { deletionFails: false, credentialFails: true },
+    { deletionFails: true, credentialFails: true },
+  ])(
+    "retains all cleanup failures during natural-exit signal race: %j",
+    async ({ deletionFails, credentialFails }) => {
+      const runner = new FakeProcessRunner()
+      runner.killResult = {
+        exitCode: 1,
+        timedOut: false,
+        stdout: "",
+        stderr: "not found",
+      }
+      if (deletionFails)
+        runner.deleteResult = {
+          exitCode: 1,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+        }
+      const entered = Promise.withResolvers<void>()
+      const release = Promise.withResolvers<void>()
+      runner.onKill = async () => {
+        entered.resolve()
+        await release.promise
+      }
+      const realFs = databaseCredentialFilesystem()
+      const remove = vi.fn(async (runtimeId: string) => {
+        if (credentialFails) throw new Error("credential removal failed")
+        await realFs.remove(runtimeId)
+      })
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner: runner,
+        databaseCredentialFilesystem: {
+          rootDir: realFs.rootDir,
+          create: (material) => realFs.create(material),
+          remove,
+        },
+      })
+      const workspace = fakeWorkspace(bundleDir, "127.0.0.1")
+      const handle = await runtime.start(
+        workspace,
+        { ...databasePlan, internalPort: port },
+        null,
+        databaseCredential(),
+      )
+      const stop = handle.stop().catch((error: unknown) => error)
+      await entered.promise
+      runner.finishRun()
+      const waitError = await handle
+        .waitForExit()
+        .catch((error: unknown) => error)
+      expect(waitError).toBeInstanceOf(Error)
+      if (deletionFails && credentialFails) {
+        expect(waitError).toBeInstanceOf(AggregateError)
+        expect((waitError as AggregateError).errors).toHaveLength(2)
+      }
+      release.resolve()
+      const error = await stop
+      expect(error).toBeInstanceOf(AggregateError)
+      const messages = (error as AggregateError).errors.map(
+        (item: Error) => item.message,
+      )
+      expect(messages).toContain("Backend runtime stop command failed.")
+      if (deletionFails)
+        expect(messages).toContain("Backend runtime container cleanup failed.")
+      if (credentialFails)
+        expect(messages).toContain("Backend runtime credential cleanup failed.")
+      if (credentialFails) {
+        const credentialError = (error as AggregateError).errors.find(
+          (item: Error) => item.message.includes("credential cleanup failed"),
+        ) as Error
+        expect(credentialError.cause).toEqual(
+          new Error("credential removal failed"),
+        )
+      }
+      expect(messages).toHaveLength(
+        1 + Number(deletionFails) + Number(credentialFails),
+      )
+      await expect(handle.stop()).rejects.toBe(error)
+      expect(workspace.listContainers()).toHaveLength(Number(deletionFails))
+      expect(remove).toHaveBeenCalled()
+      expect(
+        runner.calls.filter((call) => call.args.includes("delete")),
+      ).toHaveLength(1)
+    },
+  )
 
   it("stop() is idempotent and only deletes the container once", async () => {
     const processRunner = new FakeProcessRunner()

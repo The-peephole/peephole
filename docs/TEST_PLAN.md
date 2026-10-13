@@ -588,8 +588,12 @@ E-001 (worst-case escaped payload over a real listener at the default
 16 KiB body limit, plus one byte over); all eight M10/M11/M12 material
 combinations and a three-file bootstrap merge.
 
-Real Linux/gVisor and Chrome E2E: **NOT_RUN** -- see
-docs/USER_PROVIDED_ENVIRONMENT.md section 12 for the required harness.
+Real Linux/gVisor and Chrome E2E: **NOT_RUN**. The gated real-host harness
+(`tests/realUserEnvironmentRuntime.test.ts`, opt-in with both
+`PEEPHOLE_REAL_GVISOR_TESTS=1` and `PEEPHOLE_M12_REAL_GVISOR_TESTS=1` plus
+four explicit `PEEPHOLE_M12_TEST_*` roots) and its portable safety tests
+(`tests/m12RealGvisorHarness.test.ts`) exist; the operator procedure is
+docs/M12_REAL_GVISOR_VERIFICATION.md.
 
 ## 4. Live-Network Golden Paths
 

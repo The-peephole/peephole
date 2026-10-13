@@ -1,8 +1,11 @@
 # User-Provided Preview Environment (M12) — Design and Status
 
-**Status (2026-10-11): M12-A and M12-B implemented behind two default-off
-flags; portable tests pass; NOT deployed; real Linux/gVisor and Chrome E2E
-NOT_RUN.** M12-C (external API keys and other secrets) is design-only and
+**Status (2026-10-13): M12-A and M12-B implemented behind two default-off
+flags; PORTABLE_VERIFIED; REAL_GVISOR_VERIFIED at `5ed0f92` (2026-10-13:
+306 host checks and 12/12 E/G/H cases); NOT DEPLOYED.** The subsequent
+concurrent-exit correction is portable-verified only, pending Linux lifecycle
+recheck. Actual PostgreSQL connectivity, H1 SIGKILL and Chrome E2E remain
+NOT_VERIFIED. M12-C (external API keys and other secrets) is design-only and
 not implemented. See D-035.
 
 | Flag | Side | Default | Effect when off |
@@ -261,8 +264,8 @@ secrecy the design explicitly does not provide.
 | All eight M10/M11/M12 material combinations (mounts, `config.json`, argv, cleanup) and three-file bootstrap merge | PASS (portable) |
 | Side Panel UI | PASS (jsdom) |
 | PostgreSQL integration | No schema change; existing suite environment-gated, NOT_RUN locally |
-| Real Linux root + gVisor (actual child env, tmpfs lifetime, `/proc` and `runsc --root` non-persistence, rootfs placeholder) | **NOT_RUN** |
-| Chrome E2E | **NOT_RUN** |
+| Real Linux root + gVisor (actual child env, tmpfs lifetime, `/proc` and `runsc --root` non-persistence, rootfs placeholder) | **REAL_GVISOR_VERIFIED at `5ed0f92`**: 306 host checks; E 5/5, G 6/6, H2/H3 1/1; 12/12 PASS. Later concurrent-exit correction: PORTABLE_VERIFIED, Linux lifecycle recheck pending |
+| H1 actual SIGKILL / M12 actual PostgreSQL connectivity / Chrome E2E | **NOT_VERIFIED** |
 
 Portable tests with stubs do not prove whole-host non-exposure.
 
@@ -295,7 +298,9 @@ Portable tests with stubs do not prove whole-host non-exposure.
 - Replay conflict detection lasts only while the digest is retained.
 - Single-process assumption: a multi-process deployment would make `take`
   fail closed (safe, but the feature would not work).
-- Real-host properties are unverified until the NOT_RUN items run.
+- Real-host evidence applies to `5ed0f92`, not the subsequent concurrent-exit
+  correction. Recheck G lifecycle and H2/H3 on Linux before production
+  activation; the remaining NOT_VERIFIED items above are separate gates.
 
 ## 12. Deployment preconditions (not performed)
 
@@ -303,7 +308,8 @@ Portable tests with stubs do not prove whole-host non-exposure.
    (new `/run/secrets/user-env` placeholder and M12-aware bootstrap).
 2. Ensure `PEEPHOLE_USER_ENVIRONMENT_ROOT` (default `/run/peephole/user-env`)
    is on tmpfs; startup preflight enforces it.
-3. Run the real-gVisor verification: a fixture backend declaring a
+3. Run the real-gVisor verification (harness and runbook:
+   docs/M12_REAL_GVISOR_VERIFICATION.md): a fixture backend declaring a
    non-sensitive name that reports only a SHA-256 digest of the value;
    assert child env delivery, `config.json`/argv/journal non-leakage, file
    removal on stop/crash, startup reap after `SIGKILL` of the actual server

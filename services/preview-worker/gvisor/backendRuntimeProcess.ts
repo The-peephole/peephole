@@ -459,6 +459,8 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
 
     // Deliberately not awaited: `runsc run` blocks until the sandboxed
     // process exits, which for a backend server is "until stopped."
+    let runExited = false
+    let runExitConfirmed = false
     const runPromise: Promise<ProcessRunResult> = this.processRunner
       .run(
         this.runscBinaryPath,
@@ -474,6 +476,11 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         stdout: "",
         stderr: error instanceof Error ? error.message : String(error),
       }))
+      .then((result) => {
+        runExited = true
+        runExitConfirmed = result.exitCode !== null && !result.timedOut
+        return result
+      })
 
     let deletePromise: Promise<void> | null = null
     let stopPromise: Promise<void> | null = null
@@ -491,71 +498,91 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       })()
       return deletePromise
     }
+    const cleanupContainerAndCredentials = async (): Promise<Error[]> => {
+      const errors: Error[] = []
+      try {
+        await deleteContainer()
+      } catch (error) {
+        errors.push(
+          new Error("Backend runtime container cleanup failed.", {
+            cause: error,
+          }),
+        )
+      }
+      try {
+        await cleanupCredentials()
+      } catch (error) {
+        errors.push(
+          new Error("Backend runtime credential cleanup failed.", {
+            cause: error,
+          }),
+        )
+      }
+      return errors
+    }
     let cleanupAfterExitPromise: Promise<void> | null = null
     const cleanupAfterExit = (): Promise<void> => {
       cleanupAfterExitPromise ??= (async () => {
         await runPromise
-        try {
-          await deleteContainer()
-        } finally {
-          await cleanupCredentials()
+        const errors = await cleanupContainerAndCredentials()
+        if (errors.length > 1) {
+          throw new AggregateError(errors, "Backend runtime cleanup failed.")
         }
+        if (errors.length === 1) throw errors[0]
       })()
       return cleanupAfterExitPromise
     }
     const stop = (): Promise<void> => {
       stopPromise ??= (async () => {
         let killError: Error | undefined
-        try {
-          const killed = await this.processRunner.run(
-            this.runscBinaryPath,
-            runscKillArgs(
-              { runscRootDir: this.runscRootDir },
-              containerId,
-              "SIGTERM",
-            ),
-            { timeoutMs: 10_000 },
-          )
-          if (killed.exitCode !== 0 || killed.timedOut) {
+        // Natural/bootstrap exit cleanup may already have deleted the
+        // container. Signal only a process whose exit has not been observed;
+        // still await the shared deletion and credential cleanup below.
+        if (!runExited) {
+          try {
+            const killed = await this.processRunner.run(
+              this.runscBinaryPath,
+              runscKillArgs(
+                { runscRootDir: this.runscRootDir },
+                containerId,
+                "SIGTERM",
+              ),
+              { timeoutMs: 10_000 },
+            )
+            if (killed.exitCode !== 0 || killed.timedOut) {
+              killError = new Error("Backend runtime stop command failed.")
+            } else {
+              // A bounded chance for the trusted secret bootstrap (or a plain
+              // Node process) to catch SIGTERM and exit on its own. Racing
+              // against runPromise means a process that exits sooner does not
+              // pay the full grace window; one that never exits still hits the
+              // unconditional `delete --force` backstop below.
+              await Promise.race([runPromise, sleep(this.stopGraceMs)])
+            }
+          } catch {
             killError = new Error("Backend runtime stop command failed.")
-          } else {
-            // A bounded chance for the trusted secret bootstrap (or a plain
-            // Node process) to catch SIGTERM and exit on its own. Racing
-            // against runPromise means a process that exits sooner does not
-            // pay the full grace window; one that never exits still hits the
-            // unconditional `delete --force` backstop below.
-            await Promise.race([runPromise, sleep(this.stopGraceMs)])
           }
-        } catch {
-          killError = new Error("Backend runtime stop command failed.")
         }
 
         // `runsc delete --force` is the independent cleanup attempt. Do not
         // wait for the foreground `runsc run` promise here: if kill failed or
         // timed out, that wait could consume the full runtime backstop and
         // block workspace/network teardown.
-        let deleteError: unknown
-        try {
-          await deleteContainer()
-        } catch {
-          deleteError = new Error("Backend runtime container cleanup failed.")
-        } finally {
-          try {
-            await cleanupCredentials()
-          } catch {
-            deleteError = new Error(
-              "Backend runtime credential cleanup failed.",
-            )
-          }
+        // Capture before forced deletion: an exit caused by that backstop
+        // must not turn an actual failed signal to a live process into success.
+        const exitedBeforeCleanup = runExitConfirmed
+        const cleanupErrors = await cleanupContainerAndCredentials()
+        if (killError && exitedBeforeCleanup && cleanupErrors.length === 0) {
+          killError = undefined
         }
-        if (killError && deleteError) {
+        const errors = killError ? [killError, ...cleanupErrors] : cleanupErrors
+        if (errors.length > 1) {
           throw new AggregateError(
-            [killError, deleteError],
+            errors,
             "Backend runtime stop and cleanup failed.",
           )
         }
-        if (killError) throw killError
-        if (deleteError) throw deleteError
+        if (errors.length === 1) throw errors[0]
       })()
       return stopPromise
     }
