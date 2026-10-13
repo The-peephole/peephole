@@ -1,6 +1,7 @@
 import type { BackendRuntimePlan } from "../../types/backendRuntime"
 import type { GeneratedSecretMaterial } from "../../types/backendRuntimeSecrets"
 import type { TemporaryDatabaseRuntimeCredentialMaterial } from "../../types/temporaryDatabase"
+import type { UserEnvironmentMaterial } from "../../types/userEnvironment"
 import type { LocalPreviewWorkspace } from "../preview-worker/local/localWorkspace"
 
 /**
@@ -73,5 +74,8 @@ export interface BackendRuntimeProcessStarter {
      * plan closed with `DATABASE_UNAVAILABLE` before ever reaching this
      * primitive (M11-C1); wiring real material through is M11-C4. */
     databaseCredential?: TemporaryDatabaseRuntimeCredentialMaterial | null,
+    /** M12 user-provided configuration, already destructively taken by the
+     * supervisor. `plan.userEnvironmentNames` empty iff this is `null`. */
+    userEnvironment?: UserEnvironmentMaterial | null,
   ): Promise<RuntimeProcessHandle>
 }

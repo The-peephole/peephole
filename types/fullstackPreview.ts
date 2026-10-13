@@ -1,4 +1,5 @@
 import type { PreviewRepositoryRef } from "./preview"
+import type { UserEnvironmentEntry } from "./userEnvironment"
 
 /**
  * `fullstack-v1` is a fully separate orchestration contract from
@@ -29,6 +30,7 @@ export type FullStackPreviewErrorCode =
   | "BACKEND_FAILED"
   | "PROVISIONING_TIMEOUT"
   | "ORCHESTRATION_UNAVAILABLE"
+  | "CONFIGURATION_UNAVAILABLE"
 
 /**
  * Public, client-facing shape. Deliberately excludes every internal
@@ -65,6 +67,14 @@ export interface CreateFullStackPreviewRequest {
     sourceRoot: string
   }
   backendSourceRoot: string
+  /**
+   * M12 (D-035): values for exactly the non-sensitive configuration names
+   * the server itself derives for this backend at this commit. Omitted (or
+   * empty) when the backend declares none. Values are delivered to the
+   * untrusted backend process and are treated as public configuration; they
+   * are never echoed, persisted, queued, or fingerprinted.
+   */
+  userEnvironment?: UserEnvironmentEntry[]
 }
 
 export type FullStackPreviewApiErrorCode =

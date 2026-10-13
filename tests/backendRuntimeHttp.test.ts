@@ -35,6 +35,7 @@ const plan: BackendRuntimePlan = {
   },
   generatedSecretNames: [],
   databaseRequirement: null,
+  userEnvironmentNames: [],
 }
 
 function compose(

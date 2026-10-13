@@ -350,7 +350,15 @@ describe("resolveBackendRuntimePlan", () => {
     ["TOKEN", "user-required", "server"],
     ["PASSWORD", "user-required", "server"],
     ["REDIS_URL", "database-requirement", "server"],
-    ["SOME_UNUSUAL_NAME", "unknown", "server"],
+    // M12: unknown server-side names now become user-configurable (below);
+    // lowercase, client-public, and process-control names stay rejected.
+    ["some_unusual_name", "unknown", "server"],
+    ["NODE_OPTIONS", "unknown", "server"],
+    ["LD_PRELOAD", "unknown", "server"],
+    ["NPM_CONFIG_REGISTRY", "unknown", "server"],
+    ["PEEPHOLE_INTERNAL", "unknown", "server"],
+    ["VITE_GREETING", "unknown", "client-public"],
+    ["STRIPE_KEY", "unknown", "server"],
     ["VITE_SECRET", "user-required", "client-public"],
     ["NEXT_PUBLIC_TOKEN", "user-required", "client-public"],
     ["API_URL", "external-routing-candidate", "server"],
@@ -372,6 +380,58 @@ describe("resolveBackendRuntimePlan", () => {
       ).toBeNull()
     },
   )
+
+  it("derives sorted user-configurable names for a non-sensitive unknown server requirement (M12)", () => {
+    const backend = candidate({
+      environmentRequirements: [
+        requirement({ name: "PORT" }),
+        requirement({
+          name: "FEATURE_MODE",
+          requirementKind: "unknown",
+          sensitivity: "unknown",
+        }),
+        requirement({
+          name: "APP_GREETING",
+          requirementKind: "unknown",
+          sensitivity: "unknown",
+        }),
+      ],
+    })
+    const plan = resolveBackendRuntimePlan(repository, backend)
+
+    expect(plan?.userEnvironmentNames).toEqual(["APP_GREETING", "FEATURE_MODE"])
+    expect(plan?.platformEnvironment).toEqual({
+      PORT: "3000",
+      HOST: "0.0.0.0",
+      NODE_ENV: "production",
+    })
+    // Standalone backend-v1 never accepts user configuration.
+    expect(resolveBackendExecutionSupport(backend).supported).toBe(false)
+  })
+
+  it("rejects a backend declaring more user-configurable names than the fixed bound", () => {
+    const environmentRequirements = Array.from({ length: 17 }, (_, index) =>
+      requirement({
+        name: `SETTING_${String(index).padStart(2, "0")}`,
+        requirementKind: "unknown",
+        sensitivity: "unknown",
+      }),
+    )
+    expect(
+      resolveBackendRuntimePlan(
+        repository,
+        candidate({ environmentRequirements }),
+      ),
+    ).toBeNull()
+    expect(
+      resolveBackendRuntimePlan(
+        repository,
+        candidate({
+          environmentRequirements: environmentRequirements.slice(1),
+        }),
+      )?.userEnvironmentNames,
+    ).toHaveLength(16)
+  })
 
   it("does not let a valid generated requirement mask an unsupported requirement", () => {
     expect(

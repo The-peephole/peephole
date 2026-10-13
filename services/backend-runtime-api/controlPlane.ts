@@ -50,6 +50,8 @@ const SAFE_ERROR_MESSAGES: Record<BackendRuntimeErrorCode, string> = {
     "The backend runtime's secret material is no longer available. Start a new preview.",
   DATABASE_UNAVAILABLE:
     "The backend runtime's temporary database is unavailable. Start a new preview.",
+  CONFIGURATION_UNAVAILABLE:
+    "The configuration values for this preview are no longer available. Start a new preview and enter them again.",
   RUNTIME_START_FAILED: "The backend process could not be started.",
   RUNTIME_READINESS_TIMEOUT: "The backend did not become ready in time.",
   RUNTIME_EXITED: "The backend process exited unexpectedly.",
@@ -179,8 +181,12 @@ export class BackendRuntimeControlPlane {
         422,
       )
     }
+    // Both capabilities exist only behind trusted full-stack orchestration:
+    // a database is provisioned for, and user configuration is submitted
+    // with, one durable full-stack preview identity.
     if (
-      resolvedPlan.databaseRequirement !== null &&
+      (resolvedPlan.databaseRequirement !== null ||
+        resolvedPlan.userEnvironmentNames.length > 0) &&
       orchestrationKey === null
     ) {
       throw new BackendRuntimeControlError(

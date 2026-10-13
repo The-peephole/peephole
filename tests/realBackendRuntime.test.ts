@@ -81,6 +81,7 @@ const fixturePlan: BackendRuntimePlan = {
   },
   generatedSecretNames: [],
   databaseRequirement: null,
+  userEnvironmentNames: [],
 }
 
 interface RealBackendEnvironment {

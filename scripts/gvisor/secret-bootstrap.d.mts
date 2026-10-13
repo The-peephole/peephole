@@ -4,9 +4,14 @@ export function parseSecretMaterial(contents: string): Record<string, string>
 
 export function parseDatabaseCredentialMaterial(contents: string): string
 
+export function parseUserEnvironmentMaterial(
+  contents: string,
+): Record<string, string>
+
 export function runSecretBootstrap(options?: {
   secretFile?: string
   databaseCredentialFile?: string
+  userEnvironmentFile?: string
   nodeBinary?: string
   childArgs?: string[]
   baseEnvironment?: NodeJS.ProcessEnv

@@ -43,6 +43,7 @@ export const validBackendPlan: BackendRuntimePlan = {
   },
   generatedSecretNames: [],
   databaseRequirement: null,
+  userEnvironmentNames: [],
 }
 
 const ACTIVE = new Set([

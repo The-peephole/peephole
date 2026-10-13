@@ -565,6 +565,32 @@ the composition function `composeProductionBackendRuntime` end to end were
 both verified against a real gVisor/Linux production host and wired into
 `services/production/server.ts`'s `main()` during M9.
 
+### User-provided configuration (M12, D-035)
+
+Portable (run, pass): `tests/userEnvironmentPolicy.test.ts` (name/value
+policy), `tests/userEnvironmentBroker.test.ts` (binding, single use, TTL,
+capacity, keyed replay digest, inspection non-leakage),
+`tests/fullStackUserEnvironment.test.ts` (admission, missing/forged/expired
+session over a real listener, ownership, idempotency races, discard paths,
+sentinel absent from responses/errors/durable row/queue/fingerprint,
+standalone denial), `tests/userEnvironmentRuntimeInjection.test.ts`
+(`config.json`/argv/runsc-call non-leakage, mount shape, cleanup on stop and
+crash, tmpfs writer and reaper, bootstrap flag/parser), supervisor and
+full-stack supervisor additions, `tests/productionUserEnvironment.test.ts`,
+`tests/FullStackUserEnvironmentPanel.test.tsx`, and
+`tests/fullStackUserEnvironmentClient.test.ts`. Synthetic sentinel:
+`PEEPHOLE_E2E_SYNTHETIC_VALUE_2026`; no real credential is used.
+
+Review corrections (2026-10-12): failing-first reproductions for B-001
+(fused secret-like names, through the analyzer), C-001 (expiry without
+broker traffic + maintenance task), D-001 (re-acknowledgement on edit), and
+E-001 (worst-case escaped payload over a real listener at the default
+16 KiB body limit, plus one byte over); all eight M10/M11/M12 material
+combinations and a three-file bootstrap merge.
+
+Real Linux/gVisor and Chrome E2E: **NOT_RUN** -- see
+docs/USER_PROVIDED_ENVIRONMENT.md section 12 for the required harness.
+
 ## 4. Live-Network Golden Paths
 
 With `PEEPHOLE_REAL_NETWORK_TESTS=1`, exercise:

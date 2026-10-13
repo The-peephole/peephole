@@ -26,6 +26,7 @@ import {
   subscribeToGitHubThemeUpdates,
 } from "../../core/sidepanel/themeMessages"
 import { SidePanelApp } from "./App"
+import { UserEnvironmentEnabledContext } from "../../components/userEnvironmentContext"
 import { SidePanelThemeController } from "./SidePanelThemeController"
 import "./style.css"
 
@@ -56,6 +57,11 @@ const backendRuntimeEnabled =
   import.meta.env.WXT_BACKEND_RUNTIME_ENABLED === "true"
 const fullStackPreviewEnabled =
   import.meta.env.WXT_FULLSTACK_PREVIEW_ENABLED === "true"
+// M12 (D-035): off unless the build opts in AND the server enables
+// PEEPHOLE_USER_ENVIRONMENT; the server rejects configuration otherwise.
+const userEnvironmentEnabled =
+  fullStackPreviewEnabled &&
+  import.meta.env.WXT_USER_ENVIRONMENT_ENABLED === "true"
 
 try {
   const previewApiBaseUrl = parsePreviewApiBaseUrl(
@@ -129,20 +135,22 @@ if (sourceTabId !== null) {
 
 createRoot(root).render(
   <StrictMode>
-    <SidePanelApp
-      loadRepositoryAnalysis={loadRepositoryAnalysis}
-      loadBuildTargetAnalysis={loadBuildTargetAnalysis}
-      loadRepositoryBranches={loadRepositoryBranches}
-      loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
-      backendRuntimeApi={backendRuntimeApi}
-      backendRuntimeEnabled={backendRuntimeEnabled}
-      fullStackPreviewApi={fullStackPreviewApi}
-      fullStackPreviewEnabled={fullStackPreviewEnabled}
-      connectGitHub={reconnectGitHub}
-      previewApi={previewApi}
-      previewArtifactBaseDomain={previewArtifactBaseDomain}
-      previewConfigurationError={previewConfigurationError}
-      repository={repository}
-    />
+    <UserEnvironmentEnabledContext.Provider value={userEnvironmentEnabled}>
+      <SidePanelApp
+        loadRepositoryAnalysis={loadRepositoryAnalysis}
+        loadBuildTargetAnalysis={loadBuildTargetAnalysis}
+        loadRepositoryBranches={loadRepositoryBranches}
+        loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
+        backendRuntimeApi={backendRuntimeApi}
+        backendRuntimeEnabled={backendRuntimeEnabled}
+        fullStackPreviewApi={fullStackPreviewApi}
+        fullStackPreviewEnabled={fullStackPreviewEnabled}
+        connectGitHub={reconnectGitHub}
+        previewApi={previewApi}
+        previewArtifactBaseDomain={previewArtifactBaseDomain}
+        previewConfigurationError={previewConfigurationError}
+        repository={repository}
+      />
+    </UserEnvironmentEnabledContext.Provider>
   </StrictMode>,
 )

@@ -93,6 +93,19 @@ export class FullStackPreviewSupervisor {
     queued: QueuedFullStackPreview,
     options: FullStackPreviewRunOptions = {},
   ): Promise<void> {
+    try {
+      await this.runOrchestration(queued, options)
+    } finally {
+      // Whatever ended this run, any user-provided configuration the
+      // backend did not consume must not outlive it (M12, D-035).
+      this.fullStack.discardUserEnvironment(queued.previewId)
+    }
+  }
+
+  private async runOrchestration(
+    queued: QueuedFullStackPreview,
+    options: FullStackPreviewRunOptions,
+  ): Promise<void> {
     const signal = options.signal ?? new AbortController().signal
     signal.throwIfAborted()
 
@@ -297,7 +310,9 @@ export class FullStackPreviewSupervisor {
       if (!ACTIVE_BACKEND.has(runtime.status)) {
         await this.fullStack.failWorkerFullStackPreview(
           previewId,
-          "BACKEND_FAILED",
+          runtime.errorCode === "CONFIGURATION_UNAVAILABLE"
+            ? "CONFIGURATION_UNAVAILABLE"
+            : "BACKEND_FAILED",
         )
         await this.stopBackendAndWait(runtimeId, requesterSubject, signal)
         return null

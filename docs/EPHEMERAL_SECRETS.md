@@ -989,3 +989,15 @@ described in the M10-C4B status paragraph above:
    show "this backend has a session secret configured") is left to product
    judgment, not a security question — no value ever crosses that boundary
    either way.
+
+## 19. M12 boundary (added 2026-10-11)
+
+M12 (D-035, docs/USER_PROVIDED_ENVIRONMENT.md) adds user-provided
+**non-sensitive** configuration without changing anything in this design:
+the four-name allowlist, `generatedSecretNames`, the `/run/secrets/env`
+grammar and path, `InMemoryBackendRuntimeSecretBroker`, and the M10 reaper
+are unchanged. M12 uses its own broker, its own tmpfs root
+(`/run/peephole/user-env`), its own sibling file `/run/secrets/user-env`,
+and refuses every M10 name. User-supplied *secrets* (section 6, Option B)
+remain unsupported; section 11's forward note is followed: names only in
+the durable fingerprint, values compared only by a per-process keyed HMAC.

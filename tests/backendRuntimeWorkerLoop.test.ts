@@ -33,6 +33,7 @@ const plan: BackendRuntimePlan = {
   },
   generatedSecretNames: [],
   databaseRequirement: null,
+  userEnvironmentNames: [],
 }
 
 const queuedRuntime: QueuedBackendRuntime = {

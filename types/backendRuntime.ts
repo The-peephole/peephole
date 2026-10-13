@@ -49,6 +49,14 @@ export interface BackendRuntimePlan {
   generatedSecretNames: readonly PreviewGeneratedSecretName[]
   /** Names-only temporary-database capability metadata, never a value. */
   databaseRequirement: BackendRuntimeDatabaseRequirement | null
+  /**
+   * M12 (D-035): server-derived names of non-sensitive configuration the
+   * repository declares at this exact commit and a requester supplies
+   * values for through trusted `fullstack-v1` admission. Names only, sorted;
+   * values never enter this type. An empty array means none. Standalone
+   * `backend-v1` admission rejects a non-empty list.
+   */
+  userEnvironmentNames: readonly string[]
 }
 
 export type BackendRuntimeStatus =
@@ -69,6 +77,7 @@ export type BackendRuntimeErrorCode =
   | "INSTALL_FAILED"
   | "SECRET_UNAVAILABLE"
   | "DATABASE_UNAVAILABLE"
+  | "CONFIGURATION_UNAVAILABLE"
   | "RUNTIME_START_FAILED"
   | "RUNTIME_READINESS_TIMEOUT"
   | "RUNTIME_EXITED"

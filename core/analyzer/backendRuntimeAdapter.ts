@@ -11,6 +11,10 @@ import type { EnvironmentRequirement } from "../../types/environment"
 import { BACKEND_RUNTIME_DATABASE_ENV_NAME } from "../../types/backendRuntimeDatabase"
 import { isEligiblePreviewGeneratedSecretName } from "../backendSecrets/generatedSecretPolicy"
 import { isSafePreviewSourceRoot } from "../preview/sourceRoot"
+import {
+  isUserConfigurableRequirement,
+  resolveUserEnvironmentNames,
+} from "../userEnvironment/userEnvironmentPolicy"
 import { isNpmBackendPackageManagerDeclaration } from "./backendPackageManager"
 
 /**
@@ -45,6 +49,19 @@ export function resolveBackendExecutionSupport(
 
   if (rejection) {
     return { supported: false, adapterId: null, evidence: [rejection] }
+  }
+
+  if (
+    (resolveUserEnvironmentNames(candidate.environmentRequirements) ?? [])
+      .length > 0
+  ) {
+    return {
+      supported: false,
+      adapterId: null,
+      evidence: [
+        "User-provided configuration is accepted only through trusted full-stack preview admission; standalone backend-v1 execution is not available.",
+      ],
+    }
   }
 
   if (candidate.databaseDependencies.length > 0) {
@@ -112,6 +129,9 @@ export function resolveBackendRuntimePlan(
       candidate.databaseDependencies.length === 1
         ? { name: BACKEND_RUNTIME_DATABASE_ENV_NAME }
         : null,
+    // findUnsupportedPlanReason already proved the bound holds.
+    userEnvironmentNames:
+      resolveUserEnvironmentNames(candidate.environmentRequirements) ?? [],
   }
 }
 
@@ -159,10 +179,15 @@ function findUnsupportedPlanReason(candidate: BackendCandidate): string | null {
     (requirement) =>
       !isSupportedPlatformRequirement(requirement) &&
       requirement.requirementKind !== "database-requirement" &&
-      !isSupportedGeneratedSecretRequirement(requirement),
+      !isSupportedGeneratedSecretRequirement(requirement) &&
+      !isUserConfigurableRequirement(requirement),
   )
   if (unsupportedRequirement) {
     return `Environment requirement "${unsupportedRequirement.name}" is not supported until ephemeral env/secrets provisioning exists.`
+  }
+
+  if (resolveUserEnvironmentNames(candidate.environmentRequirements) === null) {
+    return "The backend declares more user-provided configuration variables than full-stack preview supports."
   }
 
   return null

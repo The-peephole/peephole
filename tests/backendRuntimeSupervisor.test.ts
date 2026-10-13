@@ -36,6 +36,10 @@ import type {
 } from "../services/preview-worker/ports"
 import type { BackendRuntimePlan } from "../types/backendRuntime"
 import type { TemporaryDatabaseLifecycleProvisioner } from "../services/backend-runtime-worker/backendRuntimeSupervisor"
+import {
+  InMemoryUserEnvironmentBroker,
+  type UserEnvironmentSource,
+} from "../services/user-environment/userEnvironmentBroker"
 
 const repository = {
   repositoryId: 1,
@@ -60,6 +64,7 @@ const plan: BackendRuntimePlan = {
   },
   generatedSecretNames: [],
   databaseRequirement: null,
+  userEnvironmentNames: [],
 }
 
 const secretPlan: BackendRuntimePlan = {
@@ -225,12 +230,15 @@ class FakeRuntimeProcessStarter implements BackendRuntimeProcessStarter {
   lastHandle: FakeRuntimeProcessHandle | null = null
   lastSecrets: Parameters<BackendRuntimeProcessStarter["start"]>[2] | undefined
   lastDatabase: Parameters<BackendRuntimeProcessStarter["start"]>[3] | undefined
+  lastUserEnvironment:
+    Parameters<BackendRuntimeProcessStarter["start"]>[4] | undefined
 
   async start(
     ...args: Parameters<BackendRuntimeProcessStarter["start"]>
   ): Promise<RuntimeProcessHandle> {
     this.lastSecrets = args[2]
     this.lastDatabase = args[3]
+    this.lastUserEnvironment = args[4]
     if (this.startError) throw this.startError
     this.lastHandle = new FakeRuntimeProcessHandle()
     this.lastHandle.readyError = this.nextReadyError
@@ -245,6 +253,7 @@ function compose(
   secretBroker?: BackendRuntimeSecretBroker,
   resolvedPlan: BackendRuntimePlan = plan,
   temporaryDatabaseProvisioner?: TemporaryDatabaseLifecycleProvisioner,
+  userEnvironmentSource?: UserEnvironmentSource,
 ) {
   const store = new InMemoryBackendRuntimeStore()
   const queue = new InMemoryBackendRuntimeQueue()
@@ -301,6 +310,7 @@ function compose(
       readinessTimeoutMs: 200,
       secretBroker,
       temporaryDatabaseProvisioner,
+      userEnvironmentSource,
     },
   )
   return {
@@ -1602,5 +1612,203 @@ describe("BackendRuntimeSupervisor", () => {
 
       expect(liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
     })
+  })
+})
+
+describe("BackendRuntimeSupervisor user-provided configuration (M12)", () => {
+  const SENTINEL = "PEEPHOLE_E2E_SYNTHETIC_VALUE_2026"
+  const previewId = "fullstack-00000000-0000-0000-0000-000000000001"
+  const configurablePlan: BackendRuntimePlan = {
+    ...plan,
+    userEnvironmentNames: ["APP_GREETING", "FEATURE_MODE"],
+  }
+  const entries = [
+    { name: "APP_GREETING", value: SENTINEL },
+    { name: "FEATURE_MODE", value: "demo" },
+  ]
+
+  function composeWithBroker(
+    options: { register?: boolean; binding?: Record<string, unknown> } = {},
+  ) {
+    const broker = new InMemoryUserEnvironmentBroker()
+    if (options.register !== false) {
+      broker.register(
+        {
+          previewId,
+          requesterId: requester.subject,
+          repository,
+          backendSourceRoot: "backend",
+          names: configurablePlan.userEnvironmentNames,
+          ...options.binding,
+        },
+        entries,
+        new Date(Date.now() + 60_000),
+      )
+    }
+    return {
+      broker,
+      ...compose(
+        10 * 60_000,
+        "file",
+        undefined,
+        configurablePlan,
+        undefined,
+        broker,
+      ),
+    }
+  }
+
+  it("takes the values once at START and hands them only to the process starter", async () => {
+    const { broker, controlPlane, queue, starter, supervisor, store } =
+      composeWithBroker()
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    // Queued and stored backend state never carries values.
+    expect(JSON.stringify(job)).not.toContain(SENTINEL)
+    expect(JSON.stringify(await store.get(runtimeId))).not.toContain(SENTINEL)
+
+    const running = supervisor.run(job)
+    await vi.waitFor(async () =>
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "running",
+      ),
+    )
+    const delivered = starter.lastUserEnvironment
+    expect(delivered?.runtimeId).toBe(runtimeId)
+    expect(delivered?.values.get("APP_GREETING")?.reveal()).toBe(SENTINEL)
+    // Consumed: nothing remains for a retry.
+    expect(
+      broker.take(previewId, {
+        runtimeId,
+        repository,
+        backendSourceRoot: "backend",
+        names: configurablePlan.userEnvironmentNames,
+      }),
+    ).toBeNull()
+    const publicRuntime = await controlPlane.get(runtimeId, requester)
+    expect(JSON.stringify(publicRuntime)).not.toContain(SENTINEL)
+
+    await controlPlane.cancel(runtimeId, requester)
+    await running
+    expect(broker.compare(previewId, requester.subject, entries)).toBe(
+      "unknown",
+    )
+  })
+
+  it.each([
+    ["was never registered (e.g. after a restart)", { register: false }],
+    [
+      "was admitted for another commit",
+      { binding: { repository: { ...repository, commitSha: "b".repeat(40) } } },
+    ],
+    [
+      "was admitted for another source root",
+      { binding: { backendSourceRoot: "api" } },
+    ],
+  ])(
+    "fails closed with CONFIGURATION_UNAVAILABLE when the material %s",
+    async (_label, options) => {
+      const { controlPlane, queue, starter, supervisor, sandbox } =
+        composeWithBroker(options)
+      const { runtimeId, job } = await createAndLeaseForOrchestration(
+        controlPlane,
+        queue,
+      )
+      await supervisor.run(job)
+      const final = await controlPlane.get(runtimeId, requester)
+      expect(final).toMatchObject({
+        status: "failed",
+        errorCode: "CONFIGURATION_UNAVAILABLE",
+      })
+      expect(final.errorMessage).not.toContain(SENTINEL)
+      expect(starter.lastHandle).toBeNull()
+      // The sandbox that was allocated for install is still torn down.
+      expect(sandbox.destroyed).toEqual(sandbox.roots.map(() => runtimeId))
+    },
+  )
+
+  it("fails closed before sandbox allocation without a broker or orchestration identity", async () => {
+    const withoutBroker = compose(
+      10 * 60_000,
+      "file",
+      undefined,
+      configurablePlan,
+    )
+    const first = await createAndLeaseForOrchestration(
+      withoutBroker.controlPlane,
+      withoutBroker.queue,
+    )
+    const allocate = vi.spyOn(withoutBroker.sandbox, "allocate")
+    await withoutBroker.supervisor.run(first.job)
+    expect(
+      await withoutBroker.controlPlane.get(first.runtimeId, requester),
+    ).toMatchObject({
+      status: "failed",
+      errorCode: "CONFIGURATION_UNAVAILABLE",
+    })
+    expect(allocate).not.toHaveBeenCalled()
+
+    const withoutKey = composeWithBroker()
+    const second = await createAndLeaseForOrchestration(
+      withoutKey.controlPlane,
+      withoutKey.queue,
+    )
+    const allocateAgain = vi.spyOn(withoutKey.sandbox, "allocate")
+    await withoutKey.supervisor.run({ ...second.job, orchestrationKey: null })
+    expect(
+      await withoutKey.controlPlane.get(second.runtimeId, requester),
+    ).toMatchObject({ errorCode: "CONFIGURATION_UNAVAILABLE" })
+    expect(allocateAgain).not.toHaveBeenCalled()
+  })
+
+  it("discards unconsumed values when the runtime fails before START", async () => {
+    const { broker, controlPlane, queue, installRunner, supervisor } =
+      composeWithBroker()
+    installRunner.installError = new Error(SENTINEL)
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    await supervisor.run(job)
+    const final = await controlPlane.get(runtimeId, requester)
+    expect(final).toMatchObject({
+      status: "failed",
+      errorCode: "INSTALL_FAILED",
+    })
+    expect(JSON.stringify(final)).not.toContain(SENTINEL)
+    expect(broker.compare(previewId, requester.subject, entries)).toBe(
+      "unknown",
+    )
+  })
+
+  it("discards the values when the runtime is cancelled while queued", async () => {
+    const { broker, controlPlane, queue, starter, supervisor } =
+      composeWithBroker()
+    const { runtimeId, job } = await createAndLeaseForOrchestration(
+      controlPlane,
+      queue,
+    )
+    await controlPlane.cancel(runtimeId, requester)
+    await supervisor.run(job)
+    expect(starter.lastHandle).toBeNull()
+    expect(broker.compare(previewId, requester.subject, entries)).toBe(
+      "unknown",
+    )
+  })
+
+  it("passes no user material for a plan without user configuration", async () => {
+    const { controlPlane, queue, starter, supervisor } = compose()
+    const { runtimeId, job } = await createAndLease(controlPlane, queue)
+    const running = supervisor.run(job)
+    await vi.waitFor(async () =>
+      expect((await controlPlane.get(runtimeId, requester)).status).toBe(
+        "running",
+      ),
+    )
+    expect(starter.lastUserEnvironment).toBeNull()
+    await controlPlane.cancel(runtimeId, requester)
+    await running
   })
 })

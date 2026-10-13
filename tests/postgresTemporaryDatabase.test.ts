@@ -474,6 +474,7 @@ describeWithPostgres("PostgreSQL 18 temporary database provisioning", () => {
       },
       generatedSecretNames: [],
       databaseRequirement: { name: "DATABASE_URL" },
+      userEnvironmentNames: [],
     }
     const backendStore = new InMemoryBackendRuntimeStore()
     const backendQueue = new InMemoryBackendRuntimeQueue()
