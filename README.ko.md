@@ -188,6 +188,8 @@ npm ci
 | `npm run lint`               | ESLint 실행                       |
 | `npm run build`              | Chrome 확장 프로그램 빌드         |
 
+인증 GitHub 읽기 Gateway는 서버 전용 `PEEPHOLE_GITHUB_GATEWAY_TOKEN`을 사용합니다(scope 없는 classic PAT 필요). 기존 Preview admission 및 서버 GitHub 조회는 `PEEPHOLE_GITHUB_TOKEN`을 계속 사용하며, Gateway 전용 토큰이 없으면 기존 토큰으로 대체하지 않습니다. 서버 `PEEPHOLE_GITHUB_GATEWAY_ENABLED`와 확장 `WXT_GITHUB_GATEWAY_ENABLED`는 모두 기본 OFF입니다. 자세한 내용은 [Gateway 설정](docs/GITHUB_API_REQUEST_OPTIMIZATION.md#configuration-rollout-and-rollback)을 참고하세요.
+
 로컬 미리보기 워커는 의도적으로 샌드박스 없이 동작하므로, 이미 신뢰하는 소스만 빌드해야 합니다. 프로덕션 격리에는 Linux와 gVisor가 필요합니다. 차이점은 [Preview runtime](docs/PREVIEW_RUNTIME.md)을 참고하세요.
 
 ## 프로젝트 현황

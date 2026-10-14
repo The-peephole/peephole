@@ -90,7 +90,9 @@ Until those controls exist, reconnect is the supported and safer MVP.
 
 The Peephole session also authorizes `POST /v1/github/rest`, an optional,
 public-only read gateway that performs the extension's fixed GitHub REST
-operations with the server-owned `PEEPHOLE_GITHUB_TOKEN`. The GitHub App user
+operations with the dedicated server-owned `PEEPHOLE_GITHUB_GATEWAY_TOKEN`.
+It never substitutes the existing admission/server-read `PEEPHOLE_GITHUB_TOKEN`
+when the dedicated credential is absent. Both Gateway flags default OFF. The GitHub App user
 access token is still discarded after `GET /user`; the gateway never uses or
 stores it. A 401 from the gateway clears the session exactly like a preview
 API 401, and the extension continues with direct unauthenticated reads. See
@@ -111,12 +113,13 @@ the already-public API base URL. None may use a `WXT_` prefix except
 | `PEEPHOLE_GITHUB_OAUTH_STATE_SECRET` | Yes | HMAC key for redirect, nonce, PKCE challenge, and expiry state |
 | `PEEPHOLE_SESSION_SIGNING_SECRET` | Yes | HMAC key for short-lived Peephole access sessions |
 | `WXT_PREVIEW_API_BASE_URL` | No | Public Preview API origin compiled into the extension |
-| `PEEPHOLE_GITHUB_TOKEN` | Yes | Server-owned GitHub credential for admission; the read gateway additionally requires a scope-less classic PAT |
+| `PEEPHOLE_GITHUB_TOKEN` | Yes | Existing server-owned credential for admission and server GitHub reads |
+| `PEEPHOLE_GITHUB_GATEWAY_TOKEN` | Yes | Dedicated public-read Gateway credential; scope-less classic PAT required; no admission-token fallback |
 | `PEEPHOLE_GITHUB_GATEWAY_ENABLED` | No | `true` enables `POST /v1/github/rest`; unset answers `disabled` |
 | `WXT_GITHUB_GATEWAY_ENABLED` | No | `true` builds the extension to use the gateway when signed in |
 
 The GitHub App Client Secret, any GitHub App private key, and both signing
-secrets must live in the server secret manager. They must never be named with
+secrets, plus both server GitHub tokens, must live in the server secret manager. They must never be named with
 `WXT_`, copied into `.env` files used by extension bundling, or exposed in
 client responses.
 

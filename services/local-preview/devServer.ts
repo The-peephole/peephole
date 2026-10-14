@@ -5,6 +5,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { GitHubClient } from "../../core/github/client"
+import { createConfiguredGitHubGateway } from "../preview-api/githubGatewayConfig"
 import { KnownRepositoryFilesLoader } from "../../core/github/knownFiles"
 import { GitHubAppOAuth } from "../preview-api/githubAppOAuth"
 import { readGitHubAppOAuthConfig } from "../preview-api/githubAppOAuthConfig"
@@ -72,7 +73,11 @@ async function main(): Promise<void> {
     readGitHubAppOAuthConfig(process.env),
   )
   const apiConfig = readPreviewApiServerConfig(process.env)
+  const githubGateway = createConfiguredGitHubGateway(process.env)
   const api = await startNodePreviewApi({
+    githubGateway: githubGateway
+      ? (request) => githubGateway.handle(request)
+      : undefined,
     controlPlane: composition.controlPlane,
     config: apiConfig,
     resolveRequester: (request) => sessionAuth.resolve(request),
