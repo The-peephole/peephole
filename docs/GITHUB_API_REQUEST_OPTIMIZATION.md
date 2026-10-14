@@ -116,12 +116,14 @@ extension GitHubClient (cache, validation, cooldown -- unchanged)
                  └─ GitHubGateway
                       parse fixed operation → caller limits → credential
                       guard → public visibility → shared cache → upstream
-                        https://api.github.com, Authorization: server token
+                        https://api.github.com, Authorization: dedicated gateway token
 ```
 
-- **Credential ownership:** the server-owned `PEEPHOLE_GITHUB_TOKEN` is used
-  only inside `GitHubGateway` (and, separately, by preview admission). It is
-  never placed in a response, header, or log. The extension holds only its
+- **Credential ownership:** `GitHubGateway` uses only the server-owned
+  `PEEPHOLE_GITHUB_GATEWAY_TOKEN`. Preview admission and existing server GitHub
+  reads retain `PEEPHOLE_GITHUB_TOKEN`; a missing dedicated gateway token never
+  falls back to that credential. Neither token is sent to the extension, a
+  Preview runtime, or a response, or written to a log. The extension holds only its
   Peephole session; GitHub App user tokens are still discarded after `/user`.
 - **Operations:** exactly the extension's reads -- repository, one branch,
   the bounded branch list, contents (directory or file) at an exact 40-hex
@@ -161,7 +163,7 @@ extension GitHubClient (cache, validation, cooldown -- unchanged)
      (fail-closed, re-checked after one minute).
 
    Operators must therefore configure a **scope-less classic token** for the
-   gateway. Preview admission works with either token type.
+   gateway. Preview admission keeps its existing token and accepts either token type.
 
 ### Cache policy (server)
 
@@ -212,8 +214,14 @@ transition exposure"):
   further upstream call is made until it ends. The retry instant uses the
   client's own `getRetryAt` (`Retry-After` seconds or HTTP-date, then
   `X-RateLimit-Reset`, otherwise GitHub's one-minute minimum).
-- The last 500 primary-quota calls (from `X-RateLimit-Remaining`) are held
-  back for preview admission, which shares the server token.
+- The last 500 primary-quota calls observed through `X-RateLimit-Remaining`
+  on the dedicated gateway credential remain a conservative floor; the
+  protection is unchanged. Credential separation does not
+  guarantee separate quotas: PATs owned by the same GitHub user share that
+  user's primary limit. This floor can therefore still reduce contention with
+  admission when both tokens have the same owner; different owners have
+  independent user quotas. It is not a guaranteed reservation for admission.
+  See GitHub's [primary rate-limit documentation](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#primary-rate-limit-for-authenticated-users).
 - Upstream timeout 10 s; upstream bodies over 4 MiB are rejected.
 
 ### Failure behavior and compatibility
@@ -232,12 +240,24 @@ transition exposure"):
 | Variable | Where | Default |
 | --- | --- | --- |
 | `PEEPHOLE_GITHUB_GATEWAY_ENABLED` | server | unset (route answers `disabled`) |
-| `PEEPHOLE_GITHUB_TOKEN` | server secret | required for the gateway |
+| `PEEPHOLE_GITHUB_TOKEN` | server secret | existing admission/server GitHub reads only |
+| `PEEPHOLE_GITHUB_GATEWAY_TOKEN` | server secret | required for the gateway; no admission-token fallback |
 | `WXT_GITHUB_GATEWAY_ENABLED` | extension build | unset (direct path only) |
 
-Before enabling in production: confirm the token is a scope-less classic PAT,
+Before enabling in production: prepare a dedicated server-only
+`PEEPHOLE_GITHUB_GATEWAY_TOKEN` that is a scope-less classic PAT, leaving the
+existing admission token unchanged. Do not store real values in the repository
+or any `WXT_` variable. Then
 deploy the server with `PEEPHOLE_GITHUB_GATEWAY_ENABLED=true`, check the
 journal has no `GitHub gateway disabled` line after a first signed-in
 request, and then ship an extension built with `WXT_GITHUB_GATEWAY_ENABLED=true`.
-Rollback: unset the server variable (extensions fall back immediately) or
-ship an extension without the build flag.
+Both flags default OFF. Server configuration is read at startup, so deploying
+Gateway code or changing its flag/credential requires a service restart under
+the normal rollout procedure. Validate with an existing signed-in Peephole
+session: `x-peephole-github-gateway: 1` identifies a Gateway-produced response;
+`disabled` or direct fallback does not prove authenticated GitHub access.
+Mock tests do not establish production enablement.
+
+Rollback: unset the server gateway flag and restart the service (extensions
+then fall back), or ship an extension without the build flag. Neither path
+requires changing the admission token or M10/M11/M12 flags.

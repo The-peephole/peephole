@@ -213,6 +213,13 @@ Copy `.env.example` to `.env.local`, provide a local `PEEPHOLE_DATABASE_URL`, an
 | `npm run lint` | Run ESLint |
 | `npm run build` | Build the Chrome extension |
 
+The optional authenticated GitHub read gateway uses the server-only
+`PEEPHOLE_GITHUB_GATEWAY_TOKEN` (scope-less classic PAT). Existing Preview
+admission/server GitHub reads keep `PEEPHOLE_GITHUB_TOKEN`; there is no token
+fallback. Server `PEEPHOLE_GITHUB_GATEWAY_ENABLED` and extension
+`WXT_GITHUB_GATEWAY_ENABLED` both default OFF. See
+[Gateway configuration](docs/GITHUB_API_REQUEST_OPTIMIZATION.md#configuration-rollout-and-rollback).
+
 The local preview worker is deliberately unsandboxed and must only build source you already trust. Production isolation requires Linux and gVisor; see [Preview runtime](docs/PREVIEW_RUNTIME.md) for the distinction.
 
 ## Project status

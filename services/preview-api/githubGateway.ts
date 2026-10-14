@@ -43,7 +43,7 @@ export interface GitHubGatewayLimits {
   windowMs: number
   /** Concurrent upstream GitHub requests across all callers. */
   maxConcurrentUpstream: number
-  /** Primary-quota calls held back for preview admission. */
+  /** Conservative primary-quota floor for the gateway credential/account. */
   quotaReserve: number
 }
 
@@ -350,7 +350,8 @@ export class GitHubGateway {
       this.quota.resetAt > now &&
       this.quota.remaining <= this.limits.quotaReserve
     ) {
-      // The remaining primary quota is held for preview admission.
+      // Keep a conservative floor on the gateway credential/account quota.
+      // Separate PATs on the same GitHub account may still share this quota.
       throw new GatewayFailure(
         429,
         "GitHub API rate limit reached.",
