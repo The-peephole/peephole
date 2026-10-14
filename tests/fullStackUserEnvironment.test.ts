@@ -359,27 +359,125 @@ describe("full-stack admission of user-provided configuration", () => {
     expect(take(first.preview.id)).not.toBeNull()
   })
 
-  it("rejects a concurrent loser whose values differ from the winner's", async () => {
-    const { controlPlane, store } = compose()
-    const lookup = store.getByIdempotencyKey.bind(store)
-    let calls = 0
-    vi.spyOn(store, "getByIdempotencyKey").mockImplementation(
-      async (...args) => (calls++ < 2 ? null : lookup(...args)),
-    )
-    const results = await Promise.allSettled([
-      controlPlane.create(request(entries), idempotencyKey, requester),
-      controlPlane.create(
-        request([{ ...entries[0]!, value: "changed" }, entries[1]!]),
-        idempotencyKey,
-        requester,
-      ),
-    ])
-    expect(results[0]?.status).toBe("fulfilled")
-    expect(results[1]).toMatchObject({
-      status: "rejected",
-      reason: { code: "CONFLICT" },
-    })
-  })
+  it.each([0, 1])(
+    "rejects a concurrent loser whose values differ when request %i wins",
+    async (winnerIndex) => {
+      const { controlPlane, store, queue, broker, take } = compose()
+      const competingEntries = [
+        entries,
+        [
+          { ...entries[0]!, value: "PEEPHOLE_E2E_CONCURRENT_OTHER_VALUE_2026" },
+          entries[1]!,
+        ],
+      ]
+      const candidateIds = new Map<number, string>()
+      const bothRegistered = Promise.withResolvers<void>()
+      const winnerPersisted = Promise.withResolvers<void>()
+      const persist = store.createOrGetWithCapacity.bind(store)
+      const discard = vi.spyOn(broker!, "discard")
+      // Let both real idempotency lookups miss and both configurations register.
+      // Identify requests by retained values, not by digest completion or minted id order.
+      const admission = vi
+        .spyOn(store, "createOrGetWithCapacity")
+        .mockImplementation(async (input) => {
+          const index =
+            broker!.compare(input.preview.id, requester.subject, entries) ===
+            "same"
+              ? 0
+              : 1
+          candidateIds.set(index, input.preview.id)
+          if (candidateIds.size === 2) bothRegistered.resolve()
+          await bothRegistered.promise
+          if (index !== winnerIndex) await winnerPersisted.promise
+          const result = await persist(input)
+          if (index === winnerIndex) winnerPersisted.resolve()
+          return result
+        })
+      const results = await Promise.allSettled([
+        controlPlane.create(
+          request(competingEntries[0]),
+          idempotencyKey,
+          requester,
+        ),
+        controlPlane.create(
+          request(competingEntries[1]),
+          idempotencyKey,
+          requester,
+        ),
+      ])
+      const loserIndex = 1 - winnerIndex
+      const winnerId = candidateIds.get(winnerIndex)!
+      const loserId = candidateIds.get(loserIndex)!
+      expect(admission).toHaveBeenCalledTimes(2)
+      expect(
+        results.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1)
+      expect(
+        results.filter((result) => result.status === "rejected"),
+      ).toHaveLength(1)
+      expect(results[winnerIndex]).toMatchObject({
+        status: "fulfilled",
+        value: { created: true, preview: { id: winnerId, status: "queued" } },
+      })
+      expect(results[loserIndex]).toMatchObject({
+        status: "rejected",
+        reason: { code: "CONFLICT", status: 409 },
+      })
+      expect(discard).toHaveBeenCalledExactlyOnceWith(loserId)
+      expect(await store.get(loserId)).toBeNull()
+      expect((await store.listAll()).map((preview) => preview.id)).toEqual([
+        winnerId,
+      ])
+      expect(store.queuedPreviewIds).toEqual([winnerId])
+      expect(
+        broker!.compare(
+          winnerId,
+          requester.subject,
+          competingEntries[winnerIndex]!,
+        ),
+      ).toBe("same")
+      expect(
+        broker!.compare(
+          loserId,
+          requester.subject,
+          competingEntries[loserIndex]!,
+        ),
+      ).toBe("unknown")
+      expect(take(loserId)).toBeNull()
+
+      // An unrelated requester cannot inspect either the winning preview or its digest.
+      expect(
+        broker!.compare(
+          winnerId,
+          otherRequester.subject,
+          competingEntries[winnerIndex]!,
+        ),
+      ).toBe("unknown")
+      await expect(
+        controlPlane.get(winnerId, otherRequester),
+      ).rejects.toMatchObject({ code: "NOT_FOUND", status: 404 })
+      const exposed = inspect(
+        [
+          results,
+          await store.listAll(),
+          queue.enqueued,
+          store.queuedPreviewIds,
+        ],
+        { depth: 12 },
+      )
+      for (const submitted of competingEntries) {
+        expect(exposed).not.toContain(submitted[0]!.value)
+      }
+      const material = take(winnerId)
+      expect(material).not.toBeNull()
+      expect(
+        [...material!.values].map(([name, value]) => ({
+          name,
+          value: value.reveal(),
+        })),
+      ).toEqual(competingEntries[winnerIndex])
+    },
+  )
 
   it("discards the values on cancel and on worker failure", async () => {
     const cancelled = compose()
