@@ -74,6 +74,7 @@ import {
   attemptCombinedCleanup,
   CombinedHarnessError,
   combinedSuiteEnabled,
+  combinedResult,
   preflightCombinedHost,
   requireCombined,
   safeDiagnostic,
@@ -718,7 +719,7 @@ describe.skipIf(!combinedSuiteEnabled(process.env))(
         // Exactly this allowlisted report; never serialize a caught exception,
         // workspace/config, HTTP body, material, SQL result or process output.
         process.stdout.write(
-          `[m12-combined] ${JSON.stringify({ runtimeId, diagnostic: safeDiagnostic(diagnostic), stages, result: stages.reclamation === "FAIL" ? "BLOCKED" : failure ? "FAIL" : "PASS", failureCode: failure, resourcesPreserved: stages.reclamation === "FAIL" })}\n`,
+          `[m12-combined] ${JSON.stringify({ runtimeId, diagnostic: safeDiagnostic(diagnostic), stages, result: combinedResult(stages.preflight, stages.reclamation, failure), failureCode: failure, resourcesPreserved: stages.reclamation === "FAIL" })}\n`,
         )
       }
       if (failure) throw new CombinedHarnessError(failure)

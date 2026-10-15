@@ -5,6 +5,7 @@ import {
   attemptCombinedCleanup,
   CombinedHarnessError,
   combinedSuiteEnabled,
+  combinedResult,
   COMBINED_GATE,
   preflightCombinedHost,
   safeDiagnostic,
@@ -68,6 +69,15 @@ const logging = {
 }
 
 describe("combined integration safety (portable; no DB/runsc)", () => {
+  it("separates blocked/unexecuted evidence from a real scenario result", () => {
+    expect(combinedResult("FAIL", "NOT_RUN", "HOST_OWNERSHIP_REJECTED")).toBe(
+      "BLOCKED",
+    )
+    expect(combinedResult("PASS", "FAIL", "RECLAMATION_FAILED")).toBe("BLOCKED")
+    expect(combinedResult("NOT_RUN", "NOT_RUN", null)).toBe("NOT_RUN")
+    expect(combinedResult("PASS", "PASS", "DATABASE_QUERY_FAILED")).toBe("FAIL")
+    expect(combinedResult("PASS", "PASS", null)).toBe("PASS")
+  })
   const safeConfig =
     "shared_preload_libraries = ''\nsession_preload_libraries = ''"
   it.each([

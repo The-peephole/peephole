@@ -38,6 +38,16 @@ export const COMBINED_CODES = [
 export type CombinedCode = (typeof COMBINED_CODES)[number]
 export type StepStatus = "PASS" | "FAIL" | "NOT_RUN"
 
+export function combinedResult(
+  preflight: StepStatus,
+  reclamation: StepStatus,
+  failure: CombinedCode | null,
+): "PASS" | "FAIL" | "NOT_RUN" | "BLOCKED" {
+  if (preflight === "FAIL" || reclamation === "FAIL") return "BLOCKED"
+  if (failure) return "FAIL"
+  return preflight === "PASS" && reclamation === "PASS" ? "PASS" : "NOT_RUN"
+}
+
 /** Never carries a raw exception, cause, stack, response or command output. */
 export class CombinedHarnessError extends Error {
   readonly code: CombinedCode
