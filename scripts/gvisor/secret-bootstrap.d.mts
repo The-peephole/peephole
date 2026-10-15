@@ -8,6 +8,8 @@ export function parseUserEnvironmentMaterial(
   contents: string,
 ): Record<string, string>
 
+export function writeBootstrapDiagnostic(outcome: unknown): void
+
 export function runSecretBootstrap(options?: {
   secretFile?: string
   databaseCredentialFile?: string
@@ -15,6 +17,7 @@ export function runSecretBootstrap(options?: {
   nodeBinary?: string
   childArgs?: string[]
   baseEnvironment?: NodeJS.ProcessEnv
+  diagnostic?: (outcome: "ready" | "started") => void
   spawnChild?: (
     command: string,
     args: string[],

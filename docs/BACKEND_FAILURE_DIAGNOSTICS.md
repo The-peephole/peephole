@@ -1,5 +1,10 @@
 # Backend failure diagnostics (D1)
 
+Stage E adds correlated, pre-cleanup failure evidence without changing this
+D1 completed record or public error codes. See
+[Targeted runtime diagnostics](TARGETED_RUNTIME_DIAGNOSTICS.md) for the
+substeps, bootstrap protocol, retention limits, and blocked Canary checklist.
+
 ## Existing failure path
 
 The backend worker owns fetch, install, generated-secret/user-configuration

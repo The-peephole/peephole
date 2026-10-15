@@ -1,10 +1,27 @@
 import { spawn } from "node:child_process"
 import { Buffer } from "node:buffer"
 import { readFile } from "node:fs/promises"
+import { writeSync } from "node:fs"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
 
 const SECRET_FILE = "/run/secrets/env"
+
+// One fixed, value-free protocol. Keep ready BEFORE spawning repository code.
+// Failure to deliver diagnostics must never change execution or cleanup.
+export function writeBootstrapDiagnostic(outcome) {
+  const lines = {
+    ready: "[peephole-bootstrap-v1] ready\n",
+    failed: "[peephole-bootstrap-v1] failed\n",
+    started: "[peephole-bootstrap-v1] application-started\n",
+  }
+  if (typeof outcome !== "string" || !Object.hasOwn(lines, outcome)) return
+  try {
+    writeSync(2, lines[outcome])
+  } catch {
+    /* best-effort */
+  }
+}
 // A structurally separate fixed path from SECRET_FILE above -- never parsed
 // with the NAME=value grammar below, and DATABASE_URL is never added to
 // ALLOWED_NAMES. See docs/TEMPORARY_DATABASES.md section 15.
@@ -283,6 +300,7 @@ export async function runSecretBootstrap({
   childArgs: requestedChildArgs = process.argv.slice(2),
   baseEnvironment = process.env,
   spawnChild = spawn,
+  diagnostic = () => {},
 } = {}) {
   const requiresUserEnvironment =
     requestedChildArgs[0] === USER_ENVIRONMENT_FLAG
@@ -336,6 +354,11 @@ export async function runSecretBootstrap({
     }
   }
 
+  try {
+    diagnostic("ready")
+  } catch {
+    /* best-effort test/integration sink */
+  }
   const child = spawnChild(nodeBinary, childArgs, {
     env: {
       ...baseEnvironment,
@@ -345,6 +368,13 @@ export async function runSecretBootstrap({
     },
     shell: false,
     stdio: "inherit",
+  })
+  child.once("spawn", () => {
+    try {
+      diagnostic("started")
+    } catch {
+      /* best-effort */
+    }
   })
 
   const forwardedSignals = ["SIGTERM", "SIGINT", "SIGHUP"]
@@ -371,7 +401,9 @@ export async function runSecretBootstrap({
 
 async function main() {
   try {
-    const result = await runSecretBootstrap()
+    const result = await runSecretBootstrap({
+      diagnostic: writeBootstrapDiagnostic,
+    })
     if (result.signal) {
       process.kill(process.pid, result.signal)
       return
@@ -380,6 +412,7 @@ async function main() {
   } catch {
     // Structural only: never include parser errors, file contents, argv, or
     // child output in Peephole-owned diagnostics.
+    writeBootstrapDiagnostic("failed")
     process.stderr.write("Peephole secret bootstrap failed.\n")
     process.exitCode = 1
   }

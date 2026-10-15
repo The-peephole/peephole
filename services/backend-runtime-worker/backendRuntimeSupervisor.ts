@@ -21,7 +21,10 @@ import type { BackendRuntimeControlPlane } from "../backend-runtime-api/controlP
 import type {
   BackendFailureStage,
   BackendCleanupFailureCode,
+  RuntimeFailureDetail,
+  BackendRuntimeFailureEvidence,
 } from "../backend-runtime-api/diagnostics"
+import { runtimeFailureDetail } from "../backend-runtime-api/diagnostics"
 import { minimalNpmEnv } from "../preview-worker/local/npmDependencyInstaller"
 import type { ArchiveByteStore } from "../preview-worker/local/archiveByteStore"
 import { asLocalWorkspace } from "../preview-worker/local/localWorkspace"
@@ -67,10 +70,13 @@ export interface BackendRuntimeSupervisorOptions {
 }
 
 export interface TemporaryDatabaseLifecycleProvisioner {
-  provision(input: {
-    previewId: string
-    backendRuntimeId: string
-  }): Promise<TemporaryDatabaseCredentialMaterial>
+  provision(
+    input: {
+      previewId: string
+      backendRuntimeId: string
+    },
+    onOwnershipCreated?: (resourceId: TemporaryDatabaseResourceId) => void,
+  ): Promise<TemporaryDatabaseCredentialMaterial>
   revoke(resourceId: TemporaryDatabaseResourceId): Promise<void>
 }
 
@@ -154,6 +160,63 @@ export class BackendRuntimeSupervisor {
     let stage: BackendFailureStage = "PLAN_VALIDATION"
     let failureStage: BackendFailureStage | null = null
     let primaryFailureCode: BackendRuntimeErrorCode | null = null
+    let evidenceResourceId: TemporaryDatabaseResourceId | null = null
+    let detail: RuntimeFailureDetail = {
+      failureStep: "UNCLASSIFIED",
+      exitCode: null,
+      startupCleanupFailed: false,
+    }
+    const evidenceStartedAt = performance.now()
+    let primaryEvidenceSent = false
+    let firstEvidence:
+      | Pick<
+          BackendRuntimeFailureEvidence,
+          | "failureStage"
+          | "primaryFailureCode"
+          | "failureStep"
+          | "exitCode"
+          | "startupCleanupFailed"
+        >
+      | undefined
+    const emitEvidence = (
+      kind: "primary_failure" | "cleanup_complete",
+      cleanupFailureCode: BackendCleanupFailureCode | null,
+      observed?: NonNullable<typeof firstEvidence>,
+    ) => {
+      if (kind === "primary_failure") {
+        if (primaryEvidenceSent) return
+        primaryEvidenceSent = true
+        firstEvidence = observed ?? {
+          failureStage,
+          primaryFailureCode,
+          ...detail,
+        }
+      }
+      this.controlPlane.emitWorkerFailureEvidence({
+        kind,
+        runtimeId: queued.runtimeId,
+        parentId: queued.orchestrationKey ?? null,
+        resourceId: evidenceResourceId,
+        elapsedMs: Math.max(
+          0,
+          Math.floor(performance.now() - evidenceStartedAt),
+        ),
+        failureStage:
+          firstEvidence?.failureStage ??
+          failureStage ??
+          (cleanupFailureCode !== null && cleanupFailureCode !== "NONE"
+            ? "CLEANUP"
+            : null),
+        primaryFailureCode:
+          firstEvidence?.primaryFailureCode ?? primaryFailureCode,
+        cleanupFailureCode,
+        ...detail,
+        ...(firstEvidence ?? {}),
+        startupCleanupFailed:
+          detail.startupCleanupFailed ||
+          (firstEvidence?.startupCleanupFailed ?? false),
+      })
+    }
     let lifecycleStopRequested = false
     const controller = new AbortController()
     const signal = options.signal
@@ -226,12 +289,32 @@ export class BackendRuntimeSupervisor {
         signal,
         (resourceId) => {
           databaseResourceId = resourceId
+          evidenceResourceId = resourceId
         },
         (handle) => {
           processHandle = handle
         },
         (next) => {
           stage = next
+        },
+        (resourceId) => {
+          evidenceResourceId = resourceId
+        },
+        (observed, code) => {
+          emitEvidence("primary_failure", null, {
+            ...observed,
+            failureStage:
+              code === "RUNTIME_EXITED"
+                ? "RUNTIME_MONITOR"
+                : [
+                      "MATERIAL_FILESYSTEM",
+                      "NAMESPACE_NETWORK",
+                      "OCI_PREPARATION",
+                    ].includes(observed.failureStep)
+                  ? "RUNTIME_START"
+                  : "READINESS",
+            primaryFailureCode: code,
+          })
         },
       )
       signal.throwIfAborted()
@@ -262,9 +345,13 @@ export class BackendRuntimeSupervisor {
             ? "CONTROL_PLANE"
             : stage
         primaryFailureCode = phaseErrorCode(error)
+        if (error instanceof RuntimePhaseError && error.detail)
+          detail = error.detail
         runFailure = signal.aborted
           ? "RUNTIME_UNAVAILABLE"
           : phaseErrorCode(error)
+        // Synchronous, value-free sink call BEFORE the first teardown action.
+        emitEvidence("primary_failure", null)
       }
     } finally {
       // Unregister first, synchronously, with no `await` before it -- the
@@ -318,6 +405,15 @@ export class BackendRuntimeSupervisor {
       if (cleanupErrors.length > 0 && !runFailure) {
         runFailure = "RUNTIME_UNAVAILABLE"
       }
+      if (firstEvidence || primaryFailureCode || cleanupErrors.length) {
+        if (!primaryFailureCode) detail.failureStep = "CLEANUP"
+        emitEvidence(
+          "cleanup_complete",
+          cleanupErrors.length > 1
+            ? "MULTIPLE_CLEANUP_FAILURES"
+            : (cleanupErrors[0] ?? "NONE"),
+        )
+      }
       await this.controlPlane
         .recordWorkerDiagnostics(queued.runtimeId, {
           failureStage:
@@ -345,6 +441,10 @@ export class BackendRuntimeSupervisor {
     onDatabaseProvisioned: (resourceId: TemporaryDatabaseResourceId) => void,
     onProcessStarted: (handle: RuntimeProcessHandle) => void,
     setStage: (stage: BackendFailureStage) => void,
+    onOwnershipCreated: (resourceId: TemporaryDatabaseResourceId) => void,
+    onProcessFailure: NonNullable<
+      Parameters<BackendRuntimeProcessStarter["start"]>[5]
+    >,
   ): Promise<RuntimeProcessHandle> {
     const runtimeId = queued.runtimeId
     signal.throwIfAborted()
@@ -389,6 +489,7 @@ export class BackendRuntimeSupervisor {
       queued,
       plan,
       onDatabaseProvisioned,
+      onOwnershipCreated,
     )
     setStage("CONTROL_PLANE")
     await this.assertWorkerExecutionActive(runtimeId)
@@ -401,6 +502,7 @@ export class BackendRuntimeSupervisor {
         secrets,
         databaseCredential,
         userEnvironment,
+        onProcessFailure,
       ),
     )
     // Publish cleanup ownership synchronously, before readiness or any later
@@ -416,6 +518,7 @@ export class BackendRuntimeSupervisor {
         error instanceof BackendRuntimeReadinessTimeoutError
           ? "RUNTIME_READINESS_TIMEOUT"
           : "RUNTIME_START_FAILED",
+        runtimeFailureDetail(error),
       )
     }
 
@@ -462,22 +565,40 @@ export class BackendRuntimeSupervisor {
     queued: QueuedBackendRuntime,
     plan: ReturnType<typeof validateBackendRuntimePlan>,
     onProvisioned: (resourceId: TemporaryDatabaseResourceId) => void,
+    onOwnershipCreated: (resourceId: TemporaryDatabaseResourceId) => void,
   ): Promise<TemporaryDatabaseRuntimeCredentialMaterial | null> {
     if (plan.databaseRequirement === null) return null
     if (!queued.orchestrationKey) throw databaseUnavailableError()
     const provisioner = this.options.temporaryDatabaseProvisioner
     if (!provisioner) throw databaseUnavailableError()
 
-    const material = await runPhase("DATABASE_UNAVAILABLE", () =>
-      provisioner.provision({
-        previewId: queued.orchestrationKey as string,
-        backendRuntimeId: queued.runtimeId,
-      }),
+    const material = await runPhase(
+      "DATABASE_UNAVAILABLE",
+      () =>
+        provisioner.provision(
+          {
+            previewId: queued.orchestrationKey as string,
+            backendRuntimeId: queued.runtimeId,
+          },
+          onOwnershipCreated,
+        ),
+      {
+        failureStep: "TENANT_DATABASE_PROVISIONING",
+        exitCode: null,
+        startupCleanupFailed: false,
+      },
     )
     onProvisioned(material.resourceId)
-    const databaseUrl = runPhaseSync("DATABASE_UNAVAILABLE", () =>
-      buildTemporaryDatabaseUrl(material),
-    )
+    let databaseUrl
+    try {
+      databaseUrl = buildTemporaryDatabaseUrl(material)
+    } catch {
+      throw new RuntimePhaseError("DATABASE_UNAVAILABLE", {
+        failureStep: "DATABASE_CREDENTIAL_ASSEMBLY",
+        exitCode: null,
+        startupCleanupFailed: false,
+      })
+    }
     return Object.freeze({
       runtimeId: queued.runtimeId,
       resourceId: material.resourceId,
@@ -649,7 +770,13 @@ export class BackendRuntimeSupervisor {
       if (signal.aborted) return
       setStage("RUNTIME_MONITOR")
       if (exited) {
-        throw new RuntimePhaseError("RUNTIME_EXITED")
+        let observed: RuntimeFailureDetail | undefined
+        try {
+          observed = handle.failureDetail?.()
+        } catch {
+          /* diagnostics only */
+        }
+        throw new RuntimePhaseError("RUNTIME_EXITED", observed)
       }
       setStage("CONTROL_PLANE")
       if (!(await this.controlPlane.shouldContinueRunning(runtimeId))) return
@@ -737,7 +864,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 class RuntimePhaseError extends Error {
-  constructor(readonly code: BackendRuntimeErrorCode) {
+  constructor(
+    readonly code: BackendRuntimeErrorCode,
+    readonly detail?: RuntimeFailureDetail,
+  ) {
     super("Backend runtime supervisor phase failed.")
     this.name = "RuntimePhaseError"
   }
@@ -753,12 +883,14 @@ class RuntimeLifecycleStopError extends Error {
 async function runPhase<T>(
   code: BackendRuntimeErrorCode,
   action: () => Promise<T>,
+  fallbackDetail?: RuntimeFailureDetail,
 ): Promise<T> {
   try {
     return await action()
   } catch (error) {
     throw new RuntimePhaseError(
       error instanceof RunnerDiskLimitError ? "RUNTIME_DISK_LIMIT" : code,
+      runtimeFailureDetail(error) ?? fallbackDetail,
     )
   }
 }

@@ -193,6 +193,12 @@ async function main(): Promise<void> {
     new InMemoryBackendRuntimeStore(),
     backendQueue,
     {
+      onFailureEvidence: (event) => {
+        console.info(
+          "[peephole] backend runtime failure evidence",
+          JSON.stringify(event),
+        )
+      },
       onDiagnostics: (event) => {
         if (event.primaryFailureCode || event.cleanupFailureCode !== "NONE") {
           console.info(

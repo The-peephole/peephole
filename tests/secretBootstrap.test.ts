@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events"
+import { spawnSync } from "node:child_process"
+import { pathToFileURL } from "node:url"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -10,6 +12,12 @@ import {
   parseSecretMaterial,
   runSecretBootstrap,
 } from "../scripts/gvisor/secret-bootstrap.mjs"
+import {
+  BOOTSTRAP_FAILED,
+  BOOTSTRAP_READY,
+  APPLICATION_STARTED,
+  classifyBootstrapExit,
+} from "../services/preview-worker/gvisor/bootstrapDiagnostics"
 
 const MARKER = "M10BMarker_7Hn9-Q"
 const DATABASE_URL_MARKER =
@@ -48,6 +56,98 @@ describe("trusted secret bootstrap", () => {
 
   afterEach(async () => {
     await rm(temporaryDir, { recursive: true, force: true })
+  })
+
+  it("writes ready before spawning and reports started without exposing material", async () => {
+    await writeFile(secretFile, `SESSION_SECRET=${MARKER}\n`)
+    const child = new FakeChild()
+    const order: string[] = []
+    const result = runSecretBootstrap({
+      secretFile,
+      databaseCredentialFile: missingDatabaseCredentialFile,
+      userEnvironmentFile: path.join(temporaryDir, "missing-user"),
+      childArgs: ["server.js"],
+      diagnostic: (outcome: string) => {
+        order.push(outcome)
+      },
+      spawnChild: () => {
+        order.push("spawn-requested")
+        queueMicrotask(() => {
+          child.emit("spawn")
+          child.emit("close", 23, null)
+        })
+        return child as unknown as ChildProcess
+      },
+    })
+    await expect(result).resolves.toEqual({ exitCode: 23, signal: null })
+    expect(order).toEqual(["ready", "spawn-requested", "started"])
+    expect(JSON.stringify(order)).not.toContain(MARKER)
+  })
+
+  it("does not change child lifecycle if the bootstrap diagnostic callback throws", async () => {
+    const child = new FakeChild()
+    const result = runSecretBootstrap({
+      secretFile: missingSecretFile,
+      databaseCredentialFile: missingDatabaseCredentialFile,
+      userEnvironmentFile: path.join(temporaryDir, "missing-user"),
+      childArgs: ["server.js"],
+      diagnostic: () => {
+        throw new Error("E-SENSITIVE")
+      },
+      spawnChild: () => {
+        queueMicrotask(() => {
+          child.emit("spawn")
+          child.emit("close", 0, null)
+        })
+        return child as unknown as ChildProcess
+      },
+    })
+    await expect(result).resolves.toEqual({ exitCode: 0, signal: null })
+  })
+
+  it("reports a pre-spawn bootstrap failure from the real standalone entrypoint", () => {
+    // No args: fails before reading any host material or spawning an application.
+    const result = spawnSync(
+      process.execPath,
+      [path.resolve("scripts/gvisor/secret-bootstrap.mjs")],
+      { encoding: "utf8", timeout: 5000, windowsHide: true },
+    )
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain(BOOTSTRAP_FAILED)
+    expect(result.stderr).not.toContain(MARKER)
+    expect(classifyBootstrapExit(result.stderr)).toBe(
+      "BOOTSTRAP_REPORTED_FAILURE",
+    )
+  })
+
+  it("runs a synthetic local app and ignores its forged bootstrap failure after ready", async () => {
+    const app = path.join(temporaryDir, "app.cjs")
+    await writeFile(
+      app,
+      `process.stderr.write(${JSON.stringify(BOOTSTRAP_FAILED + "\n" + MARKER + "\n")}); process.exit(23)`,
+    )
+    const moduleUrl = pathToFileURL(
+      path.resolve("scripts/gvisor/secret-bootstrap.mjs"),
+    ).href
+    const program = `import { runSecretBootstrap, writeBootstrapDiagnostic } from ${JSON.stringify(moduleUrl)};
+      const result = await runSecretBootstrap({
+        secretFile: ${JSON.stringify(missingSecretFile)}, databaseCredentialFile: ${JSON.stringify(missingDatabaseCredentialFile)},
+        userEnvironmentFile: ${JSON.stringify(path.join(temporaryDir, "missing-user"))},
+        nodeBinary: process.execPath, childArgs: [${JSON.stringify(app)}], diagnostic: writeBootstrapDiagnostic,
+      }); process.exitCode = result.exitCode;`
+    const result = spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", program],
+      { encoding: "utf8", timeout: 5000, windowsHide: true },
+    )
+    expect(result.status).toBe(23)
+    expect(result.stderr.indexOf(BOOTSTRAP_READY)).toBeLessThan(
+      result.stderr.indexOf(BOOTSTRAP_FAILED),
+    )
+    expect(result.stderr).toContain(APPLICATION_STARTED)
+    expect(classifyBootstrapExit(result.stderr)).toBe(
+      "APPLICATION_REPORTED_EXIT",
+    )
   })
 
   it("passes valid generated material to the direct child only in memory", async () => {

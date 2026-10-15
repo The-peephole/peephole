@@ -15,6 +15,8 @@ import { BackendRuntimeControlError } from "./errors"
 import {
   BACKEND_FAILURE_STAGES,
   BACKEND_CLEANUP_FAILURE_CODES,
+  BACKEND_FAILURE_STEPS,
+  type BackendRuntimeFailureEvidence,
   type BackendRuntimeDiagnostics,
   type BackendRuntimeDiagnosticEvent,
 } from "./diagnostics"
@@ -75,6 +77,10 @@ export interface BackendRuntimeControlPlaneOptions {
   createId?: () => string
   /** Best-effort internal sink. Receives only a fresh, allowlisted record. */
   onDiagnostics?: (event: BackendRuntimeDiagnosticEvent) => void
+  /** Called synchronously before teardown; promises are never awaited. */
+  onFailureEvidence?: (
+    event: BackendRuntimeFailureEvidence,
+  ) => void | Promise<void>
 }
 
 export interface CreateBackendRuntimeResult {
@@ -393,6 +399,71 @@ export class BackendRuntimeControlPlane {
           }
         : runtime,
     )
+  }
+
+  /** Evidence goes directly to the sink, without awaiting a store or teardown.
+   * No durability is promised. Failures must never block lifecycle cleanup. */
+  emitWorkerFailureEvidence(input: BackendRuntimeFailureEvidence): void {
+    try {
+      const {
+        kind,
+        runtimeId,
+        parentId,
+        resourceId,
+        elapsedMs,
+        failureStage,
+        primaryFailureCode,
+        cleanupFailureCode,
+        failureStep,
+        exitCode,
+        startupCleanupFailed,
+      } = input
+      if (
+        !["primary_failure", "cleanup_complete"].includes(kind) ||
+        typeof runtimeId !== "string" ||
+        !/^[a-f0-9-]{36}$/.test(runtimeId) ||
+        (parentId !== null &&
+          (typeof parentId !== "string" ||
+            !/^fullstack-[a-f0-9-]{36}$/.test(parentId))) ||
+        (resourceId !== null &&
+          (typeof resourceId !== "string" ||
+            !/^r[a-f0-9]{28}$/.test(resourceId))) ||
+        !Number.isSafeInteger(elapsedMs) ||
+        elapsedMs < 0 ||
+        (failureStage !== null &&
+          !BACKEND_FAILURE_STAGES.includes(failureStage)) ||
+        (primaryFailureCode !== null &&
+          (typeof primaryFailureCode !== "string" ||
+            !Object.hasOwn(SAFE_ERROR_MESSAGES, primaryFailureCode))) ||
+        (kind === "primary_failure" &&
+          (primaryFailureCode === null || cleanupFailureCode !== null)) ||
+        (kind === "cleanup_complete" &&
+          (cleanupFailureCode === null ||
+            !BACKEND_CLEANUP_FAILURE_CODES.includes(cleanupFailureCode))) ||
+        !BACKEND_FAILURE_STEPS.includes(failureStep) ||
+        (exitCode !== null &&
+          (!Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255)) ||
+        typeof startupCleanupFailed !== "boolean"
+      )
+        return
+      const result = this.options.onFailureEvidence?.({
+        kind,
+        runtimeId,
+        parentId,
+        resourceId,
+        elapsedMs,
+        failureStage,
+        primaryFailureCode,
+        cleanupFailureCode,
+        failureStep,
+        exitCode,
+        startupCleanupFailed,
+      })
+      // Async sink rejection/hang also cannot delay teardown or become unhandled.
+      if (result) void Promise.resolve(result).catch(() => undefined)
+    } catch {
+      // Includes invalid/getter-bearing input and synchronous sink failure.
+    }
   }
 
   /** Does not change lifecycle/ownership, including cancelled/expired rows.

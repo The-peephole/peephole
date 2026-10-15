@@ -89,6 +89,7 @@ export class TemporaryDatabaseProvisioner {
 
   async provision(
     input: ProvisionTemporaryDatabaseInput,
+    onOwnershipCreated?: (resourceId: TemporaryDatabaseResourceId) => void,
   ): Promise<TemporaryDatabaseCredentialMaterial> {
     const resourceId = this.createResourceId()
     const objectName = deriveTemporaryDatabaseObjectName(resourceId)
@@ -100,6 +101,12 @@ export class TemporaryDatabaseProvisioner {
         backendRuntimeId: input.backendRuntimeId,
         now: this.now(),
       })
+      // Diagnostic correlation only: NEVER grants worker revoke ownership.
+      try {
+        onOwnershipCreated?.(resourceId)
+      } catch {
+        /* best-effort */
+      }
 
       const password = this.generatePassword()
       await this.dependencies.tenantAdmin.withSession(async (session) => {
