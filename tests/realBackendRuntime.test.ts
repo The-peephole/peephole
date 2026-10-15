@@ -1,3 +1,4 @@
+import { safeRealTest, SafeRealTestError } from "./support/safeRealTest"
 import { createHash } from "node:crypto"
 import {
   lstat,
@@ -52,6 +53,12 @@ import {
   removeDedicatedTestRootIfReconciled,
   scanRunscStateForRawValue,
 } from "./support/realRunscStateInspection"
+
+const test = (
+  name: string,
+  body: Parameters<typeof safeRealTest>[0],
+  timeout: number,
+) => it(name, safeRealTest(body), timeout)
 
 const FIXTURE_COMMIT = "eae411a288b212201933cebb206126dd5bb0d93e"
 const RUNSC_ROOT_DIR = "/var/run/peephole/runsc"
@@ -121,47 +128,47 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
     const ownedRoots = new Set<string>()
     const environments = new Map<string, RealBackendEnvironment>()
 
-    afterEach(async () => {
-      for (const root of ownedRoots) {
-        const environment = environments.get(root)
-        const clean = environment
-          ? await environmentIsClean(environment).catch(() => false)
-          : true
-        if (!clean) {
-          process.stderr.write(
-            `Real backend fixture cleanup is incomplete; preserving test-owned root for marker-driven reconciliation: ${root}\n`,
-          )
-          continue
-        }
-        if (environment?.dedicatedRunscRoot) {
-          // A plain recursive rm can hit EBUSY on a genuine runsc-created
-          // kernel namespace mount (e.g. null-netns) still living under
-          // this dedicated, test-owned runsc root. Reconcile it first --
-          // and never force-remove the root if that reconciliation cannot
-          // prove the mount is gone (see
-          // tests/support/realRunscStateInspection.ts's
-          // `removeDedicatedTestRootIfReconciled`, unit-tested there in
-          // isolation since this describe block itself only runs on a real
-          // gVisor host).
-          const outcome = await removeDedicatedTestRootIfReconciled(
-            root,
-            environment.runscRootDir,
-          ).catch((): { removed: false; reason: string } => ({
-            removed: false,
-            reason: "Reconciliation threw unexpectedly.",
-          }))
-          if (!outcome.removed) {
-            process.stderr.write(
-              `Real backend fixture cleanup is incomplete; preserving test-owned root because its dedicated runsc state could not be reconciled (${outcome.reason}): ${root}\n`,
-            )
+    afterEach(
+      safeRealTest(async (cleanup) => {
+        let incomplete = false
+        for (const root of ownedRoots) {
+          const environment = environments.get(root)
+          const clean = environment
+            ? await environmentIsClean(environment).catch(() => false)
+            : true
+          if (!clean) {
+            incomplete = true
+            continue
           }
-          continue
+          if (environment?.dedicatedRunscRoot) {
+            // A plain recursive rm can hit EBUSY on a genuine runsc-created
+            // kernel namespace mount (e.g. null-netns) still living under
+            // this dedicated, test-owned runsc root. Reconcile it first --
+            // and never force-remove the root if that reconciliation cannot
+            // prove the mount is gone (see
+            // tests/support/realRunscStateInspection.ts's
+            // `removeDedicatedTestRootIfReconciled`, unit-tested there in
+            // isolation since this describe block itself only runs on a real
+            // gVisor host).
+            const outcome = await removeDedicatedTestRootIfReconciled(
+              root,
+              environment.runscRootDir,
+            ).catch((): { removed: false; reason: string } => ({
+              removed: false,
+              reason: "Reconciliation threw unexpectedly.",
+            }))
+            if (!outcome.removed) {
+              incomplete = true
+            }
+            continue
+          }
+          await cleanup(() => rm(root, { recursive: true, force: true }))
         }
-        await rm(root, { recursive: true, force: true })
-      }
-      ownedRoots.clear()
-      environments.clear()
-    })
+        ownedRoots.clear()
+        environments.clear()
+        if (incomplete) throw new SafeRealTestError("REAL_CLEANUP_FAILED")
+      }),
+    )
 
     async function createEnvironment(
       prefix: string,
@@ -255,7 +262,7 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
       return { ...environment, secretTestRoot }
     }
 
-    it("runs the pinned Express fixture with host ingress, denied egress, and complete idempotent cleanup", async () => {
+    test("runs the pinned Express fixture with host ingress, denied egress, and complete idempotent cleanup", async (cleanup) => {
       const environment = await createEnvironment(
         "peephole-real-backend-runtime-",
       )
@@ -495,17 +502,17 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
           `[real-backend-v1] ${JSON.stringify({ fixtureCommit: FIXTURE_COMMIT, readiness: "ready", health: health.body, hello: hello.body, outbound: probe.attempts, noDefaultRoute: true, noRuntimeNat: true, repeatedStop: "passed", runscCleanup: "passed", networkCleanup: "passed", diskCleanup: "passed" })}\n`,
         )
       } finally {
-        if (controlPlaneServer) await close(controlPlaneServer)
+        if (controlPlaneServer) await cleanup(() => close(controlPlaneServer!))
         for (const handle of handles.reverse()) {
-          await handle.stop().catch(() => undefined)
+          await cleanup(() => handle.stop())
         }
         for (const workspace of workspaces.reverse()) {
-          await workspace.destroy().catch(() => undefined)
+          await cleanup(() => workspace.destroy())
         }
       }
     }, 180_000)
 
-    it("reaps an abandoned live backend container, network, and disk after worker-style ownership loss", async () => {
+    test("reaps an abandoned live backend container, network, and disk after worker-style ownership loss", async () => {
       const environment = await createEnvironment(
         "peephole-real-backend-orphan-",
         { staleNetworkOwner: true },
@@ -599,7 +606,7 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
       void handle
     }, 90_000)
 
-    it("injects real generated secret material through the trusted bootstrap, keeps it out of persisted OCI/argv/runsc state, forwards SIGTERM through PID 1, and cleans tmpfs after stop", async () => {
+    test("injects real generated secret material through the trusted bootstrap, keeps it out of persisted OCI/argv/runsc state, forwards SIGTERM through PID 1, and cleans tmpfs after stop", async (cleanup) => {
       const runtimeId = "real-backend-secret"
       const environment = await createEnvironmentWithSecrets(
         "peephole-real-backend-secret-",
@@ -653,7 +660,7 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
         const body = check.body as { configured?: boolean; sha256?: unknown }
         expect(check.statusCode).toBe(200)
         expect(body.configured).toBe(true)
-        expect(body.sha256).toBe(expectedSha256)
+        expect(Object.is(body.sha256, expectedSha256)).toBe(true)
 
         // --- 6. Inspect OCI config.json structurally. ---
         const bundleDir = workspace.bundleDir
@@ -793,17 +800,21 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
           })}\n`,
         )
       } finally {
+        let clean = true
         for (const handle of handles.reverse()) {
-          await handle.stop().catch(() => undefined)
+          clean = (await cleanup(() => handle.stop())) && clean
         }
         for (const workspace of workspaces.reverse()) {
-          await workspace.destroy().catch(() => undefined)
+          clean = (await cleanup(() => workspace.destroy())) && clean
         }
-        await rm(secretTestRoot, { recursive: true, force: true })
+        if (clean)
+          await cleanup(() =>
+            rm(secretTestRoot, { recursive: true, force: true }),
+          )
       }
     }, 120_000)
 
-    it("boundedly reaps only a stale test-owned generated-secret directory from the real tmpfs root", async () => {
+    test("boundedly reaps only a stale test-owned generated-secret directory from the real tmpfs root", async (cleanup) => {
       const secretTestRoot = await createRealGeneratedSecretTestRoot()
       try {
         const filesystem = new TmpfsGeneratedSecretFilesystem({
@@ -852,7 +863,9 @@ describe.skipIf(process.env.PEEPHOLE_REAL_GVISOR_TESTS !== "1")(
           })}\n`,
         )
       } finally {
-        await rm(secretTestRoot, { recursive: true, force: true })
+        await cleanup(() =>
+          rm(secretTestRoot, { recursive: true, force: true }),
+        )
       }
     }, 30_000)
   },

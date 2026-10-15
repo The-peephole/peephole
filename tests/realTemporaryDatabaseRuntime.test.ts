@@ -1,3 +1,9 @@
+import {
+  safeRealTest,
+  realTestFailure,
+  SafeRealTestError,
+} from "./support/safeRealTest"
+import { Pool } from "pg"
 import { TestOwnershipStore } from "./support/temporaryDatabaseTestOwnership"
 import { createHash, randomUUID } from "node:crypto"
 import {
@@ -77,6 +83,12 @@ import {
   removeDedicatedTestRootIfReconciled,
   scanRunscStateForRawValue,
 } from "./support/realRunscStateInspection"
+
+const test = (
+  name: string,
+  body: Parameters<typeof safeRealTest>[0],
+  timeout: number,
+) => it(name, safeRealTest(body), timeout)
 
 const REAL_GVISOR_GATE = "PEEPHOLE_REAL_GVISOR_TESTS"
 const M11_DATABASE_GATE = "PEEPHOLE_M11_REAL_GVISOR_DATABASE_TESTS"
@@ -181,17 +193,20 @@ describe("M11 real-gVisor database safety gates", () => {
 describe.skipIf(!realDatabaseSuiteEnabled(process.env))(
   "M11 temporary database runtime (real Linux + runsc + PostgreSQL 18 required)",
   () => {
-    it("proves the integrated database lifecycle, exact network exception, credential isolation, and zero residue", async () => {
+    test("proves the integrated database lifecycle, exact network exception, credential isolation, and zero residue", async () => {
       const config = readRequiredConfiguration(process.env)
       const processRunner = new NodeProcessRunner()
       await assertHostPrerequisites(processRunner, config.baseRootfsImage)
 
-      const tenantAdmin = new PostgresTenantAdmin({
-        connectionString: config.postgresUrl,
-        max: 2,
+      const poolConfig = { connectionString: config.postgresUrl, max: 2 }
+      const pool = new Pool(poolConfig)
+      let poolFailed = false
+      pool.on("error", () => {
+        poolFailed = true
       })
-      const cleanupErrors: unknown[] = []
-      let scenarioError: unknown
+      const tenantAdmin = new PostgresTenantAdmin(poolConfig, pool)
+      const cleanupErrors: boolean[] = []
+      let scenarioFailed = false
       let environment: RealDatabaseEnvironment | undefined
       let otherWorkspace: GVisorPreviewWorkspace | undefined
       let otherHandle: RuntimeProcessHandle | undefined
@@ -329,7 +344,9 @@ describe.skipIf(!realDatabaseSuiteEnabled(process.env))(
           runtimeId,
           orchestrationKey: previewId,
         } satisfies Partial<QueuedBackendRuntime>)
-        supervisorRun = supervisor.run(leased!.job)
+        supervisorRun = supervisor.run(leased!.job).catch(() => {
+          scenarioFailed = true
+        })
 
         await expect
           .poll(
@@ -392,7 +409,7 @@ describe.skipIf(!realDatabaseSuiteEnabled(process.env))(
         const proof = proofResponse.body as ChildProof
         expect(proofResponse.statusCode).toBe(200)
         expect(proof.configured).toBe(true)
-        expect(proof.sha256).toBe(expectedDigest)
+        expect(Object.is(proof.sha256, expectedDigest)).toBe(true)
         expect(proof.attempts.database?.connected).toBe(true)
         for (const name of [
           "sameHostClosedPort",
@@ -603,38 +620,37 @@ describe.skipIf(!realDatabaseSuiteEnabled(process.env))(
           ipv6: false,
         })
       } catch (error) {
-        scenarioError = error
+        scenarioFailed = true
+        if (
+          error instanceof SafeRealTestError &&
+          error.code !== "REAL_SCENARIO_FAILED"
+        )
+          cleanupErrors.push(true)
       } finally {
         if (hostControlPlane) {
-          await close(hostControlPlane).catch((error) =>
-            cleanupErrors.push(error),
-          )
+          await close(hostControlPlane).catch(() => cleanupErrors.push(true))
         }
         if (supervisorRun && controlPlane && runtimeId && requesterSubject) {
           await controlPlane
             .cancelForOrchestration(runtimeId, requesterSubject)
-            .catch((error) => cleanupErrors.push(error))
-          await supervisorRun.catch((error) => cleanupErrors.push(error))
+            .catch(() => cleanupErrors.push(true))
+          await supervisorRun.catch(() => cleanupErrors.push(true))
         }
         if (otherHandle) {
-          await otherHandle.stop().catch((error) => cleanupErrors.push(error))
+          await otherHandle.stop().catch(() => cleanupErrors.push(true))
         }
         if (otherWorkspace) {
-          await otherWorkspace
-            .destroy()
-            .catch((error) => cleanupErrors.push(error))
+          await otherWorkspace.destroy().catch(() => cleanupErrors.push(true))
         }
         if (primaryWorkspace) {
-          await primaryWorkspace
-            .destroy()
-            .catch((error) => cleanupErrors.push(error))
+          await primaryWorkspace.destroy().catch(() => cleanupErrors.push(true))
         }
 
         if (resourceId && ownershipStore && physicalCleaner) {
           const record = await ownershipStore
             .getByResourceId(resourceId)
-            .catch((error) => {
-              cleanupErrors.push(error)
+            .catch(() => {
+              cleanupErrors.push(true)
               return null
             })
           if (record && record.status !== "revoked") {
@@ -643,24 +659,20 @@ describe.skipIf(!realDatabaseSuiteEnabled(process.env))(
             )
             const presence = await catalog
               .inspectResource(resourceId)
-              .catch((error) => {
-                cleanupErrors.push(error)
+              .catch(() => {
+                cleanupErrors.push(true)
                 return null
               })
             if (presence?.database && presence.role) {
               await physicalCleaner
                 .cleanupFull(resourceId)
-                .catch((error) => cleanupErrors.push(error))
+                .catch(() => cleanupErrors.push(true))
             } else if (presence && !presence.database && presence.role) {
               await physicalCleaner
                 .cleanupRoleOnly(resourceId)
-                .catch((error) => cleanupErrors.push(error))
+                .catch(() => cleanupErrors.push(true))
             } else if (presence?.database && !presence.role) {
-              cleanupErrors.push(
-                new Error(
-                  `M11 test resource ${resourceId} has a database without its owned role; exact cleanup was refused.`,
-                ),
-              )
+              cleanupErrors.push(true)
             }
           }
         }
@@ -669,84 +681,56 @@ describe.skipIf(!realDatabaseSuiteEnabled(process.env))(
           const credentialIds = await listOwnedDatabaseCredentialRuntimeIds(
             environment.credentialRoot,
             100,
-          ).catch((error): null => {
-            cleanupErrors.push(error)
+          ).catch((): null => {
+            cleanupErrors.push(true)
             return null
           })
           if (credentialIds === null) {
-            cleanupErrors.push(
-              new Error(
-                `M11 test credential root was preserved because exact inspection failed: ${environment.credentialRoot}`,
-              ),
-            )
+            cleanupErrors.push(true)
           } else if (credentialIds.length > 0) {
-            cleanupErrors.push(
-              new Error(
-                `M11 test credential root was preserved because ${String(credentialIds.length)} owned runtime entries remain: ${environment.credentialRoot}`,
-              ),
-            )
+            cleanupErrors.push(true)
           } else {
             const remainingEntries = await readdir(
               environment.credentialRoot,
-            ).catch((error): null => {
-              cleanupErrors.push(error)
+            ).catch((): null => {
+              cleanupErrors.push(true)
               return null
             })
             if (remainingEntries === null || remainingEntries.length > 0) {
-              cleanupErrors.push(
-                new Error(
-                  `M11 test credential root was preserved because it is not provably empty: ${environment.credentialRoot}`,
-                ),
-              )
+              cleanupErrors.push(true)
             } else {
-              await rmdir(environment.credentialRoot).catch((error) =>
-                cleanupErrors.push(error),
+              await rmdir(environment.credentialRoot).catch(() =>
+                cleanupErrors.push(true),
               )
             }
           }
 
-          const clean = await environmentIsClean(environment).catch((error) => {
-            cleanupErrors.push(error)
+          const clean = await environmentIsClean(environment).catch(() => {
+            cleanupErrors.push(true)
             return false
           })
           if (clean) {
             const outcome = await removeDedicatedTestRootIfReconciled(
               environment.rootDir,
               environment.runscRootDir,
-            ).catch((error) => {
-              cleanupErrors.push(error)
+            ).catch(() => {
+              cleanupErrors.push(true)
               return { removed: false, reason: "reconciliation failed" }
             })
             if (!outcome.removed) {
-              cleanupErrors.push(
-                new Error(
-                  `M11 test root was preserved because exact reconciliation was incomplete (${outcome.reason}).`,
-                ),
-              )
+              cleanupErrors.push(true)
             }
           } else {
-            cleanupErrors.push(
-              new Error(
-                `M11 test root was preserved because owned runtime residue remains: ${environment.rootDir}`,
-              ),
-            )
+            cleanupErrors.push(true)
           }
         }
-        await tenantAdmin.close().catch((error) => cleanupErrors.push(error))
+        await tenantAdmin.close().catch(() => cleanupErrors.push(true))
       }
 
-      if (scenarioError && cleanupErrors.length > 0) {
-        throw new AggregateError(
-          [scenarioError, ...cleanupErrors],
-          "M11 real-gVisor database verification failed and exact-resource cleanup was incomplete.",
-          { cause: scenarioError },
-        )
-      }
-      if (scenarioError) throw scenarioError
-      if (cleanupErrors.length > 0) {
-        throw new AggregateError(
-          cleanupErrors,
-          "M11 real-gVisor database verification cleanup was incomplete.",
+      if (scenarioFailed || poolFailed || cleanupErrors.length > 0) {
+        throw realTestFailure(
+          scenarioFailed || poolFailed,
+          cleanupErrors.length > 0,
         )
       }
     }, 300_000)
@@ -994,14 +978,17 @@ async function createEnvironment(
       sandboxProvisioner,
       runtimeStarter,
     }
-  } catch (error) {
+  } catch {
+    let cleanupFailed = false
     if (credentialRoot) {
-      await rm(credentialRoot, { recursive: true, force: true }).catch(
-        () => undefined,
-      )
+      await rm(credentialRoot, { recursive: true, force: true }).catch(() => {
+        cleanupFailed = true
+      })
     }
-    await rm(rootDir, { recursive: true, force: true }).catch(() => undefined)
-    throw error
+    await rm(rootDir, { recursive: true, force: true }).catch(() => {
+      cleanupFailed = true
+    })
+    throw realTestFailure(true, cleanupFailed)
   }
 }
 

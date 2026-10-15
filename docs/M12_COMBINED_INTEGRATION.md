@@ -82,6 +82,11 @@ Reuse `tests/support/m12-test-host.sh` and
 Create a **new** parent, then build its **new** rootfs with those scripts.
 Never run build-base-rootfs against an existing image/path.
 
+The setup-created `.peephole-m12-test-parent` remains root-owned **0400**.
+Combined preflight requires exactly that mode; it separately requires **0600**
+for the two attestations and `provisioner.json`. Do not chmod the setup marker
+to 0600 to bypass a failed preflight.
+
 The four explicit roots must be the script-created children:
 
 ```sh
@@ -207,6 +212,26 @@ ownership/process/mount checks must pass. Final parent teardown still uses
 that existing script. The separate disposable PG cluster/test secret files
 require their own reviewed owner-specific shutdown/removal; this test does
 not stop or delete the cluster. No production service is touched.
+
+The existing teardown now inventories the entire parent and its empty
+workspace/runsc/tmpfs children before any unmount/deletion. If present, the
+parent's combined attestation must be a canonical regular root-owned 0600
+file with one link, matching schema, parent, machine/boot and a separate PG
+root binding. Unknown entries or invalid/unreadable metadata stop teardown
+before deletion. The checks are repeated after unmounting; only then may
+the exact parent attestation be removed. The PostgreSQL root, its attestation
+and its credentials are never traversed or deleted. An incomplete/partial
+teardown reports BLOCKED and preserves everything not already removed.
+
+Legacy M10/M11 real tests retain their assertions and opt-in gates. Digest
+equality is asserted through a boolean, and the test/hook failure boundary
+reports only `REAL_SCENARIO_FAILED`, `REAL_CLEANUP_FAILED`, or
+`REAL_SCENARIO_AND_CLEANUP_FAILED`, without raw exceptions, causes, stacks or
+assertion actual/expected values. Cleanup failures no longer produce a
+successful test; independently attempted cleanup and existing ownership
+checks remain required. Portable tests use synthetic markers, including a
+real Vitest reporter subprocess. Linux script tests shim privilege/mounts;
+they are not real-root, PostgreSQL or gVisor execution evidence.
 
 Portable safety/ownership/D1 tests and existing PG18 CI are separate evidence.
 Their PASS must never be reported as real-gVisor or Chrome E2E PASS.
