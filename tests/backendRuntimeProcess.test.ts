@@ -14,6 +14,12 @@ import {
   TmpfsDatabaseCredentialFilesystem,
 } from "../services/preview-worker/gvisor/databaseCredentialFilesystem"
 import { TmpfsGeneratedSecretFilesystem } from "../services/preview-worker/gvisor/generatedSecretFilesystem"
+import { runtimeFailureDetail } from "../services/backend-runtime-api/diagnostics"
+import {
+  BOOTSTRAP_FAILED,
+  BOOTSTRAP_READY,
+  APPLICATION_STARTED,
+} from "../services/preview-worker/gvisor/bootstrapDiagnostics"
 import {
   TENANT_DATABASE_HOST,
   TENANT_DATABASE_PORT,
@@ -257,6 +263,307 @@ describe("GVisorBackendRuntimeProcess", () => {
     expect(
       processRunner.calls.some((call) => call.args.includes("delete")),
     ).toBe(true)
+  })
+
+  it("classifies material filesystem failure without changing the original exception", async () => {
+    const sensitive = new Error("E-SENSITIVE")
+    const runtime = new GVisorBackendRuntimeProcess({
+      generatedSecretFilesystem: {
+        rootDir: secretRoot,
+        create: async () => {
+          throw sensitive
+        },
+        remove: async () => {},
+      },
+    })
+    const error = await runtime
+      .start(fakeWorkspace(bundleDir, "127.0.0.1"), secretPlan, {
+        runtimeId: "job-backend",
+        values: new Map([
+          ["SESSION_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+        ]),
+      })
+      .catch((caught: unknown) => caught)
+    expect(error).toBe(sensitive)
+    expect(runtimeFailureDetail(error)).toEqual({
+      failureStep: "MATERIAL_FILESYSTEM",
+      exitCode: null,
+      startupCleanupFailed: false,
+    })
+    expect(JSON.stringify(runtimeFailureDetail(error))).not.toContain(
+      "E-SENSITIVE",
+    )
+  })
+
+  it("reports the original start step before starter rollback hangs or fails", async () => {
+    const order: string[] = []
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const runtime = new GVisorBackendRuntimeProcess({
+      generatedSecretFilesystem: {
+        rootDir: secretRoot,
+        create: async () => path.join(secretRoot, "job-backend"),
+        remove: async () => {
+          order.push("rollback")
+          await gate
+          throw new Error("E-SENSITIVE")
+        },
+      },
+    })
+    const observed = vi.fn(() => {
+      order.push("primary")
+    })
+    const running = runtime
+      .start(
+        fakeWorkspace(bundleDir, "127.0.0.1", {
+          ensureIngressOnlyNetworkNamespace: async () => {
+            throw new Error("E-SENSITIVE")
+          },
+        }),
+        secretPlan,
+        {
+          runtimeId: "job-backend",
+          values: new Map([
+            ["SESSION_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+          ]),
+        },
+        null,
+        null,
+        observed,
+      )
+      .catch((error: unknown) => error)
+    await vi.waitFor(() => expect(order).toEqual(["primary", "rollback"]))
+    expect(observed).toHaveBeenCalledExactlyOnceWith(
+      {
+        failureStep: "NAMESPACE_NETWORK",
+        exitCode: null,
+        startupCleanupFailed: false,
+      },
+      "RUNTIME_START_FAILED",
+    )
+    release()
+    expect(runtimeFailureDetail(await running)).toEqual({
+      failureStep: "NAMESPACE_NETWORK",
+      exitCode: null,
+      startupCleanupFailed: true,
+    })
+  })
+
+  it("does not let a starter failure observer prevent rollback", async () => {
+    const remove = vi.fn(async () => {})
+    const runtime = new GVisorBackendRuntimeProcess({
+      generatedSecretFilesystem: {
+        rootDir: secretRoot,
+        create: async () => path.join(secretRoot, "job-backend"),
+        remove,
+      },
+    })
+    await expect(
+      runtime.start(
+        fakeWorkspace(bundleDir, "127.0.0.1", {
+          ensureIngressOnlyNetworkNamespace: async () => {
+            throw new Error("E-SENSITIVE")
+          },
+        }),
+        secretPlan,
+        {
+          runtimeId: "job-backend",
+          values: new Map([
+            ["SESSION_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+          ]),
+        },
+        null,
+        null,
+        () => {
+          throw new Error("E-SINK-SENSITIVE")
+        },
+      ),
+    ).rejects.toThrow("E-SENSITIVE")
+    expect(remove).toHaveBeenCalledOnce()
+  })
+
+  it("observes an unrequested exit before automatic container cleanup", async () => {
+    const order: string[] = []
+    const runner = new FakeProcessRunner()
+    runner.crashResult = {
+      exitCode: 23,
+      timedOut: false,
+      stdout: "E-SENSITIVE",
+      stderr: "E-SENSITIVE",
+    }
+    runner.onDelete = () => {
+      order.push("cleanup")
+    }
+    const runtime = new GVisorBackendRuntimeProcess({ processRunner: runner })
+    const observer = vi.fn(() => {
+      order.push("primary")
+    })
+    const handle = await runtime.start(
+      fakeWorkspace(bundleDir, "127.0.0.1"),
+      { ...plan, internalPort: 1 },
+      null,
+      null,
+      null,
+      observer,
+    )
+    await expect(handle.waitUntilReady(100)).rejects.toBeInstanceOf(
+      BackendRuntimeExitedBeforeReadyError,
+    )
+    expect(order.slice(0, 2)).toEqual(["primary", "cleanup"])
+    expect(observer).toHaveBeenCalledExactlyOnceWith(
+      {
+        failureStep: "RUNSC_EXIT_UNVERIFIED",
+        exitCode: 23,
+        startupCleanupFailed: false,
+      },
+      "RUNTIME_START_FAILED",
+    )
+    await handle.stop()
+  })
+
+  it("does not report a requested Stop as an unexpected process exit", async () => {
+    const observer = vi.fn()
+    const runtime = new GVisorBackendRuntimeProcess({
+      processRunner: new FakeProcessRunner(),
+    })
+    const handle = await runtime.start(
+      fakeWorkspace(bundleDir, "127.0.0.1"),
+      { ...plan, internalPort: port },
+      null,
+      null,
+      null,
+      observer,
+    )
+    await handle.waitUntilReady(100)
+    await handle.stop()
+    expect(observer).not.toHaveBeenCalled()
+  })
+
+  it("distinguishes namespace setup from config.json preparation", async () => {
+    const runtime = new GVisorBackendRuntimeProcess({
+      processRunner: new FakeProcessRunner(),
+    })
+    const networkError = await runtime
+      .start(
+        fakeWorkspace(bundleDir, "127.0.0.1", {
+          ensureIngressOnlyNetworkNamespace: async () => {
+            throw new Error("E-SENSITIVE")
+          },
+        }),
+        plan,
+      )
+      .catch((error: unknown) => error)
+    expect(runtimeFailureDetail(networkError)?.failureStep).toBe(
+      "NAMESPACE_NETWORK",
+    )
+    const ociError = await runtime
+      .start(
+        fakeWorkspace(path.join(bundleDir, "missing-directory"), "127.0.0.1"),
+        plan,
+      )
+      .catch((error: unknown) => error)
+    expect(runtimeFailureDetail(ociError)?.failureStep).toBe("OCI_PREPARATION")
+  })
+
+  it.each(["throw", "reject"])(
+    "distinguishes a process-runner %s from an unobserved sandbox exit",
+    async (mode) => {
+      const runner = new FakeProcessRunner()
+      const original = runner.run.bind(runner)
+      vi.spyOn(runner, "run").mockImplementation((command, args) => {
+        if (args.includes("run")) {
+          if (mode === "throw") throw new Error("E-SENSITIVE")
+          return Promise.reject(new Error("E-SENSITIVE"))
+        }
+        return original(command, args)
+      })
+      const runtime = new GVisorBackendRuntimeProcess({ processRunner: runner })
+      const handle = await runtime.start(
+        fakeWorkspace(bundleDir, "127.0.0.1"),
+        {
+          ...plan,
+          internalPort: 1,
+        },
+      )
+      const error = await handle
+        .waitUntilReady(100)
+        .catch((caught: unknown) => caught)
+      expect(runtimeFailureDetail(error)).toEqual({
+        failureStep: "RUNSC_EXECUTION_REJECTED",
+        exitCode: null,
+        startupCleanupFailed: false,
+      })
+      expect(JSON.stringify(handle.failureDetail?.())).not.toContain(
+        "E-SENSITIVE",
+      )
+      await handle.stop()
+    },
+  )
+
+  it.each([
+    [BOOTSTRAP_FAILED, "BOOTSTRAP_REPORTED_FAILURE"],
+    [`${BOOTSTRAP_READY}\n${APPLICATION_STARTED}`, "APPLICATION_REPORTED_EXIT"],
+    [BOOTSTRAP_READY, "APPLICATION_START_UNVERIFIED"],
+    ["old image without protocol", "RUNSC_EXIT_UNVERIFIED"],
+  ] as const)(
+    "retains numeric exit and bounded bootstrap evidence: %#",
+    async (stderr, expected) => {
+      const runner = new FakeProcessRunner()
+      runner.crashResult = {
+        exitCode: 23,
+        timedOut: false,
+        stdout: "E-SENSITIVE",
+        stderr: stderr + "\nE-SENSITIVE",
+      }
+      const runtime = new GVisorBackendRuntimeProcess({
+        processRunner: runner,
+        generatedSecretFilesystem: {
+          rootDir: secretRoot,
+          create: async () => path.join(secretRoot, "job-backend"),
+          remove: async () => {},
+        },
+      })
+      const handle = await runtime.start(
+        fakeWorkspace(bundleDir, "127.0.0.1"),
+        { ...secretPlan, internalPort: 1 },
+        {
+          runtimeId: "job-backend",
+          values: new Map([
+            ["SESSION_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+          ]),
+        },
+      )
+      const error = await handle
+        .waitUntilReady(100)
+        .catch((caught: unknown) => caught)
+      expect(runtimeFailureDetail(error)).toEqual({
+        failureStep: expected,
+        exitCode: 23,
+        startupCleanupFailed: false,
+      })
+      expect(JSON.stringify(handle.failureDetail?.())).not.toContain(
+        "E-SENSITIVE",
+      )
+      await handle.stop()
+    },
+  )
+
+  it("keeps TCP timeout distinct when the foreground run has not exited", async () => {
+    const runtime = new GVisorBackendRuntimeProcess({
+      processRunner: new FakeProcessRunner(),
+    })
+    const handle = await runtime.start(fakeWorkspace(bundleDir, "127.0.0.1"), {
+      ...plan,
+      internalPort: 1,
+    })
+    const error = await handle
+      .waitUntilReady(10)
+      .catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(BackendRuntimeReadinessTimeoutError)
+    expect(runtimeFailureDetail(error)?.failureStep).toBe("TCP_READINESS")
+    await handle.stop()
   })
 
   it("exposes an internal dial target matching the provisioned ingress-only peerIp and the plan's own internalPort", async () => {
@@ -1409,6 +1716,11 @@ describe("GVisorBackendRuntimeProcess", () => {
       // two independent, always-both-attempted credential cleanup failures.
       expect(outer.errors[1]).toBeInstanceOf(AggregateError)
       expect((outer.errors[1] as AggregateError).errors).toHaveLength(2)
+      expect(runtimeFailureDetail(error)).toEqual({
+        failureStep: "NAMESPACE_NETWORK",
+        exitCode: null,
+        startupCleanupFailed: true,
+      })
     })
   })
 

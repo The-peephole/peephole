@@ -32,6 +32,41 @@ const rawPassword = "RAW_APPLICATION_PASSWORD_SENTINEL"
 const now = new Date("2026-09-28T00:00:00.000Z")
 
 describe("TemporaryDatabaseProvisioner", () => {
+  it("exposes only the INSERTed resource id before failing tenant SQL", async () => {
+    const harness = compose({ failOn: "CREATE ROLE" })
+    const observed: string[] = []
+    await expect(
+      harness.provisioner.provision(
+        {
+          previewId: "fullstack-preview-1",
+          backendRuntimeId: "backend-runtime-1",
+        },
+        (id) => {
+          expect(harness.events).toEqual(["store:create:provisioning"])
+          observed.push(id)
+        },
+      ),
+    ).rejects.toBeInstanceOf(TemporaryDatabaseProvisioningError)
+    expect(observed).toEqual([resourceId])
+    expect(harness.store.record?.status).toBe("provisioning")
+    expect(harness.events.some((e) => e.includes("drop"))).toBe(false)
+  })
+
+  it("does not let a correlation callback failure change provisioning", async () => {
+    const harness = compose()
+    await expect(
+      harness.provisioner.provision(
+        {
+          previewId: "fullstack-preview-1",
+          backendRuntimeId: "backend-runtime-1",
+        },
+        () => {
+          throw new Error("E-SENSITIVE")
+        },
+      ),
+    ).resolves.toMatchObject({ resourceId })
+    expect(harness.store.record?.status).toBe("provisioned")
+  })
   it("provisions in the exact durable-first order and never emits the raw password in SQL", async () => {
     const harness = compose()
 

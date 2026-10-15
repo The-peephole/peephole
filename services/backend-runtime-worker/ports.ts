@@ -1,8 +1,12 @@
-import type { BackendRuntimePlan } from "../../types/backendRuntime"
+import type {
+  BackendRuntimePlan,
+  BackendRuntimeErrorCode,
+} from "../../types/backendRuntime"
 import type { GeneratedSecretMaterial } from "../../types/backendRuntimeSecrets"
 import type { TemporaryDatabaseRuntimeCredentialMaterial } from "../../types/temporaryDatabase"
 import type { UserEnvironmentMaterial } from "../../types/userEnvironment"
 import type { LocalPreviewWorkspace } from "../preview-worker/local/localWorkspace"
+import type { RuntimeFailureDetail } from "../backend-runtime-api/diagnostics"
 
 /**
  * Internal-only network coordinates for dialing a *running* backend
@@ -33,6 +37,8 @@ export interface RuntimeProcessHandle {
    * the caller's responsibility to only register it in a live-routing
    * registry once `waitUntilReady()` has actually succeeded. */
   readonly dialTarget: BackendRuntimeDialTarget
+  /** Safe last exit evidence only; never raw output/material. Optional for D1 adapters. */
+  failureDetail?(): RuntimeFailureDetail
   /**
    * Polls until the backend accepts a TCP connection on its assigned
    * internal port, or throws once the process exits first (a startup
@@ -77,5 +83,10 @@ export interface BackendRuntimeProcessStarter {
     /** M12 user-provided configuration, already destructively taken by the
      * supervisor. `plan.userEnvironmentNames` empty iff this is `null`. */
     userEnvironment?: UserEnvironmentMaterial | null,
+    /** Safe evidence before the starter's own rollback. Not an execution hook. */
+    onFailure?: (
+      detail: RuntimeFailureDetail,
+      code: BackendRuntimeErrorCode,
+    ) => void,
   ): Promise<RuntimeProcessHandle>
 }

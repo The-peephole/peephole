@@ -11,6 +11,13 @@ import type { BackendRuntimePlan } from "../../../types/backendRuntime"
 import type { GeneratedSecretMaterial } from "../../../types/backendRuntimeSecrets"
 import type { TemporaryDatabaseRuntimeCredentialMaterial } from "../../../types/temporaryDatabase"
 import type { UserEnvironmentMaterial } from "../../../types/userEnvironment"
+import {
+  RuntimeProcessFailure,
+  annotateRuntimeFailure,
+  type BackendFailureStep,
+} from "../../backend-runtime-api/diagnostics"
+import { classifyBootstrapExit } from "./bootstrapDiagnostics"
+import { RunnerDiskLimitError } from "../local/commandRunner"
 import type {
   BackendRuntimeProcessStarter,
   RuntimeProcessHandle,
@@ -46,20 +53,21 @@ import {
  * a connection -- a distinct, callers-can-distinguish failure from a bare
  * timeout so the control plane can report RUNTIME_START_FAILED instead of
  * RUNTIME_READINESS_TIMEOUT. */
-export class BackendRuntimeExitedBeforeReadyError extends Error {
-  constructor(public readonly exitCode: number | null) {
-    super(
-      `Backend runtime process exited before becoming ready (exit code ${String(exitCode)}).`,
-    )
+export class BackendRuntimeExitedBeforeReadyError extends RuntimeProcessFailure {
+  constructor(
+    exitCode: number | null,
+    step: BackendFailureStep = "RUNSC_EXIT_UNVERIFIED",
+  ) {
+    super(step, exitCode)
     this.name = "BackendRuntimeExitedBeforeReadyError"
   }
 }
 
 /** Thrown by `waitUntilReady` when the readiness deadline elapses while the
  * process is still running. */
-export class BackendRuntimeReadinessTimeoutError extends Error {
+export class BackendRuntimeReadinessTimeoutError extends RuntimeProcessFailure {
   constructor() {
-    super("Backend runtime did not become ready before the readiness timeout.")
+    super("TCP_READINESS")
     this.name = "BackendRuntimeReadinessTimeoutError"
   }
 }
@@ -190,6 +198,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     secrets: GeneratedSecretMaterial | null = null,
     databaseCredential: TemporaryDatabaseRuntimeCredentialMaterial | null = null,
     userEnvironment: UserEnvironmentMaterial | null = null,
+    onFailure?: Parameters<BackendRuntimeProcessStarter["start"]>[5],
   ): Promise<RuntimeProcessHandle> {
     if (!isSafePreviewSourceRoot(plan.sourceRoot)) {
       throw new Error("Backend runtime plan sourceRoot is unsafe.")
@@ -300,6 +309,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
 
     let namespacePath: string | undefined
     let peerIp: string | undefined
+    let failureStep: BackendFailureStep = "MATERIAL_FILESYSTEM"
 
     try {
       if (secrets) {
@@ -390,12 +400,14 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
         userEnvironmentMountSource = environmentFile
       }
 
+      failureStep = "NAMESPACE_NETWORK"
       const namespace = await sandbox.ensureIngressOnlyNetworkNamespace({
         temporaryDatabaseAccess: databaseCredential !== null,
       })
       namespacePath = namespace.path
       peerIp = namespace.peerIp
 
+      failureStep = "OCI_PREPARATION"
       const usesBootstrap =
         Boolean(secrets) ||
         Boolean(databaseCredential) ||
@@ -441,16 +453,35 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       )
       sandbox.registerContainer(containerId)
     } catch (error) {
+      // Notify before any starter-owned material rollback can fail or hang.
+      try {
+        onFailure?.(
+          { failureStep, exitCode: null, startupCleanupFailed: false },
+          error instanceof RunnerDiskLimitError
+            ? "RUNTIME_DISK_LIMIT"
+            : "RUNTIME_START_FAILED",
+        )
+      } catch {
+        /* diagnostics cannot change cleanup */
+      }
       try {
         await cleanupCredentials()
       } catch (cleanupError) {
-        throw new AggregateError(
-          [error, cleanupError],
-          "Backend runtime start failed and credential cleanup was incomplete.",
-          { cause: cleanupError },
+        // Preserve the original step separately from observed starter rollback.
+        throw annotateRuntimeFailure(
+          new AggregateError(
+            [error, cleanupError],
+            "Backend runtime start failed and credential cleanup was incomplete.",
+            { cause: cleanupError },
+          ),
+          { failureStep, exitCode: null, startupCleanupFailed: true },
         )
       }
-      throw error
+      throw annotateRuntimeFailure(error, {
+        failureStep,
+        exitCode: null,
+        startupCleanupFailed: false,
+      })
     }
 
     if (namespacePath === undefined || peerIp === undefined) {
@@ -461,24 +492,62 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     // process exits, which for a backend server is "until stopped."
     let runExited = false
     let runExitConfirmed = false
-    const runPromise: Promise<ProcessRunResult> = this.processRunner
-      .run(
-        this.runscBinaryPath,
-        runscRunArgs(
-          { runscRootDir: this.runscRootDir },
-          { bundleDir: sandbox.bundleDir, containerId, network: "sandbox" },
+    let runRejected = false
+    let stopRequested = false
+    let becameReady = false
+    let lastExitCode: number | null = null
+    let exitStep: BackendFailureStep = "RUNSC_EXIT_UNVERIFIED"
+    const runPromise: Promise<ProcessRunResult> = Promise.resolve()
+      .then(() =>
+        this.processRunner.run(
+          this.runscBinaryPath,
+          runscRunArgs(
+            { runscRootDir: this.runscRootDir },
+            { bundleDir: sandbox.bundleDir, containerId, network: "sandbox" },
+          ),
+          { timeoutMs: this.maxRuntimeMs },
         ),
-        { timeoutMs: this.maxRuntimeMs },
       )
-      .catch((error: unknown): ProcessRunResult => ({
-        exitCode: null,
-        timedOut: false,
-        stdout: "",
-        stderr: error instanceof Error ? error.message : String(error),
-      }))
+      .catch((): ProcessRunResult => {
+        runRejected = true
+        return {
+          exitCode: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+        }
+      })
       .then((result) => {
         runExited = true
         runExitConfirmed = result.exitCode !== null && !result.timedOut
+        lastExitCode =
+          Number.isInteger(result.exitCode) &&
+          result.exitCode !== null &&
+          result.exitCode >= 0 &&
+          result.exitCode <= 255
+            ? result.exitCode
+            : null
+        exitStep = runRejected
+          ? "RUNSC_EXECUTION_REJECTED"
+          : secrets || databaseCredential || userEnvironment
+            ? classifyBootstrapExit(result.stderr)
+            : "RUNSC_EXIT_UNVERIFIED"
+        // Observe exit BEFORE automatic delete/credential cleanup starts.
+        // A requested stop is not a primary execution failure.
+        if (!stopRequested) {
+          try {
+            onFailure?.(
+              {
+                failureStep: exitStep,
+                exitCode: lastExitCode,
+                startupCleanupFailed: false,
+              },
+              becameReady ? "RUNTIME_EXITED" : "RUNTIME_START_FAILED",
+            )
+          } catch {
+            /* diagnostics only */
+          }
+        }
         return result
       })
 
@@ -533,6 +602,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       return cleanupAfterExitPromise
     }
     const stop = (): Promise<void> => {
+      stopRequested = true
       stopPromise ??= (async () => {
         let killError: Error | undefined
         // Natural/bootstrap exit cleanup may already have deleted the
@@ -593,13 +663,26 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     void cleanupAfterExit().catch(() => undefined)
 
     return {
+      failureDetail: () => ({
+        failureStep: exitStep,
+        exitCode: lastExitCode,
+        startupCleanupFailed: false,
+      }),
       // Internal-only: `peerIp` comes from the actual provisioned
       // ingress-only namespace above, `internalPort` from the validated
       // plan -- never from any client/host/header/query/env value, never
       // persisted. See BackendRuntimeDialTarget's doc comment.
       dialTarget: { host: peerIp, port: plan.internalPort },
-      waitUntilReady: (timeoutMs) =>
-        this.probeReady(peerIp, plan.internalPort, timeoutMs, runPromise),
+      waitUntilReady: async (timeoutMs) => {
+        await this.probeReady(
+          peerIp,
+          plan.internalPort,
+          timeoutMs,
+          runPromise,
+          () => exitStep,
+        )
+        becameReady = true
+      },
       waitForExit: async () => {
         const result = await runPromise
         await cleanupAfterExit()
@@ -614,6 +697,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
     port: number,
     timeoutMs: number,
     runPromise: Promise<ProcessRunResult>,
+    exitStep: () => BackendFailureStep,
   ): Promise<void> {
     const deadline = Date.now() + timeoutMs
     let exited: ProcessRunResult | null = null
@@ -628,6 +712,7 @@ export class GVisorBackendRuntimeProcess implements BackendRuntimeProcessStarter
       if (exited) {
         throw new BackendRuntimeExitedBeforeReadyError(
           (exited as ProcessRunResult).exitCode,
+          exitStep(),
         )
       }
       if (await this.canConnect(host, port)) return

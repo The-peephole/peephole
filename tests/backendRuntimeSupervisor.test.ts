@@ -17,6 +17,10 @@ import {
 } from "../services/backend-runtime-worker/secretBroker"
 import { BackendRuntimeControlPlane } from "../services/backend-runtime-api/controlPlane"
 import {
+  RuntimeProcessFailure,
+  type BackendRuntimeFailureEvidence,
+} from "../services/backend-runtime-api/diagnostics"
+import {
   InMemoryBackendRuntimeQueue,
   InMemoryBackendRuntimeStore,
 } from "../services/backend-runtime-api/inMemoryAdapters"
@@ -95,9 +99,13 @@ class FakeTemporaryDatabaseProvisioner implements TemporaryDatabaseLifecycleProv
   events: string[] = []
   onRevoke?: () => void | Promise<void>
 
-  async provision(input: { previewId: string; backendRuntimeId: string }) {
+  async provision(
+    input: { previewId: string; backendRuntimeId: string },
+    onOwnershipCreated?: (id: typeof databaseResourceId) => void,
+  ) {
     this.calls.push(input)
     this.events.push("provision")
+    onOwnershipCreated?.(databaseResourceId)
     if (this.provisionGate) await this.provisionGate
     if (this.provisionError) throw this.provisionError
     const objectName = deriveTemporaryDatabaseObjectName(databaseResourceId)
@@ -257,11 +265,18 @@ function compose(
 ) {
   const store = new InMemoryBackendRuntimeStore()
   const queue = new InMemoryBackendRuntimeQueue()
+  const evidence: BackendRuntimeFailureEvidence[] = []
+  const evidenceSink = vi.fn<
+    (event: BackendRuntimeFailureEvidence) => void | Promise<void>
+  >((event) => {
+    evidence.push(event)
+  })
   const resolver = { resolve: vi.fn().mockResolvedValue(resolvedPlan) }
   let now = new Date("2026-01-01T00:00:00.000Z")
   const controlPlane = new BackendRuntimeControlPlane(resolver, store, queue, {
     now: () => now,
     runtimeTtlMs,
+    onFailureEvidence: evidenceSink,
   })
   const byteStore = new ArchiveByteStore()
   const fetcher = new FakeArchiveFetcher(byteStore)
@@ -317,6 +332,8 @@ function compose(
   )
   return {
     controlPlane,
+    evidence,
+    evidenceSink,
     store,
     queue,
     fetcher,
@@ -680,6 +697,258 @@ describe("BackendRuntimeSupervisor", () => {
         failureStage: "RUNTIME_MONITOR",
         primaryFailureCode: "RUNTIME_EXITED",
         cleanupFailureCode: "NONE",
+      })
+    })
+  })
+
+  describe("targeted evidence before cleanup", () => {
+    it("does not replace a runtime exit when the optional detail accessor fails", async () => {
+      const c = compose()
+      const original = c.starter.start.bind(c.starter)
+      vi.spyOn(c.starter, "start").mockImplementation(async (...args) => {
+        const handle = await original(...args)
+        handle.failureDetail = () => {
+          throw new Error("E-SENSITIVE")
+        }
+        return handle
+      })
+      const { runtimeId, job } = await createAndLease(c.controlPlane, c.queue)
+      const running = c.supervisor.run(job)
+      await vi.waitFor(async () =>
+        expect((await c.store.get(runtimeId))?.status).toBe("running"),
+      )
+      c.starter.lastHandle!.crash(23)
+      await running
+      createdRoots.push(...c.sandbox.roots)
+      expect((await c.store.get(runtimeId))?.errorCode).toBe("RUNTIME_EXITED")
+      expect(c.evidence[0]).toMatchObject({
+        primaryFailureCode: "RUNTIME_EXITED",
+        failureStep: "UNCLASSIFIED",
+      })
+      expect(JSON.stringify(c.evidence)).not.toContain("E-SENSITIVE")
+    })
+
+    it("retains the first starter observation through rollback and preserves D1 classification", async () => {
+      const c = compose()
+      vi.spyOn(c.starter, "start").mockImplementation(async (...args) => {
+        args[5]?.(
+          {
+            failureStep: "NAMESPACE_NETWORK",
+            exitCode: null,
+            startupCleanupFailed: false,
+          },
+          "RUNTIME_START_FAILED",
+        )
+        throw new RuntimeProcessFailure("MATERIAL_FILESYSTEM", null, true)
+      })
+      const { runtimeId, job } = await createAndLease(c.controlPlane, c.queue)
+      await c.supervisor.run(job)
+      createdRoots.push(...c.sandbox.roots)
+      expect(c.evidence).toHaveLength(2)
+      expect(c.evidence[0]).toMatchObject({
+        kind: "primary_failure",
+        failureStep: "NAMESPACE_NETWORK",
+        cleanupFailureCode: null,
+        startupCleanupFailed: false,
+      })
+      expect(c.evidence[1]).toMatchObject({
+        kind: "cleanup_complete",
+        failureStep: "NAMESPACE_NETWORK",
+        cleanupFailureCode: "NONE",
+        startupCleanupFailed: true,
+      })
+      expect((await c.store.get(runtimeId))?.diagnostics).toEqual({
+        failureStage: "RUNTIME_START",
+        primaryFailureCode: "RUNTIME_START_FAILED",
+        cleanupFailureCode: "NONE",
+      })
+    })
+
+    it.each([
+      ["MATERIAL_FILESYSTEM", "RUNTIME_START"],
+      ["NAMESPACE_NETWORK", "RUNTIME_START"],
+      ["OCI_PREPARATION", "RUNTIME_START"],
+      ["RUNSC_EXECUTION_REJECTED", "READINESS"],
+      ["BOOTSTRAP_REPORTED_FAILURE", "READINESS"],
+      ["APPLICATION_START_UNVERIFIED", "READINESS"],
+      ["APPLICATION_REPORTED_EXIT", "READINESS"],
+    ] as const)(
+      "keeps %s and correlation through primary + cleanup failure",
+      async (step, stage) => {
+        const provisioner = new FakeTemporaryDatabaseProvisioner()
+        provisioner.revokeError = new Error("E-SENSITIVE")
+        const c = compose(
+          undefined,
+          "file",
+          undefined,
+          databasePlan,
+          provisioner,
+        )
+        const error = Object.assign(new RuntimeProcessFailure(step, 23), {
+          cause: { DATABASE_URL: "E-SENSITIVE" },
+          stderr: "E-SENSITIVE",
+        })
+        if (stage === "RUNTIME_START") c.starter.startError = error
+        else c.starter.nextReadyError = error
+        const { runtimeId, job } = await createAndLeaseForOrchestration(
+          c.controlPlane,
+          c.queue,
+        )
+        const order: string[] = []
+        c.evidenceSink.mockImplementation((event) => {
+          order.push(event.kind)
+          c.evidence.push(event)
+        })
+        const original = c.liveRuntimeRegistry.unregister.bind(
+          c.liveRuntimeRegistry,
+        )
+        vi.spyOn(c.liveRuntimeRegistry, "unregister").mockImplementation(
+          (id) => {
+            order.push("teardown")
+            original(id)
+          },
+        )
+        await c.supervisor.run(job)
+        createdRoots.push(...c.sandbox.roots)
+        expect(order[0]).toBe("primary_failure")
+        expect(order[1]).toBe("teardown")
+        expect(c.evidence).toHaveLength(2)
+        expect(c.evidence[0]).toMatchObject({
+          kind: "primary_failure",
+          runtimeId,
+          parentId: job.orchestrationKey,
+          resourceId: databaseResourceId,
+          failureStage: stage,
+          primaryFailureCode: "RUNTIME_START_FAILED",
+          failureStep: step,
+          exitCode: 23,
+          cleanupFailureCode: null,
+        })
+        expect(c.evidence[1]).toMatchObject({
+          kind: "cleanup_complete",
+          primaryFailureCode: "RUNTIME_START_FAILED",
+          failureStep: step,
+          cleanupFailureCode: "DATABASE_REVOKE_FAILED",
+        })
+        expect(JSON.stringify(c.evidence)).not.toContain("E-SENSITIVE")
+        expect((await c.store.get(runtimeId))?.errorCode).toBe(
+          "DATABASE_UNAVAILABLE",
+        )
+      },
+    )
+
+    it("correlates an INSERT followed by provisioning failure without granting revoke ownership", async () => {
+      const provisioner = new FakeTemporaryDatabaseProvisioner()
+      provisioner.provisionError = new Error("E-SENSITIVE")
+      const c = compose(undefined, "file", undefined, databasePlan, provisioner)
+      const { job } = await createAndLeaseForOrchestration(
+        c.controlPlane,
+        c.queue,
+      )
+      await c.supervisor.run(job)
+      createdRoots.push(...c.sandbox.roots)
+      expect(c.evidence[0]).toMatchObject({
+        failureStage: "DATABASE_PROVISIONING",
+        failureStep: "TENANT_DATABASE_PROVISIONING",
+        resourceId: databaseResourceId,
+        primaryFailureCode: "DATABASE_UNAVAILABLE",
+      })
+      expect(provisioner.revoked).toEqual([])
+      expect(c.starter.lastHandle).toBeNull()
+    })
+
+    it("distinguishes credential assembly failure after provisioning and still revokes", async () => {
+      const provisioner = new FakeTemporaryDatabaseProvisioner()
+      const original = provisioner.provision.bind(provisioner)
+      vi.spyOn(provisioner, "provision").mockImplementation(
+        async (...args) => ({
+          ...(await original(...args)),
+          roleName: "invalid-role",
+        }),
+      )
+      const c = compose(undefined, "file", undefined, databasePlan, provisioner)
+      const { job } = await createAndLeaseForOrchestration(
+        c.controlPlane,
+        c.queue,
+      )
+      await c.supervisor.run(job)
+      createdRoots.push(...c.sandbox.roots)
+      expect(c.evidence[0]).toMatchObject({
+        failureStep: "DATABASE_CREDENTIAL_ASSEMBLY",
+        primaryFailureCode: "DATABASE_UNAVAILABLE",
+        resourceId: databaseResourceId,
+      })
+      expect(provisioner.revoked).toEqual([databaseResourceId])
+    })
+
+    it("has already emitted readiness evidence while process cleanup is hung", async () => {
+      const c = compose()
+      c.starter.nextReadyError = new BackendRuntimeReadinessTimeoutError()
+      const start = c.starter.start.bind(c.starter)
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      vi.spyOn(c.starter, "start").mockImplementation(async (...args) => {
+        const handle = await start(...args)
+        c.starter.lastHandle!.stopOverride = () => gate
+        return handle
+      })
+      const { runtimeId, job } = await createAndLease(c.controlPlane, c.queue)
+      const running = c.supervisor.run(job)
+      await vi.waitFor(() => expect(c.starter.lastHandle?.stopCalls).toBe(1))
+      expect(c.evidence).toHaveLength(1)
+      expect(c.evidence[0]).toMatchObject({
+        kind: "primary_failure",
+        failureStep: "TCP_READINESS",
+      })
+      expect((await c.store.get(runtimeId))?.diagnostics).toBeNull()
+      release()
+      await running
+      createdRoots.push(...c.sandbox.roots)
+      expect(c.evidence[1]?.kind).toBe("cleanup_complete")
+    })
+
+    it.each(["throw", "reject", "hang"])(
+      "continues lifecycle with a %s evidence sink",
+      async (mode) => {
+        const c = compose()
+        c.evidenceSink.mockImplementation(() => {
+          if (mode === "throw") throw new Error("E-SENSITIVE")
+          if (mode === "reject") return Promise.reject(new Error("E-SENSITIVE"))
+          return new Promise<void>(() => {})
+        })
+        c.starter.nextReadyError = new BackendRuntimeReadinessTimeoutError()
+        const { runtimeId, job } = await createAndLease(c.controlPlane, c.queue)
+        await c.supervisor.run(job)
+        createdRoots.push(...c.sandbox.roots)
+        expect(c.sandbox.destroyed).toEqual([runtimeId])
+        expect((await c.store.get(runtimeId))?.errorCode).toBe(
+          "RUNTIME_READINESS_TIMEOUT",
+        )
+      },
+    )
+
+    it("reports cleanup-only failure with no invented primary failure", async () => {
+      const c = compose()
+      const { runtimeId, job } = await createAndLease(c.controlPlane, c.queue)
+      const running = c.supervisor.run(job)
+      await vi.waitFor(async () =>
+        expect((await c.store.get(runtimeId))?.status).toBe("running"),
+      )
+      c.starter.lastHandle!.stopOverride = async () => {
+        throw new Error("E-SENSITIVE")
+      }
+      await c.controlPlane.cancelForOrchestration(runtimeId, requester.subject)
+      await running
+      createdRoots.push(...c.sandbox.roots)
+      expect(c.evidence).toHaveLength(1)
+      expect(c.evidence[0]).toMatchObject({
+        kind: "cleanup_complete",
+        failureStage: "CLEANUP",
+        failureStep: "CLEANUP",
+        primaryFailureCode: null,
+        cleanupFailureCode: "PROCESS_STOP_FAILED",
       })
     })
   })
