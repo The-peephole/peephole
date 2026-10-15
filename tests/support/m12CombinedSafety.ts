@@ -206,18 +206,46 @@ async function canonical(candidate: string): Promise<void> {
     "HOST_OWNERSHIP_REJECTED",
   )
 }
-async function privateFile(file: string): Promise<string> {
+// The setup marker is immutable; attestations and credentials are editable
+// only by root. Never widen the secret-file policy to accommodate the marker.
+export const HOST_FILE_MODES = {
+  parentMarker: 0o400,
+  attestation: 0o600,
+  credential: 0o600,
+} as const
+
+export async function readCombinedHostFile(
+  file: string,
+  kind: keyof typeof HOST_FILE_MODES,
+): Promise<string> {
   await canonical(file)
   const stats = await lstat(file)
   requireCombined(
     stats.isFile() &&
       !stats.isSymbolicLink() &&
       stats.uid === 0 &&
-      (stats.mode & 0o777) === 0o600 &&
+      (stats.mode & 0o7777) === HOST_FILE_MODES[kind] &&
       stats.size <= 16_384,
     "HOST_OWNERSHIP_REJECTED",
   )
   return readFile(file, "utf8")
+}
+
+export async function readCombinedParentMarker(parent: string): Promise<void> {
+  const lines = (
+    await readCombinedHostFile(
+      `${parent}/.peephole-m12-test-parent`,
+      "parentMarker",
+    )
+  ).split("\n")
+  requireCombined(
+    lines.length === 4 &&
+      lines[3] === "" &&
+      lines[0] === "peephole-m12-test-parent/v1" &&
+      /^[a-f0-9]{32}$/.test(lines[1] ?? "") &&
+      lines[2] === parent,
+    "HOST_OWNERSHIP_REJECTED",
+  )
 }
 
 /** Read-only, before constructing any PG pool or allocating any test resource.
@@ -291,15 +319,7 @@ export async function preflightCombinedHost(
         (rootStat.mode & 0o777) === 0o711,
       "DATABASE_OWNERSHIP_REJECTED",
     )
-    const parentMarker = (
-      await privateFile(`${parent}/.peephole-m12-test-parent`)
-    ).split("\n")
-    requireCombined(
-      parentMarker[0] === "peephole-m12-test-parent/v1" &&
-        /^[a-f0-9]{32}$/.test(parentMarker[1] ?? "") &&
-        parentMarker[2] === parent,
-      "HOST_OWNERSHIP_REJECTED",
-    )
+    await readCombinedParentMarker(parent)
     const machineId = (await readFile("/etc/machine-id", "utf8")).trim()
     const bootId = (
       await readFile("/proc/sys/kernel/random/boot_id", "utf8")
@@ -310,11 +330,21 @@ export async function preflightCombinedHost(
     )
     const expected = { parent, postgresRoot: root, machineId, bootId }
     validateAttestation(
-      JSON.parse(await privateFile(`${parent}/.peephole-m12-combined.json`)),
+      JSON.parse(
+        await readCombinedHostFile(
+          `${parent}/.peephole-m12-combined.json`,
+          "attestation",
+        ),
+      ),
       expected,
     )
     validateAttestation(
-      JSON.parse(await privateFile(`${root}/.peephole-m12-combined.json`)),
+      JSON.parse(
+        await readCombinedHostFile(
+          `${root}/.peephole-m12-combined.json`,
+          "attestation",
+        ),
+      ),
       expected,
     )
     requireCombined(
@@ -381,7 +411,7 @@ export async function preflightCombinedHost(
     )
     validateCombinedHba(await readFile(`${dataDir}/pg_hba.conf`, "utf8"))
     const credential = JSON.parse(
-      await privateFile(`${root}/provisioner.json`),
+      await readCombinedHostFile(`${root}/provisioner.json`, "credential"),
     ) as Record<string, unknown>
     requireCombined(
       credential.user === "m12_combined_provisioner" &&

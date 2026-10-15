@@ -7,6 +7,7 @@ import {
   readdir,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises"
 import os from "node:os"
@@ -83,6 +84,21 @@ exec /usr/bin/env -u FAKE_CHMOD_FAIL "$(command -v -p chmod)" "$@"
   find: `#!/usr/bin/env bash
 [[ "\${FAKE_FIND_FAIL:-}" == "1" ]] && exit 2
 exec "$(command -v -p find)" "$@"
+`,
+  stat: `#!/usr/bin/env bash
+out="$("$(command -v -p stat)" "$@")" || exit 1
+case "$2" in
+  '%u:%a'|'%u:%a:%h')
+    uid=0
+    if [[ "\${@: -1}" == */.peephole-m12-combined.json ]]; then uid="\${FAKE_ATTESTATION_UID:-0}"; fi
+    printf '%s:%s\\n' "$uid" "\${out#*:}"
+    ;;
+  *) printf '%s\\n' "$out" ;;
+esac
+`,
+  rm: `#!/usr/bin/env bash
+[[ "\${FAKE_ROOTFS_RM_FAIL:-}" == "1" && "\${@: -1}" == */rootfs ]] && exit 1
+exec "$(command -v -p rm)" "$@"
 `,
 }
 
@@ -161,6 +177,145 @@ describe.skipIf(!linuxProc)(
       expect(result.status, result.stderr).toBe(0)
       return sandbox
     }
+
+    async function addAttestation(
+      sandbox: Sandbox,
+      changes: Record<string, unknown> = {},
+    ) {
+      const file = path.join(sandbox.parent, ".peephole-m12-combined.json")
+      await writeFile(
+        file,
+        JSON.stringify({
+          schema: "peephole-m12-combined/v1",
+          dedicatedNonProduction: true,
+          parent: sandbox.parent,
+          postgresRoot: "/srv/peephole-m12-db-lifecycle",
+          machineId: (await readFile("/etc/machine-id", "utf8")).trim(),
+          bootId: (
+            await readFile("/proc/sys/kernel/random/boot_id", "utf8")
+          ).trim(),
+          ...changes,
+        }),
+        { mode: 0o600 },
+      )
+      return file
+    }
+
+    it("tears down a valid combined attestation and rootfs without touching siblings", async () => {
+      const sandbox = await setUp()
+      await addAttestation(sandbox)
+      await mkdir(path.join(sandbox.parent, "rootfs"))
+      await writeFile(
+        path.join(sandbox.parent, "rootfs", "fixture"),
+        "keep until verified",
+      )
+      const outside = path.join(sandbox.base, "postgres-attestation")
+      await writeFile(outside, "outside deletion scope")
+      const result = runScript(sandbox, ["teardown", sandbox.parent])
+      expect(result.status, result.stderr).toBe(0)
+      expect(await exists(sandbox.parent)).toBe(false)
+      expect(await readFile(outside, "utf8")).toBe("outside deletion scope")
+    })
+
+    it.each([
+      "schema",
+      "parent",
+      "machineId",
+      "bootId",
+      "postgresRoot",
+      "dedicatedNonProduction",
+    ])(
+      "rejects bad attestation %s before any teardown action",
+      async (field) => {
+        const sandbox = await setUp()
+        const file = await addAttestation(sandbox, {
+          [field]: "SYNTHETIC-PRIVATE-MARKER",
+        })
+        await mkdir(path.join(sandbox.parent, "rootfs"))
+        const result = runScript(sandbox, ["teardown", sandbox.parent])
+        expect(result.status).not.toBe(0)
+        expect(result.stderr).toContain("BLOCKED")
+        expect(result.stderr).not.toContain("SYNTHETIC-PRIVATE-MARKER")
+        expect(await exists(file)).toBe(true)
+        expect(await exists(path.join(sandbox.parent, "rootfs"))).toBe(true)
+        expect(await readFile(sandbox.log, "utf8")).not.toContain("umount")
+      },
+    )
+    it.each([
+      "symlink",
+      "directory",
+      "unowned",
+      "permissions",
+      "malformed",
+      "extra",
+      "child-extra",
+      "nested-mount",
+      "preserved-run",
+    ])("preserves all resources for %s", async (failure) => {
+      const sandbox = await setUp()
+      const file = await addAttestation(sandbox)
+      const extra: NodeJS.ProcessEnv = {}
+      if (failure === "symlink") {
+        await rm(file)
+        await symlink(sandbox.log, file)
+      }
+      if (failure === "directory") {
+        await rm(file)
+        await mkdir(file)
+      }
+      if (failure === "unowned") extra.FAKE_ATTESTATION_UID = "1"
+      if (failure === "permissions") await chmod(file, 0o644)
+      if (failure === "malformed")
+        await writeFile(file, "{SYNTHETIC-PRIVATE-MARKER")
+      if (failure === "extra")
+        await writeFile(path.join(sandbox.parent, "unexpected"), "x")
+      if (failure === "child-extra")
+        await writeFile(
+          path.join(sandbox.parent, "workspace", "unexpected"),
+          "x",
+        )
+      if (failure === "nested-mount")
+        await writeFile(
+          sandbox.mountsFile,
+          `${sandbox.parent}/tmpfs\n${sandbox.parent}/rootfs/nested\n`,
+        )
+      if (failure === "preserved-run")
+        await mkdir(
+          path.join(sandbox.parent, "workspace", "peephole-m12-preserved"),
+        )
+      await mkdir(path.join(sandbox.parent, "rootfs"))
+      const result = runScript(sandbox, ["teardown", sandbox.parent], extra)
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).not.toContain("SYNTHETIC-PRIVATE-MARKER")
+      for (const name of [
+        "workspace",
+        "runsc",
+        "tmpfs",
+        "rootfs",
+        ".peephole-m12-test-parent",
+        ".peephole-m12-combined.json",
+      ])
+        expect(await exists(path.join(sandbox.parent, name))).toBe(true)
+      expect(await readFile(sandbox.log, "utf8")).not.toContain("umount")
+    })
+
+    it("reports partial deletion as BLOCKED and retains attestations and remaining rootfs", async () => {
+      const sandbox = await setUp()
+      await addAttestation(sandbox)
+      await mkdir(path.join(sandbox.parent, "rootfs"))
+      const result = runScript(sandbox, ["teardown", sandbox.parent], {
+        FAKE_ROOTFS_RM_FAIL: "1",
+      })
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain("BLOCKED: partial rootfs teardown")
+      for (const name of [
+        "rootfs",
+        ".peephole-m12-test-parent",
+        ".peephole-m12-combined.json",
+      ])
+        expect(await exists(path.join(sandbox.parent, name))).toBe(true)
+      expect(result.stdout).not.toContain("parent removed")
+    })
 
     it("baseline: setup then teardown removes exactly the parent", async () => {
       const sandbox = await setUp()

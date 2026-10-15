@@ -21,6 +21,7 @@ umask 077
 
 readonly MARKER_NAME=".peephole-m12-test-parent"
 readonly MARKER_SCHEMA="peephole-m12-test-parent/v1"
+readonly ATTESTATION_NAME=".peephole-m12-combined.json"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly REPOSITORY_ROOT="$SCRIPT_DIR/../.."
@@ -72,13 +73,9 @@ verify_parent() {
   local marker="$parent/$MARKER_NAME"
   [[ -f "$marker" && ! -L "$marker" ]] ||
     die "$parent is not a verified dedicated test parent (no marker)"
-  local schema="" token="" recorded=""
-  {
-    IFS= read -r schema || true
-    IFS= read -r token || true
-    IFS= read -r recorded || true
-  } <"$marker"
-  [[ "$schema" == "$MARKER_SCHEMA" && "$token" =~ ^[a-f0-9]{32}$ && "$recorded" == "$parent" ]] ||
+  local lines=()
+  mapfile -t lines <"$marker" || die "parent marker unreadable"
+  [[ "${#lines[@]}" == "3" && "${lines[0]}" == "$MARKER_SCHEMA" && "${lines[1]}" =~ ^[a-f0-9]{32}$ && "${lines[2]}" == "$parent" ]] ||
     die "$parent marker does not match this parent"
 }
 
@@ -344,6 +341,68 @@ cmd_status() {
   ((incomplete == 0)) || die "status is INCOMPLETE; do not treat this parent as clean"
 }
 
+# Inspect everything that teardown may remove BEFORE unmounting/deleting.
+# Unknown entries are never discovered only after deleting the known ones.
+verify_teardown_inventory() {
+  local parent="$1" entry listing resolved metadata
+  [[ "$(stat -c '%u:%a' -- "$parent")" == "0:700" ]] ||
+    die "BLOCKED: parent ownership or permissions changed"
+  [[ "$(stat -c '%u:%a' -- "$parent/$MARKER_NAME")" == "0:400" ]] ||
+    die "BLOCKED: parent marker ownership or permissions changed"
+  local entries=()
+  shopt -s dotglob nullglob
+  entries=("$parent"/*)
+  shopt -u dotglob nullglob
+  ((${#entries[@]} >= 4 && ${#entries[@]} <= 6)) || die "BLOCKED: parent inventory incomplete"
+  for entry in "${entries[@]}"; do
+    case "$entry" in
+      "$parent/workspace"|"$parent/runsc"|"$parent/tmpfs"|"$parent/rootfs"|"$parent/$MARKER_NAME"|"$parent/$ATTESTATION_NAME") ;;
+      *) die "BLOCKED: unexpected entry under test parent" ;;
+    esac
+  done
+  for entry in workspace runsc tmpfs; do
+    [[ -d "$parent/$entry" && ! -L "$parent/$entry" ]] || die "BLOCKED: invalid child type"
+    resolved="$(realpath -e -- "$parent/$entry")" || die "BLOCKED: child path unreadable"
+    [[ "$resolved" == "$parent/$entry" && "$(stat -c '%u:%a' -- "$parent/$entry")" == "0:700" ]] ||
+      die "BLOCKED: child ownership or path changed"
+    listing="$(find "$parent/$entry" -mindepth 1 -maxdepth 1 -print -quit)" ||
+      die "BLOCKED: child inventory unreadable"
+    [[ -z "$listing" ]] || die "BLOCKED: child is not empty"
+  done
+  if [[ -e "$parent/rootfs" || -L "$parent/rootfs" ]]; then
+    [[ -d "$parent/rootfs" && ! -L "$parent/rootfs" ]] ||
+      die "BLOCKED: rootfs is not an ordinary directory"
+    resolved="$(realpath -e -- "$parent/rootfs")" || die "BLOCKED: rootfs unreadable"
+    [[ "$resolved" == "$parent/rootfs" ]] || die "BLOCKED: rootfs path changed"
+  fi
+  entry="$parent/$ATTESTATION_NAME"
+  if [[ -e "$entry" || -L "$entry" ]]; then
+    [[ -f "$entry" && ! -L "$entry" ]] || die "BLOCKED: invalid attestation type"
+    resolved="$(realpath -e -- "$entry")" || die "BLOCKED: attestation unreadable"
+    metadata="$(stat -c '%u:%a:%h' -- "$entry")" || die "BLOCKED: attestation metadata unreadable"
+    [[ "$resolved" == "$entry" && "$metadata" == "0:600:1" ]] ||
+      die "BLOCKED: attestation ownership or permissions rejected"
+    [[ "$(stat -c '%s' -- "$entry")" -le 16384 ]] || die "BLOCKED: attestation too large"
+    # Only JSON/schema/binding is parsed here. Nothing from the file, or a
+    # parser exception, is printed. PostgreSQL's root is NEVER traversed.
+    node --input-type=module - "$entry" "$parent" <<'NODE' || die "BLOCKED: attestation binding rejected"
+import { readFileSync } from 'node:fs';
+try {
+  const value = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+  const parent = process.argv[3];
+  if (!value || value.schema !== 'peephole-m12-combined/v1' ||
+      value.dedicatedNonProduction !== true || value.parent !== parent ||
+      value.machineId !== readFileSync('/etc/machine-id', 'utf8').trim() ||
+      value.bootId !== readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() ||
+      typeof value.postgresRoot !== 'string' ||
+      !/^\/srv\/peephole-m12-db-[a-zA-Z0-9-]+$/.test(value.postgresRoot) ||
+      value.postgresRoot === parent || value.postgresRoot.startsWith(parent + '/') ||
+      parent.startsWith(value.postgresRoot + '/')) process.exit(1);
+} catch { process.exit(1); }
+NODE
+  fi
+}
+
 cmd_teardown() {
   local parent="$1"
   verify_parent "$parent"
@@ -359,6 +418,12 @@ cmd_teardown() {
       die "$parent/$child still holds preserved run directories; inspect them first (status)"
   done
   assert_no_processes_reference "$parent" /proc "$$"
+  verify_teardown_inventory "$parent"
+  local parent_identity attestation_identity="absent"
+  parent_identity="$(identity_of "$parent")"
+  if [[ -f "$parent/$ATTESTATION_NAME" ]]; then
+    attestation_identity="$(identity_of "$parent/$ATTESTATION_NAME")"
+  fi
 
   local mounts target
   mounts="$(mounts_under "$parent")" ||
@@ -379,20 +444,32 @@ cmd_teardown() {
     die "mount table could not be re-read after unmounting; $parent is preserved"
   [[ -z "$mounts" ]] ||
     die "mounts still remain under $parent after unmounting the tmpfs; $parent is preserved"
+  verify_parent "$parent"
+  [[ "$(identity_of "$parent")" == "$parent_identity" ]] || die "BLOCKED: parent identity changed"
+  assert_no_processes_reference "$parent" /proc "$$"
+  verify_teardown_inventory "$parent"
+  local current_attestation="absent"
+  if [[ -f "$parent/$ATTESTATION_NAME" ]]; then
+    current_attestation="$(identity_of "$parent/$ATTESTATION_NAME")"
+  fi
+  [[ "$current_attestation" == "$attestation_identity" ]] || die "BLOCKED: attestation identity changed"
 
   # Narrow, auditable removal: empty fixed children with non-recursive
   # rmdir; only the rootfs is removed recursively, on one filesystem.
   echo "rmdir $parent/workspace $parent/runsc $parent/tmpfs"
-  rmdir -- "$parent/workspace" "$parent/runsc" "$parent/tmpfs"
+  rmdir -- "$parent/workspace" "$parent/runsc" "$parent/tmpfs" || die "BLOCKED: partial teardown; remaining resources preserved"
   if [[ -e "$parent/rootfs" || -L "$parent/rootfs" ]]; then
     [[ -d "$parent/rootfs" && ! -L "$parent/rootfs" ]] ||
       die "$parent/rootfs is not an ordinary directory; refusing"
     echo "rm -r --one-file-system $parent/rootfs"
-    rm -r --one-file-system -- "$parent/rootfs"
+    rm -r --one-file-system -- "$parent/rootfs" || die "BLOCKED: partial rootfs teardown; remaining resources preserved"
   fi
-  rm -f -- "$parent/$MARKER_NAME"
+  if [[ "$attestation_identity" != "absent" ]]; then
+    rm -- "$parent/$ATTESTATION_NAME" || die "BLOCKED: attestation removal failed"
+  fi
+  rm -f -- "$parent/$MARKER_NAME" || die "BLOCKED: marker removal failed"
   echo "rmdir $parent"
-  rmdir -- "$parent"
+  rmdir -- "$parent" || die "BLOCKED: partial teardown; parent preserved"
   echo "Dedicated M12 test parent removed."
 }
 
