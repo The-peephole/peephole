@@ -295,6 +295,7 @@ function compose(
   const installRunner = new FakeCommandRunner()
   const starter = new FakeRuntimeProcessStarter()
   const liveRuntimeRegistry = new LiveBackendRuntimeRegistry()
+  const cleanup = vi.fn()
   const supervisor = new BackendRuntimeSupervisor(
     controlPlane,
     fetcher,
@@ -311,6 +312,7 @@ function compose(
       secretBroker,
       temporaryDatabaseProvisioner,
       userEnvironmentSource,
+      cleanup,
     },
   )
   return {
@@ -323,6 +325,7 @@ function compose(
     starter,
     liveRuntimeRegistry,
     temporaryDatabaseProvisioner,
+    cleanup,
     supervisor,
     setNow: (value: Date) => {
       now = value
@@ -364,6 +367,321 @@ describe("BackendRuntimeSupervisor", () => {
     for (const root of createdRoots.splice(0)) {
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  describe("internal failure diagnostics", () => {
+    // Synthetic hostile exception: never actual credentials. Its message,
+    // stack, cause and extra fields must not reach the internal event/store.
+    const marker = "D1-FAKE-CREDENTIAL-AND-RAW-EXCEPTION"
+    const hostileError = () =>
+      Object.assign(new Error(marker), {
+        code: marker,
+        cause: { DATABASE_URL: marker, password: marker },
+        stdout: marker,
+        stderr: marker,
+        Authorization: marker,
+      })
+
+    function diagnosticContext() {
+      const broker = new InMemoryUserEnvironmentBroker()
+      const resolvedPlan = {
+        ...secretDatabasePlan,
+        userEnvironmentNames: ["APP_GREETING"],
+      }
+      broker.register(
+        {
+          previewId: "fullstack-00000000-0000-0000-0000-000000000001",
+          requesterId: requester.subject,
+          repository,
+          backendSourceRoot: "backend",
+          names: resolvedPlan.userEnvironmentNames,
+        },
+        [{ name: "APP_GREETING", value: marker }],
+        new Date(Date.now() + 60_000),
+      )
+      const secretBroker = new InMemoryBackendRuntimeSecretBroker()
+      const provisioner = new FakeTemporaryDatabaseProvisioner()
+      const context = compose(
+        10 * 60_000,
+        "file",
+        secretBroker,
+        resolvedPlan,
+        provisioner,
+        broker,
+      )
+      return { ...context, broker, secretBroker, provisioner }
+    }
+
+    it.each([
+      ["plan", "PLAN_VALIDATION", "RUNTIME_UNAVAILABLE"],
+      ["capability", "CAPABILITY_CHECK", "RUNTIME_UNAVAILABLE"],
+      ["allocation", "WORKSPACE_ALLOCATION", "RUNTIME_UNAVAILABLE"],
+      ["fetch", "SOURCE_FETCH", "FETCH_FAILED"],
+      ["install", "DEPENDENCY_INSTALL", "INSTALL_FAILED"],
+      ["entrypoint", "ENTRYPOINT_VALIDATION", "RUNTIME_START_FAILED"],
+      ["secret", "GENERATED_SECRET_DELIVERY", "SECRET_UNAVAILABLE"],
+      ["user", "USER_ENVIRONMENT_DELIVERY", "CONFIGURATION_UNAVAILABLE"],
+      ["database", "DATABASE_PROVISIONING", "DATABASE_UNAVAILABLE"],
+      ["start", "RUNTIME_START", "RUNTIME_START_FAILED"],
+      ["readiness", "READINESS", "RUNTIME_READINESS_TIMEOUT"],
+      ["early-exit", "READINESS", "RUNTIME_START_FAILED"],
+      ["route", "ROUTE_REGISTRATION", "RUNTIME_UNAVAILABLE"],
+      ["control-plane", "CONTROL_PLANE", "RUNTIME_UNAVAILABLE"],
+    ])(
+      "classifies %s without retaining hostile exception data",
+      async (scenario, stage, code) => {
+        const c = diagnosticContext()
+        const { runtimeId, job } = await createAndLeaseForOrchestration(
+          c.controlPlane,
+          c.queue,
+        )
+        switch (scenario) {
+          case "plan":
+            job.plan = { ...job.plan, internalPort: -1 }
+            break
+          case "capability":
+            job.orchestrationKey = null
+            break
+          case "allocation":
+            vi.spyOn(c.sandbox, "allocate").mockRejectedValue(hostileError())
+            break
+          case "fetch":
+            c.fetcher.fetchError = hostileError()
+            break
+          case "install":
+            c.installRunner.installError = hostileError()
+            break
+          case "entrypoint":
+            job.plan = {
+              ...job.plan,
+              start: { command: "node", args: ["src/missing.js"] },
+            }
+            break
+          case "secret":
+            vi.spyOn(c.secretBroker, "issue").mockImplementation(() => {
+              throw hostileError()
+            })
+            break
+          case "user":
+            vi.spyOn(c.broker, "take").mockReturnValue(null)
+            break
+          case "database":
+            c.provisioner.provisionError = hostileError()
+            break
+          case "start":
+            c.starter.startError = hostileError()
+            break
+          case "readiness":
+            c.starter.nextReadyError = new BackendRuntimeReadinessTimeoutError()
+            break
+          case "early-exit":
+            c.starter.nextReadyError = hostileError()
+            break
+          case "route":
+            vi.spyOn(c.liveRuntimeRegistry, "register").mockImplementation(
+              () => {
+                throw hostileError()
+              },
+            )
+            break
+          case "control-plane":
+            vi.spyOn(c.controlPlane, "markPhase").mockRejectedValueOnce(
+              hostileError(),
+            )
+            break
+        }
+        await c.supervisor.run(job)
+        createdRoots.push(...c.sandbox.roots)
+        const stored = await c.store.get(runtimeId)
+        expect(stored?.diagnostics).toEqual({
+          failureStage: stage,
+          primaryFailureCode: code,
+          cleanupFailureCode: "NONE",
+        })
+        expect(JSON.stringify(stored)).not.toContain(marker)
+        const publicRuntime = await c.controlPlane.get(runtimeId, requester)
+        expect(publicRuntime).not.toHaveProperty("diagnostics")
+        expect(publicRuntime).toMatchObject({
+          status: "failed",
+          errorCode: code,
+        })
+        expect(c.liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+        expect(c.sandbox.destroyed).toEqual(
+          c.sandbox.roots.length ? [runtimeId] : [],
+        )
+        if (c.provisioner.calls.length && scenario !== "database") {
+          expect(c.provisioner.revoked).toEqual([databaseResourceId])
+        }
+        expect(
+          c.broker.compare(
+            job.orchestrationKey ??
+              "fullstack-00000000-0000-0000-0000-000000000001",
+            requester.subject,
+            [{ name: "APP_GREETING", value: marker }],
+          ),
+        ).toBe(scenario === "capability" ? "same" : "unknown")
+      },
+    )
+
+    it("keeps the readiness failure when DB revoke changes the legacy public code", async () => {
+      const c = diagnosticContext()
+      c.starter.nextReadyError = new BackendRuntimeReadinessTimeoutError()
+      c.provisioner.revokeError = hostileError()
+      const { runtimeId, job } = await createAndLeaseForOrchestration(
+        c.controlPlane,
+        c.queue,
+      )
+      await c.supervisor.run(job)
+      createdRoots.push(...c.sandbox.roots)
+      const stored = await c.store.get(runtimeId)
+      expect(stored?.diagnostics).toEqual({
+        failureStage: "READINESS",
+        primaryFailureCode: "RUNTIME_READINESS_TIMEOUT",
+        cleanupFailureCode: "DATABASE_REVOKE_FAILED",
+      })
+      expect(stored?.errorCode).toBe("DATABASE_UNAVAILABLE")
+      expect(c.provisioner.revoked).toEqual([databaseResourceId])
+      expect(c.sandbox.destroyed).toEqual([runtimeId])
+      expect(c.liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+      expect(JSON.stringify(stored)).not.toContain(marker)
+    })
+
+    it("preserves the original execution failure when multiple cleanup steps fail", async () => {
+      const c = diagnosticContext()
+      c.starter.nextReadyError = new BackendRuntimeReadinessTimeoutError()
+      c.sandbox.onDestroy = () => {
+        throw hostileError()
+      }
+      c.provisioner.revokeError = hostileError()
+      c.cleanup.mockRejectedValue(hostileError())
+      const { runtimeId, job } = await createAndLeaseForOrchestration(
+        c.controlPlane,
+        c.queue,
+      )
+      await c.supervisor.run(job)
+      createdRoots.push(...c.sandbox.roots)
+      expect((await c.store.get(runtimeId))?.diagnostics).toEqual({
+        failureStage: "READINESS",
+        primaryFailureCode: "RUNTIME_READINESS_TIMEOUT",
+        cleanupFailureCode: "MULTIPLE_CLEANUP_FAILURES",
+      })
+      expect(c.provisioner.revoked).toEqual([databaseResourceId])
+      expect(c.cleanup).toHaveBeenCalledExactlyOnceWith(runtimeId)
+      expect(c.liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+    })
+
+    it("does not replace a classified start failure with a concurrent abort in diagnostics", async () => {
+      const c = diagnosticContext()
+      const controller = new AbortController()
+      vi.spyOn(c.starter, "start").mockImplementation(async () => {
+        controller.abort()
+        throw hostileError()
+      })
+      const { runtimeId, job } = await createAndLeaseForOrchestration(
+        c.controlPlane,
+        c.queue,
+      )
+      await c.supervisor.run(job, { signal: controller.signal })
+      createdRoots.push(...c.sandbox.roots)
+      const stored = await c.store.get(runtimeId)
+      expect(stored?.diagnostics).toEqual({
+        failureStage: "RUNTIME_START",
+        primaryFailureCode: "RUNTIME_START_FAILED",
+        cleanupFailureCode: "NONE",
+      })
+      expect(stored?.errorCode).toBe("RUNTIME_UNAVAILABLE")
+      expect(c.provisioner.revoked).toEqual([databaseResourceId])
+    })
+
+    it("continues cleanup and terminal failure reporting if diagnostic storage is unavailable", async () => {
+      const c = diagnosticContext()
+      c.starter.nextReadyError = new BackendRuntimeReadinessTimeoutError()
+      vi.spyOn(c.controlPlane, "recordWorkerDiagnostics").mockRejectedValue(
+        hostileError(),
+      )
+      const { runtimeId, job } = await createAndLeaseForOrchestration(
+        c.controlPlane,
+        c.queue,
+      )
+      await c.supervisor.run(job)
+      createdRoots.push(...c.sandbox.roots)
+      expect((await c.controlPlane.get(runtimeId, requester)).errorCode).toBe(
+        "RUNTIME_READINESS_TIMEOUT",
+      )
+      expect(c.provisioner.revoked).toEqual([databaseResourceId])
+      expect(c.sandbox.destroyed).toEqual([runtimeId])
+      expect(c.liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+    })
+
+    it.each(["process", "workspace", "extraction", "multiple", "none"])(
+      "separately records %s cleanup after normal cancellation",
+      async (failure) => {
+        const c = diagnosticContext()
+        const { runtimeId, job } = await createAndLeaseForOrchestration(
+          c.controlPlane,
+          c.queue,
+        )
+        const running = c.supervisor.run(job)
+        await vi.waitFor(async () =>
+          expect((await c.controlPlane.get(runtimeId, requester)).status).toBe(
+            "running",
+          ),
+        )
+        if (failure === "process" || failure === "multiple")
+          c.starter.lastHandle!.stopOverride = async () => {
+            throw hostileError()
+          }
+        if (failure === "workspace" || failure === "multiple")
+          c.sandbox.onDestroy = () => {
+            throw hostileError()
+          }
+        if (failure === "extraction" || failure === "multiple")
+          c.cleanup.mockRejectedValue(hostileError())
+        await c.controlPlane.cancelForOrchestration(
+          runtimeId,
+          requester.subject,
+        )
+        await running
+        createdRoots.push(...c.sandbox.roots)
+        const expected = {
+          process: "PROCESS_STOP_FAILED",
+          workspace: "WORKSPACE_DESTROY_FAILED",
+          extraction: "EXTRACTION_CLEANUP_FAILED",
+          multiple: "MULTIPLE_CLEANUP_FAILURES",
+          none: "NONE",
+        }[failure]
+        const stored = await c.store.get(runtimeId)
+        expect(stored?.diagnostics).toEqual({
+          failureStage: failure === "none" ? null : "CLEANUP",
+          primaryFailureCode: null,
+          cleanupFailureCode: expected,
+        })
+        expect(stored?.status).toBe(failure === "none" ? "stopped" : "failed")
+        expect(c.provisioner.revoked).toEqual([databaseResourceId])
+        expect(c.cleanup).toHaveBeenCalledExactlyOnceWith(runtimeId)
+        expect(c.liveRuntimeRegistry.resolve(runtimeId)).toBeUndefined()
+        expect(JSON.stringify(stored)).not.toContain(marker)
+      },
+    )
+
+    it("records an unexpected exit and cleanup success with M10/M11/M12 disabled", async () => {
+      const c = compose()
+      const { runtimeId, job } = await createAndLease(c.controlPlane, c.queue)
+      const running = c.supervisor.run(job)
+      await vi.waitFor(async () =>
+        expect((await c.controlPlane.get(runtimeId, requester)).status).toBe(
+          "running",
+        ),
+      )
+      c.starter.lastHandle!.crash(3)
+      await running
+      createdRoots.push(...c.sandbox.roots)
+      expect((await c.store.get(runtimeId))?.diagnostics).toEqual({
+        failureStage: "RUNTIME_MONITOR",
+        primaryFailureCode: "RUNTIME_EXITED",
+        cleanupFailureCode: "NONE",
+      })
+    })
   })
 
   it("fails a corrupt database job without orchestration identity before any execution boundary", async () => {

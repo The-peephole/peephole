@@ -4,8 +4,11 @@ import type {
   QueuedBackendRuntime,
 } from "../../types/backendRuntime"
 import type { PreviewRepositoryRef } from "../../types/preview"
+import type { BackendRuntimeDiagnostics } from "./diagnostics"
 
 export interface StoredBackendRuntime extends BackendRuntime {
+  /** Worker-only fixed codes, excluded by toPublicRuntime. */
+  diagnostics: BackendRuntimeDiagnostics | null
   requesterId: string
   plan: BackendRuntimePlan
   /** Identity fingerprint for idempotent active-runtime reuse -- see

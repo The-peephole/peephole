@@ -7,6 +7,10 @@ import {
   InMemoryBackendRuntimeStore,
 } from "../services/backend-runtime-api/inMemoryAdapters"
 import type { BackendRuntimePlan } from "../types/backendRuntime"
+import type {
+  BackendRuntimeDiagnostics,
+  BackendRuntimeDiagnosticEvent,
+} from "../services/backend-runtime-api/diagnostics"
 
 const repository = {
   repositoryId: 1,
@@ -52,6 +56,7 @@ function createRequest(overrides: { sourceRoot?: string } = {}) {
 function compose(
   resolvePlan: BackendRuntimePlan | null = plan,
   maxActiveRuntimesPerRequester = 1,
+  onDiagnostics?: (event: BackendRuntimeDiagnosticEvent) => void,
 ) {
   const store = new InMemoryBackendRuntimeStore()
   const queue = new InMemoryBackendRuntimeQueue()
@@ -59,6 +64,7 @@ function compose(
   const controlPlane = new BackendRuntimeControlPlane(resolver, store, queue, {
     now: () => new Date("2026-01-01T00:00:00.000Z"),
     maxActiveRuntimesPerRequester,
+    onDiagnostics,
   })
   return { store, queue, resolver, controlPlane }
 }
@@ -76,6 +82,96 @@ function composeWithResolver(
 }
 
 describe("BackendRuntimeControlPlane", () => {
+  const failure: BackendRuntimeDiagnostics = {
+    failureStage: "READINESS",
+    primaryFailureCode: "RUNTIME_READINESS_TIMEOUT",
+    cleanupFailureCode: "NONE",
+  }
+
+  it("stores/emits only fixed diagnostic fields, retains the first record and leaves public shapes unchanged", async () => {
+    const events = vi.fn()
+    const { controlPlane, store } = compose(plan, 1, events)
+    const { runtime } = await controlPlane.create(createRequest(), requester)
+    const marker = "D1-SYNTHETIC-SECRET-AND-RAW-STACK"
+    const toJSON = vi.fn(() => {
+      throw new Error(marker)
+    })
+    const input = {
+      ...failure,
+      error: new Error(marker),
+      DATABASE_URL: marker,
+      password: marker,
+      Authorization: marker,
+      token: marker,
+      userEnvironment: marker,
+      hash: marker,
+      stdout: marker,
+      stderr: marker,
+      toJSON,
+    }
+    await controlPlane.recordWorkerDiagnostics(runtime.id, input)
+    input.failureStage = "CLEANUP"
+    await controlPlane.recordWorkerDiagnostics(runtime.id, {
+      failureStage: "CLEANUP",
+      primaryFailureCode: null,
+      cleanupFailureCode: "DATABASE_REVOKE_FAILED",
+    })
+    expect((await store.get(runtime.id))?.diagnostics).toEqual(failure)
+    expect(events).toHaveBeenCalledExactlyOnceWith({
+      runtimeId: runtime.id,
+      ...failure,
+    })
+    expect(toJSON).not.toHaveBeenCalled()
+    expect(JSON.stringify(await store.get(runtime.id))).not.toContain(marker)
+    expect(JSON.stringify(events.mock.calls)).not.toContain(marker)
+    expect(await controlPlane.get(runtime.id, requester)).toEqual(runtime)
+    expect(
+      await controlPlane.getForOrchestration(runtime.id, requester.subject),
+    ).toEqual(runtime)
+  })
+
+  it.each([
+    { failureStage: "D1-FAKE-SECRET" },
+    { primaryFailureCode: "D1-FAKE-SECRET" },
+    { cleanupFailureCode: "D1-FAKE-SECRET" },
+    { primaryFailureCode: "toString" },
+    { primaryFailureCode: { toString: (): string => "INSTALL_FAILED" } },
+  ])(
+    "rejects non-allowlisted diagnostic values without storing or emitting them: %#",
+    async (invalid) => {
+      const events = vi.fn()
+      const { controlPlane, store } = compose(plan, 1, events)
+      const { runtime } = await controlPlane.create(createRequest(), requester)
+      await expect(
+        controlPlane.recordWorkerDiagnostics(runtime.id, {
+          ...failure,
+          ...invalid,
+        } as BackendRuntimeDiagnostics),
+      ).rejects.toThrow("Invalid backend runtime diagnostic codes.")
+      expect((await store.get(runtime.id))?.diagnostics).toBeNull()
+      expect(events).not.toHaveBeenCalled()
+    },
+  )
+
+  it("does not let a diagnostic sink failure affect terminal lifecycle or cleanup metadata", async () => {
+    const events = vi.fn(() => {
+      throw new Error("D1-FAKE-SINK-SECRET")
+    })
+    const { controlPlane, store } = compose(plan, 1, events)
+    const { runtime } = await controlPlane.create(createRequest(), requester)
+    await controlPlane.cancel(runtime.id, requester)
+    await expect(
+      controlPlane.recordWorkerDiagnostics(runtime.id, failure),
+    ).resolves.toBeUndefined()
+    expect((await store.get(runtime.id))?.diagnostics).toEqual(failure)
+    expect((await controlPlane.get(runtime.id, requester)).status).toBe(
+      "cancelled",
+    )
+    expect(JSON.stringify(await store.get(runtime.id))).not.toContain(
+      "D1-FAKE-SINK-SECRET",
+    )
+  })
+
   it("isolates internal runtimes per full-stack id while reusing the same retry", async () => {
     const { controlPlane, store } = compose(plan, 2)
     const firstKey = "fullstack-00000000-0000-0000-0000-000000000001"
