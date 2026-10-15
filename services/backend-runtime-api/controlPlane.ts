@@ -12,6 +12,12 @@ import { isSafePreviewSourceRoot } from "../../core/preview/sourceRoot"
 import { validateBackendRuntimePlan } from "../../core/preview/backendRuntimePlanValidator"
 import { classifyGitHubUpstreamError } from "../../core/github/upstreamAvailability"
 import { BackendRuntimeControlError } from "./errors"
+import {
+  BACKEND_FAILURE_STAGES,
+  BACKEND_CLEANUP_FAILURE_CODES,
+  type BackendRuntimeDiagnostics,
+  type BackendRuntimeDiagnosticEvent,
+} from "./diagnostics"
 import type {
   BackendRuntimePlanResolver,
   BackendRuntimeQueue,
@@ -67,6 +73,8 @@ export interface BackendRuntimeControlPlaneOptions {
   maxActiveRuntimesPerRequester?: number
   now?: () => Date
   createId?: () => string
+  /** Best-effort internal sink. Receives only a fresh, allowlisted record. */
+  onDiagnostics?: (event: BackendRuntimeDiagnosticEvent) => void
 }
 
 export interface CreateBackendRuntimeResult {
@@ -90,7 +98,7 @@ export class BackendRuntimeControlPlane {
     private readonly planResolver: BackendRuntimePlanResolver,
     private readonly store: BackendRuntimeStore,
     private readonly queue: BackendRuntimeQueue,
-    options: BackendRuntimeControlPlaneOptions = {},
+    private readonly options: BackendRuntimeControlPlaneOptions = {},
   ) {
     this.runtimeTtlMs = options.runtimeTtlMs ?? 10 * 60_000
     this.maxActiveRuntimesPerRequester =
@@ -216,6 +224,7 @@ export class BackendRuntimeControlPlane {
       status: "queued",
       errorCode: null,
       errorMessage: null,
+      diagnostics: null,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       expiresAt: expiresAt.toISOString(),
@@ -384,6 +393,47 @@ export class BackendRuntimeControlPlane {
           }
         : runtime,
     )
+  }
+
+  /** Does not change lifecycle/ownership, including cancelled/expired rows.
+   * First record wins. Public getters deliberately omit these fields. */
+  async recordWorkerDiagnostics(
+    runtimeId: string,
+    diagnostics: BackendRuntimeDiagnostics,
+  ): Promise<void> {
+    // Runtime validation is intentional: a dependency or caller casting an
+    // exception to this interface must not persist arbitrary strings/fields.
+    const { failureStage, primaryFailureCode, cleanupFailureCode } = diagnostics
+    if (
+      (failureStage !== null &&
+        !BACKEND_FAILURE_STAGES.includes(failureStage)) ||
+      (primaryFailureCode !== null &&
+        (typeof primaryFailureCode !== "string" ||
+          !Object.hasOwn(SAFE_ERROR_MESSAGES, primaryFailureCode))) ||
+      !BACKEND_CLEANUP_FAILURE_CODES.includes(cleanupFailureCode)
+    ) {
+      throw new Error("Invalid backend runtime diagnostic codes.")
+    }
+    let recorded = false
+    const updated = await this.store.update(runtimeId, (runtime) => {
+      if (runtime.diagnostics) return runtime
+      recorded = true
+      return {
+        ...runtime,
+        diagnostics: { failureStage, primaryFailureCode, cleanupFailureCode },
+      }
+    })
+    if (!recorded) return
+    try {
+      this.options.onDiagnostics?.({
+        runtimeId: updated.id,
+        failureStage,
+        primaryFailureCode,
+        cleanupFailureCode,
+      })
+    } catch {
+      // Diagnostic delivery must never change execution or cleanup results.
+    }
   }
 
   async fail(

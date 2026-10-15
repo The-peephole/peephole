@@ -192,6 +192,16 @@ async function main(): Promise<void> {
     backendPlanResolver,
     new InMemoryBackendRuntimeStore(),
     backendQueue,
+    {
+      onDiagnostics: (event) => {
+        if (event.primaryFailureCode || event.cleanupFailureCode !== "NONE") {
+          console.info(
+            "[peephole] backend runtime diagnostics",
+            JSON.stringify(event),
+          )
+        }
+      },
+    },
   )
   const fullStackComposition = composePostgresFullStackPreview({
     database,

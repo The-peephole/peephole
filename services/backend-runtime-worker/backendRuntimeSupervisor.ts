@@ -18,6 +18,10 @@ import type {
 } from "../../types/temporaryDatabase"
 import type { PreviewRepositoryRef } from "../../types/preview"
 import type { BackendRuntimeControlPlane } from "../backend-runtime-api/controlPlane"
+import type {
+  BackendFailureStage,
+  BackendCleanupFailureCode,
+} from "../backend-runtime-api/diagnostics"
 import { minimalNpmEnv } from "../preview-worker/local/npmDependencyInstaller"
 import type { ArchiveByteStore } from "../preview-worker/local/archiveByteStore"
 import { asLocalWorkspace } from "../preview-worker/local/localWorkspace"
@@ -147,6 +151,9 @@ export class BackendRuntimeSupervisor {
     let processHandle: RuntimeProcessHandle | undefined
     let databaseResourceId: TemporaryDatabaseResourceId | undefined
     let runFailure: BackendRuntimeErrorCode | undefined
+    let stage: BackendFailureStage = "PLAN_VALIDATION"
+    let failureStage: BackendFailureStage | null = null
+    let primaryFailureCode: BackendRuntimeErrorCode | null = null
     let lifecycleStopRequested = false
     const controller = new AbortController()
     const signal = options.signal
@@ -156,6 +163,7 @@ export class BackendRuntimeSupervisor {
     let stopped = false
     let poll: ReturnType<typeof setTimeout> | undefined
     let checking: Promise<void> | undefined
+    let controlPlaneUnavailable = false
     const check = async () => {
       try {
         if (
@@ -166,6 +174,7 @@ export class BackendRuntimeSupervisor {
         }
       } catch {
         // Losing contact with the control plane must stop untrusted execution.
+        controlPlaneUnavailable = true
         controller.abort(
           new Error("Backend runtime control plane unavailable."),
         )
@@ -187,6 +196,7 @@ export class BackendRuntimeSupervisor {
           "Queued repository and backend runtime plan do not match.",
         )
       }
+      stage = "CAPABILITY_CHECK"
       if (plan.databaseRequirement !== null) {
         if (
           queued.orchestrationKey === null ||
@@ -206,6 +216,7 @@ export class BackendRuntimeSupervisor {
       ) {
         throw configurationUnavailableError()
       }
+      stage = "WORKSPACE_ALLOCATION"
       workspace = await this.sandbox.allocate(queued.runtimeId)
       signal.throwIfAborted()
       processHandle = await this.fetchInstallStart(
@@ -219,9 +230,20 @@ export class BackendRuntimeSupervisor {
         (handle) => {
           processHandle = handle
         },
+        (next) => {
+          stage = next
+        },
       )
       signal.throwIfAborted()
-      await this.monitorWhileRunning(queued.runtimeId, processHandle, signal)
+      stage = "RUNTIME_MONITOR"
+      await this.monitorWhileRunning(
+        queued.runtimeId,
+        processHandle,
+        signal,
+        (next) => {
+          stage = next
+        },
+      )
     } catch (error) {
       if (error instanceof RuntimeLifecycleStopError) {
         lifecycleStopRequested = true
@@ -233,6 +255,13 @@ export class BackendRuntimeSupervisor {
       // "control plane became unreachable mid-flight" case, mirroring
       // `PreviewJobWorker.run`'s identical `signal.aborted` fallback.
       if (!lifecycleStopRequested) {
+        // Capture the execution failure before teardown can change the
+        // legacy public errorCode. Never retain the exception itself.
+        failureStage =
+          controlPlaneUnavailable && !(error instanceof RuntimePhaseError)
+            ? "CONTROL_PLANE"
+            : stage
+        primaryFailureCode = phaseErrorCode(error)
         runFailure = signal.aborted
           ? "RUNTIME_UNAVAILABLE"
           : phaseErrorCode(error)
@@ -260,35 +289,46 @@ export class BackendRuntimeSupervisor {
       stopped = true
       clearTimeout(poll)
       await checking
-      const cleanupErrors: unknown[] = []
+      const cleanupErrors: BackendCleanupFailureCode[] = []
       try {
         await processHandle?.stop()
-      } catch (error) {
-        cleanupErrors.push(error)
+      } catch {
+        cleanupErrors.push("PROCESS_STOP_FAILED")
       }
       try {
         await workspace?.destroy()
-      } catch (error) {
-        cleanupErrors.push(error)
+      } catch {
+        cleanupErrors.push("WORKSPACE_DESTROY_FAILED")
       }
       if (databaseResourceId) {
         try {
           await this.options.temporaryDatabaseProvisioner?.revoke(
             databaseResourceId,
           )
-        } catch (error) {
-          cleanupErrors.push(error)
+        } catch {
+          cleanupErrors.push("DATABASE_REVOKE_FAILED")
           runFailure = "DATABASE_UNAVAILABLE"
         }
       }
       try {
         await this.options.cleanup?.(queued.runtimeId)
-      } catch (error) {
-        cleanupErrors.push(error)
+      } catch {
+        cleanupErrors.push("EXTRACTION_CLEANUP_FAILED")
       }
       if (cleanupErrors.length > 0 && !runFailure) {
         runFailure = "RUNTIME_UNAVAILABLE"
       }
+      await this.controlPlane
+        .recordWorkerDiagnostics(queued.runtimeId, {
+          failureStage:
+            failureStage ?? (cleanupErrors.length > 0 ? "CLEANUP" : null),
+          primaryFailureCode,
+          cleanupFailureCode:
+            cleanupErrors.length > 1
+              ? "MULTIPLE_CLEANUP_FAILURES"
+              : (cleanupErrors[0] ?? "NONE"),
+        })
+        .catch(() => undefined)
       if (runFailure) {
         await this.controlPlane.failWorkerRuntime(queued.runtimeId, runFailure)
       } else {
@@ -304,10 +344,12 @@ export class BackendRuntimeSupervisor {
     signal: AbortSignal,
     onDatabaseProvisioned: (resourceId: TemporaryDatabaseResourceId) => void,
     onProcessStarted: (handle: RuntimeProcessHandle) => void,
+    setStage: (stage: BackendFailureStage) => void,
   ): Promise<RuntimeProcessHandle> {
     const runtimeId = queued.runtimeId
     signal.throwIfAborted()
     // startWorkerRuntime already moved queued -> fetching.
+    setStage("SOURCE_FETCH")
     const archive = await runPhase("FETCH_FAILED", () =>
       this.archiveFetcher.fetch(plan.repository, signal),
     )
@@ -316,12 +358,15 @@ export class BackendRuntimeSupervisor {
     )
 
     signal.throwIfAborted()
+    setStage("CONTROL_PLANE")
     await this.controlPlane.markPhase(runtimeId, "installing")
+    setStage("DEPENDENCY_INSTALL")
     await runPhase("INSTALL_FAILED", () =>
       this.install(plan, workspace, signal),
     )
 
     signal.throwIfAborted()
+    setStage("ENTRYPOINT_VALIDATION")
     await runPhase("RUNTIME_START_FAILED", () =>
       verifyExtractedEntrypoint(
         workspace.rootDir,
@@ -329,19 +374,26 @@ export class BackendRuntimeSupervisor {
         plan.start.args[0],
       ),
     )
+    setStage("CONTROL_PLANE")
     await this.controlPlane.markPhase(runtimeId, "starting")
+    setStage("GENERATED_SECRET_DELIVERY")
     const secrets = this.issueAndTakeGeneratedSecrets(runtimeId, plan)
     // Before database provisioning, so missing configuration never leaves
     // a provisioned database behind for nothing.
+    setStage("USER_ENVIRONMENT_DELIVERY")
     const userEnvironment = this.takeUserEnvironment(queued, plan)
+    setStage("CONTROL_PLANE")
     await this.assertWorkerExecutionActive(runtimeId)
+    setStage("DATABASE_PROVISIONING")
     const databaseCredential = await this.provisionTemporaryDatabase(
       queued,
       plan,
       onDatabaseProvisioned,
     )
+    setStage("CONTROL_PLANE")
     await this.assertWorkerExecutionActive(runtimeId)
     signal.throwIfAborted()
+    setStage("RUNTIME_START")
     const handle = await runPhase("RUNTIME_START_FAILED", () =>
       this.runtimeProcessStarter.start(
         workspace,
@@ -356,6 +408,7 @@ export class BackendRuntimeSupervisor {
     // always owns handle.stop().
     onProcessStarted(handle)
 
+    setStage("READINESS")
     try {
       await handle.waitUntilReady(this.options.readinessTimeoutMs ?? 30_000)
     } catch (error) {
@@ -363,10 +416,10 @@ export class BackendRuntimeSupervisor {
         error instanceof BackendRuntimeReadinessTimeoutError
           ? "RUNTIME_READINESS_TIMEOUT"
           : "RUNTIME_START_FAILED",
-        error,
       )
     }
 
+    setStage("CONTROL_PLANE")
     await this.assertWorkerExecutionActive(runtimeId)
     signal.throwIfAborted()
     // Register the live route before the control plane ever reports this
@@ -376,7 +429,9 @@ export class BackendRuntimeSupervisor {
     // markPhase() itself now throws, run()'s existing finally block still
     // unregisters this entry (unregister is unconditional and idempotent
     // there), so a failed transition never leaves a live route behind.
+    setStage("ROUTE_REGISTRATION")
     this.liveRuntimeRegistry.register(runtimeId, handle.dialTarget)
+    setStage("CONTROL_PLANE")
     try {
       await this.controlPlane.markPhase(runtimeId, "running")
     } catch (error) {
@@ -573,6 +628,7 @@ export class BackendRuntimeSupervisor {
     runtimeId: string,
     handle: RuntimeProcessHandle,
     signal: AbortSignal,
+    setStage: (stage: BackendFailureStage) => void,
   ): Promise<void> {
     // Deliberately not awaited here: `waitForExit()` only resolves once the
     // process has actually exited, and a normal stop (cancel/expiry) is
@@ -591,13 +647,13 @@ export class BackendRuntimeSupervisor {
     const pollMs = this.options.monitorPollMs ?? 2_000
     for (;;) {
       if (signal.aborted) return
+      setStage("RUNTIME_MONITOR")
       if (exited) {
-        throw new RuntimePhaseError(
-          "RUNTIME_EXITED",
-          new Error("Backend runtime process exited unexpectedly."),
-        )
+        throw new RuntimePhaseError("RUNTIME_EXITED")
       }
+      setStage("CONTROL_PLANE")
       if (!(await this.controlPlane.shouldContinueRunning(runtimeId))) return
+      setStage("RUNTIME_MONITOR")
       await sleep(pollMs)
     }
   }
@@ -681,15 +737,8 @@ function sleep(ms: number): Promise<void> {
 }
 
 class RuntimePhaseError extends Error {
-  constructor(
-    readonly code: BackendRuntimeErrorCode,
-    cause: unknown,
-  ) {
-    super(
-      cause instanceof Error
-        ? cause.message
-        : "Backend runtime supervisor phase failed.",
-    )
+  constructor(readonly code: BackendRuntimeErrorCode) {
+    super("Backend runtime supervisor phase failed.")
     this.name = "RuntimePhaseError"
   }
 }
@@ -710,7 +759,6 @@ async function runPhase<T>(
   } catch (error) {
     throw new RuntimePhaseError(
       error instanceof RunnerDiskLimitError ? "RUNTIME_DISK_LIMIT" : code,
-      error,
     )
   }
 }
@@ -718,8 +766,8 @@ async function runPhase<T>(
 function runPhaseSync<T>(code: BackendRuntimeErrorCode, action: () => T): T {
   try {
     return action()
-  } catch (error) {
-    throw new RuntimePhaseError(code, error)
+  } catch {
+    throw new RuntimePhaseError(code)
   }
 }
 
@@ -728,22 +776,13 @@ function phaseErrorCode(error: unknown): BackendRuntimeErrorCode {
 }
 
 function secretUnavailableError(): RuntimePhaseError {
-  return new RuntimePhaseError(
-    "SECRET_UNAVAILABLE",
-    new Error("Generated-secret material is unavailable."),
-  )
+  return new RuntimePhaseError("SECRET_UNAVAILABLE")
 }
 
 function configurationUnavailableError(): RuntimePhaseError {
-  return new RuntimePhaseError(
-    "CONFIGURATION_UNAVAILABLE",
-    new Error("User-provided configuration is unavailable."),
-  )
+  return new RuntimePhaseError("CONFIGURATION_UNAVAILABLE")
 }
 
 function databaseUnavailableError(): RuntimePhaseError {
-  return new RuntimePhaseError(
-    "DATABASE_UNAVAILABLE",
-    new Error("Temporary database provisioning is unavailable."),
-  )
+  return new RuntimePhaseError("DATABASE_UNAVAILABLE")
 }
