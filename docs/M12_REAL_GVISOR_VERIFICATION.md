@@ -99,8 +99,9 @@ exact inspection and recovery commands. A path that already existed is
 never touched.
 
 Build the separate rootfs through the same script.
-`build-base-rootfs.sh` deletes an existing output directory and defaults
-to the production path, so the script only ever passes it
+`build-base-rootfs.sh` refuses an existing output path and defaults
+to the production path (see [rootfs build policy](ROOTFS_BUILD.md)), so the
+script only ever passes it
 `<parent>/rootfs`, and only after re-verifying the marker and that this
 path does not exist yet:
 

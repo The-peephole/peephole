@@ -8,6 +8,8 @@ set -euo pipefail
 # local verification).
 #
 # Usage: sudo ./scripts/gvisor/build-base-rootfs.sh [output-dir]
+# Output must be a new, canonical absolute path. Existing/partial images
+# are preserved, never replaced. See docs/ROOTFS_BUILD.md.
 
 if [[ $EUID -ne 0 ]]; then
   echo "Run this as root (it uses debootstrap and chroot-installs packages)." >&2
@@ -19,6 +21,15 @@ NODE_VERSION="24.20.0"
 UBUNTU_RELEASE="noble"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+if [[ "$OUT_DIR" != /* || "$OUT_DIR" == / || "$OUT_DIR" != "$(realpath -m -- "$OUT_DIR")" ]]; then
+  echo "Refusing: output must be a canonical absolute path without symlink ancestors." >&2
+  exit 1
+fi
+if [[ -e "$OUT_DIR" || -L "$OUT_DIR" ]]; then
+  echo "Refusing: $OUT_DIR already exists; existing and partial images are never deleted." >&2
+  exit 1
+fi
+
 # Debian/Ubuntu's "primary" archive (archive.ubuntu.com) only carries
 # amd64/i386 packages; every other architecture (arm64, armhf, ppc64el,
 # s390x, riscv64, ...) lives on the separate "ports" archive. debootstrap
@@ -26,25 +37,38 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # (effectively the host's own arch, since we're not cross-bootstrapping),
 # so the mirror must match it or package resolution fails outright.
 HOST_ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
-case "$HOST_ARCH" in
-  amd64)
+# Pin the version/architecture tuple, not a checksum fetched alongside the
+# archive. Updating Node requires reviewing BOTH hashes from its signed
+# SHASUMS256.txt.asc (see docs/ROOTFS_BUILD.md).
+case "$NODE_VERSION/$HOST_ARCH" in
+  24.20.0/amd64)
     NODE_ARCH="x64"
+    NODE_SHA256="2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2"
     UBUNTU_MIRROR="http://archive.ubuntu.com/ubuntu"
     ;;
-  arm64)
+  24.20.0/arm64)
     NODE_ARCH="arm64"
+    NODE_SHA256="5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7"
     UBUNTU_MIRROR="http://ports.ubuntu.com/ubuntu-ports"
     ;;
   *)
-    echo "Unsupported host architecture: '${HOST_ARCH:-unknown}' (expected amd64 or arm64; is dpkg installed?)." >&2
+    echo "Unsupported Node version/host architecture: '$NODE_VERSION/${HOST_ARCH:-unknown}' (expected pinned amd64 or arm64; is dpkg installed?)." >&2
     exit 1
     ;;
 esac
 
-if [[ -d "$OUT_DIR" ]]; then
-  echo "Removing existing rootfs at $OUT_DIR"
-  rm -rf "$OUT_DIR"
-fi
+# Claim the leaf atomically so a path created since the check also fails.
+mkdir -p -- "$(dirname -- "$OUT_DIR")"
+mkdir -m 0755 -- "$OUT_DIR"
+
+# Host-only download storage; never export this path into the chroot.
+# Ambient host TMPDIR can be absent inside debootstrap's chroot too.
+unset TMPDIR TMP TEMP
+NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
+BUILD_TMP="$(mktemp -d /var/tmp/peephole-rootfs-node.XXXXXXXX)"
+NODE_DOWNLOAD="$BUILD_TMP/$NODE_TARBALL"
+# Remove only this build's download, never any rootfs or other directory tree.
+trap 'rm -f -- "$NODE_DOWNLOAD"; rmdir -- "$BUILD_TMP"' EXIT
 
 echo "Debootstrapping a minimal $UBUNTU_RELEASE ($HOST_ARCH) base into $OUT_DIR from $UBUNTU_MIRROR"
 debootstrap --variant=minbase "$UBUNTU_RELEASE" "$OUT_DIR" "$UBUNTU_MIRROR"
@@ -53,10 +77,19 @@ echo "Installing ca-certificates (needed for npm's HTTPS registry calls)"
 chroot "$OUT_DIR" /bin/sh -c "apt-get update -qq && apt-get install -y -qq ca-certificates && rm -rf /var/lib/apt/lists/*"
 
 echo "Installing Node.js $NODE_VERSION (official linux-$NODE_ARCH tarball) into /usr/local"
-NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
-curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}" -o "/tmp/${NODE_TARBALL}"
-tar -xJf "/tmp/${NODE_TARBALL}" -C "$OUT_DIR/usr/local" --strip-components=1
-rm -f "/tmp/${NODE_TARBALL}"
+curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}" -o "$NODE_DOWNLOAD"
+if ! printf '%s  %s\n' "$NODE_SHA256" "$NODE_DOWNLOAD" | sha256sum --check --strict --quiet -; then
+  echo "Node tarball SHA256 mismatch; refusing extraction and execution." >&2
+  exit 1
+fi
+# The official tarball records 1000/1000 as owner; running as root, GNU tar
+# would keep it, leaving the sandbox's Node/npm writable by that host UID.
+tar -xJf "$NODE_DOWNLOAD" -C "$OUT_DIR/usr/local" --strip-components=1 --no-same-owner
+NON_ROOT="$(find "$OUT_DIR/usr/local" -xdev \( ! -uid 0 -o ! -gid 0 \) -print -quit)"
+if [[ -n "$NON_ROOT" ]]; then
+  echo "Node.js install left files under $OUT_DIR/usr/local not owned by root:root." >&2
+  exit 1
+fi
 
 echo "Verifying node/npm inside the rootfs"
 chroot "$OUT_DIR" /usr/local/bin/node --version
