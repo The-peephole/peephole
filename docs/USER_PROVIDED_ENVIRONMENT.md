@@ -1,12 +1,15 @@
 # User-Provided Preview Environment (M12) — Design and Status
 
-**Status (2026-10-13): M12-A and M12-B implemented behind two default-off
-flags; PORTABLE_VERIFIED; REAL_GVISOR_VERIFIED at `5ed0f92` (2026-10-13:
-306 host checks and 12/12 E/G/H cases); NOT DEPLOYED.** The subsequent
-concurrent-exit correction is portable-verified only, pending Linux lifecycle
-recheck. Actual PostgreSQL connectivity, H1 SIGKILL and Chrome E2E remain
-NOT_VERIFIED. M12-C (external API keys and other secrets) is design-only and
-not implemented. See D-035.
+**Status (2026-10-16): M12-A/B implemented; limited Production Chrome
+Fullstack Canary succeeded at `aa26a11`, then Stable rollback completed at
+`87d691e` with M12 OFF. General rollout is NOT complete.** The historical
+REAL_GVISOR_VERIFIED result remains bound to `5ed0f92` (2026-10-13: 306 host
+checks, 12/12 E/G/H cases). The later concurrent-exit correction still needs
+its Linux lifecycle recheck; actual server SIGKILL and a separately evidenced
+M12 combined PostgreSQL query remain unverified. Stage3A extension files are
+restored, but browser Reload/login/connection confirmation is pending.
+M12-C (external API keys and other secrets) remains design-only. See D-035
+and [Canary closure, evidence and release gates](M12_PRODUCTION_CANARY_20261016.md).
 
 | Flag | Side | Default | Effect when off |
 | --- | --- | --- | --- |
@@ -265,7 +268,10 @@ secrecy the design explicitly does not provide.
 | Side Panel UI | PASS (jsdom) |
 | PostgreSQL integration | No schema change; existing suite environment-gated, NOT_RUN locally |
 | Real Linux root + gVisor (actual child env, tmpfs lifetime, `/proc` and `runsc --root` non-persistence, rootfs placeholder) | **REAL_GVISOR_VERIFIED at `5ed0f92`**: 306 host checks; E 5/5, G 6/6, H2/H3 1/1; 12/12 PASS. Later concurrent-exit correction: PORTABLE_VERIFIED, Linux lifecycle recheck pending |
-| H1 actual SIGKILL / M12 actual PostgreSQL connectivity / Chrome E2E | **NOT_VERIFIED** |
+| Chrome -> Production Fullstack, frontend/backend, APP_GREETING, ordinary Stop and ownership/resource cleanup | **CANARY_FUNCTIONAL_SUCCESS / RESOURCE_CLEANUP_PASS**, 2026-10-16, one pinned fixture; see closure evidence and operator-observation limits |
+| Canary activation and Stable rollback | **ROLLBACK_COMMITTED**, exit 0; M12 OFF, Stable rootfs, health/readiness/smoke and 70 s stability PASS |
+| H1 actual server SIGKILL / separately evidenced M12 combined PostgreSQL query | **NOT_VERIFIED**; database/role absence is not application SQL connectivity proof |
+| Stage3A extension restoration after Canary | Files/tree verified; actual Reload, extension ID, login and live connection **PENDING USER CONFIRMATION** |
 
 Portable tests with stubs do not prove whole-host non-exposure.
 
@@ -299,13 +305,24 @@ Portable tests with stubs do not prove whole-host non-exposure.
 - Single-process assumption: a multi-process deployment would make `take`
   fail closed (safe, but the feature would not work).
 - Real-host evidence applies to `5ed0f92`, not the subsequent concurrent-exit
-  correction. Recheck G lifecycle and H2/H3 on Linux before production
-  activation; the remaining NOT_VERIFIED items above are separate gates.
+  correction. Ordinary Production Stop succeeded on 2026-10-16, but does not
+  cover its adversarial interleavings. Recheck G lifecycle and H2/H3 before
+  general M12 ON; preserve the actual-server SIGKILL requirement below.
+  [Release planning](M12_PRODUCTION_CANARY_20261016.md#release-readiness)
+  distinguishes mandatory gates from additional coverage; no unrun case is PASS.
 
-## 12. Deployment preconditions (not performed)
+## 12. Deployment preconditions (limited Canary completed; general rollout pending)
 
-1. Rebuild the base rootfs with the current `scripts/gvisor/build-base-rootfs.sh`
-   (new `/run/secrets/user-env` placeholder and M12-aware bootstrap).
+The 2026-10-16 scoped activation, ordinary preview and Stable rollback are
+complete, not authorization to leave M12 enabled or deploy merged main.
+The remaining lifecycle/crash checks and security disposition in the
+[release plan](M12_PRODUCTION_CANARY_20261016.md#release-readiness) must be
+closed before general activation. These preconditions remain relevant:
+
+1. Pin a compatible rootfs with `/run/secrets/user-env`, the approved bootstrap
+   bytes and root-owned Node/npm. A previously verified image may be reused
+   after identity/compatibility review. If a new build is needed, use
+   `scripts/gvisor/build-base-rootfs.sh` at a new path; never rebuild in place.
 2. Ensure `PEEPHOLE_USER_ENVIRONMENT_ROOT` (default `/run/peephole/user-env`)
    is on tmpfs; startup preflight enforces it.
 3. Run the real-gVisor verification (harness and runbook:
@@ -315,7 +332,8 @@ Portable tests with stubs do not prove whole-host non-exposure.
    removal on stop/crash, startup reap after `SIGKILL` of the actual server
    PID (not the tsx wrapper — see D-032's correction), and `CONFIGURATION_UNAVAILABLE`
    after a restart before START.
-4. Then set `PEEPHOLE_USER_ENVIRONMENT=1`, and build the extension with
+4. Only after release gates and separate operator approval, set
+   `PEEPHOLE_USER_ENVIRONMENT=1`, and use a reviewed extension artifact with
    `WXT_USER_ENVIRONMENT_ENABLED=true` (requires
    `WXT_FULLSTACK_PREVIEW_ENABLED=true`).
 

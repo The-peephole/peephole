@@ -135,9 +135,13 @@ because a fixture or interface for it exists.
 10. [x] ephemeral env / secrets
 11. [x] temporary database support
 12. [ ] user-provided preview configuration (M12) -- M12-A/M12-B implemented
-    behind default-off flags, not deployed, real-gVisor/Chrome E2E pending;
-    non-sensitive configuration only; M12-C (external API keys/secrets) is
-    design-only. See D-035 and docs/USER_PROVIDED_ENVIRONMENT.md
+    behind default-off flags; limited Production Chrome Fullstack Canary
+    succeeded on 2026-10-16, then Stable rollback completed with M12 OFF.
+    General rollout is not complete; current-SHA lifecycle/crash and release
+    gates remain. Non-sensitive configuration only; M12-C (external API
+    keys/secrets) is design-only, a separate scope. See D-035,
+    [design/status](USER_PROVIDED_ENVIRONMENT.md) and the
+    [Canary closure and release plan](M12_PRODUCTION_CANARY_20261016.md).
 
 Stage 10 is implemented and production-verified, narrowly: Peephole may
 *generate* and inject values for exactly four server-only secret names --

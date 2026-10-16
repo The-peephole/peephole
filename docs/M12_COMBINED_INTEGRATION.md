@@ -1,5 +1,15 @@
 # M10/M11/M12 combined integration (D2A)
 
+**2026-10-16 closure note:** the Production Chrome Fullstack Canary and
+ordinary Stop/cleanup succeeded, then Stable rollback restored M12 OFF.
+The reviewed evidence does not contain a separate `/api/db-check` query
+receipt or a passing run of this combined harness. Keep its real SQL path
+NOT_RUN/UNVERIFIED; source code, readiness and zero tenant residue do not
+prove that assertion was observed. See
+[closure and release classification](M12_PRODUCTION_CANARY_20261016.md#release-readiness).
+The credential-exposure status recorded below has no closure evidence in the
+reviewed packet and is not cleared by the Canary or PR #60.
+
 ## Baseline and verification gap
 
 Baseline main: `eb1c14d4c9b935c91b9cdcbbd9887f4dfb1ba83f`, including merged
