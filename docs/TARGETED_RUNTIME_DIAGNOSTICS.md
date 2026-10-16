@@ -7,6 +7,14 @@ material/network/OCI setup and cannot distinguish runsc, bootstrap, and app
 exits before TCP readiness. Stage E adds bounded internal evidence at those
 boundaries. It does not fix an established runtime cause or deploy anything.
 
+**2026-10-16 status update:** the later approved Canary at `aa26a11`
+succeeded and was rolled back to Stable/M12 OFF. This supersedes the
+historical Stage E preparation status below; it does not establish the cause
+of the earlier failures. D1 and the Stage E instrumentation were present,
+but no failure event was expected from this successful preview. Actual D1/
+Stage E failure-event capture, journal retention and restart survival remain
+UNVERIFIED. See [closure, evidence and release plan](M12_PRODUCTION_CANARY_20261016.md).
+
 ## Compatibility and scope
 
 - Existing `failureStage`, public backend/parent error codes, lifecycle,
@@ -162,7 +170,14 @@ This does not execute gVisor, bind mounts, Linux UID/tmpfs policy, production
 PostgreSQL or an actual production journal. Do not count portable PASS as
 real-gVisor verification.
 
-## Canary readiness: BLOCKED
+## Historical Stage E Canary readiness: BLOCKED before separate approvals
+
+This section records the prerequisites at the end of Stage E, not the latest
+execution result. The separately approved 2026-10-16 activation/Canary/Stop/
+rollback is complete; approvals are consumed and cannot authorize another
+run. Existing evidence should be reused. For future release work use the
+[current gate assessment](M12_PRODUCTION_CANARY_20261016.md#release-readiness),
+without treating successful execution as failure-path telemetry verification.
 
 Stage E authorizes local changes/tests and an unmerged PR only. Before any
 additional production work, obtain explicit approval for these concrete

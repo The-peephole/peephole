@@ -5,12 +5,22 @@
 E1–E5 5/5, G1–G5 6/6, H2/H3 1/1 — 12/12 PASS.**
 The final execution (`reverify-20261013-3a2e1079/FINAL_REPORT.md`) also
 verified the Guard's actual EC2 termination and zero newly created residual
-AWS resources. This is not production deployment. H1 actual SIGKILL, actual
-PostgreSQL connectivity and Chrome extension E2E remain **NOT_VERIFIED**.
+AWS resources. That run was not production deployment. At that milestone,
+H1 actual SIGKILL, actual PostgreSQL connectivity and Chrome E2E were
+**NOT_VERIFIED**.
 The later concurrent-exit/SIGTERM correction has portable regressions only;
 the 12/12 result above does not attest to that newer code. Recheck G lifecycle
 and H2/H3 on Linux before production activation. A green GitHub CI alone is
 not real-host verification. Design: docs/USER_PROVIDED_ENVIRONMENT.md (D-035).
+
+**2026-10-16 update:** a separately approved Production Chrome Fullstack
+Canary at `aa26a11` passed frontend/backend/config delivery and ordinary Stop/
+physical cleanup, followed by Stable rollback with M12 OFF. This closes that
+limited Chrome E2E gap, not H1, all post-correction G/H interleavings, a
+separately recorded application SQL-query E2E or actual D1 failure capture.
+The 12/12 historical result above remains bound to its original SHA. See
+[Canary closure and remaining release gates](M12_PRODUCTION_CANARY_20261016.md).
+Stage3A files are restored; actual browser Reload/login remains user-pending.
 
 Files:
 
@@ -146,15 +156,17 @@ Subsets (vitest `-t`):
 | Failure / cleanup | `-t "G"` | Natural exit, startup failure, bootstrap fail-closed (emptied and malformed file), independent cleanup, stale reaper |
 | Ownership loss | `-t "H2"` | Abandoned live runtime reconciled by fresh test-root reapers, twice |
 
-**Planned, not implemented:**
+**Outside this 12-case harness:**
 
 - **M11 + M12 with real PostgreSQL connectivity.** Requires the prepared
   host-local PostgreSQL 18 tenant used by
   `tests/realTemporaryDatabaseRuntime.test.ts`
   (`PEEPHOLE_M11_REAL_GVISOR_DATABASE_TESTS=1`); run that M11 suite
-  separately for connectivity. A combined suite would duplicate ~300 lines
-  of M11 tenant provisioning and is deferred.
-- **H1 — crash before START with an isolated supervisor process.** Needs a
+  separately for M11 connectivity. The separate combined scenario now exists
+  in `tests/realCombinedEnvironmentRuntime.test.ts`; follow
+  [its dedicated-host/PG runbook](M12_COMBINED_INTEGRATION.md). No passing
+  execution receipt for that combined SQL path is supplied by this closure.
+- **H1 — crash before START with an isolated supervisor process (not implemented here).** Needs a
   harness-owned child process that composes the control planes and is
   terminated by its own `ChildProcess` handle (never by name). The
   property (a fresh process has an empty broker → `CONFIGURATION_UNAVAILABLE`)
