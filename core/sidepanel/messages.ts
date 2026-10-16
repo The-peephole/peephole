@@ -20,8 +20,11 @@ export interface SidePanelMessageTransport {
 }
 
 export interface SidePanelApi {
-  setOptions(options: {
+  getOptions?(options: {
     tabId: number
+  }): Promise<{ path?: string; enabled?: boolean }>
+  setOptions(options: {
+    tabId?: number
     path?: string
     enabled: boolean
   }): Promise<void>
@@ -30,11 +33,24 @@ export interface SidePanelApi {
 
 export interface SidePanelMessageSender {
   tab?: { id?: number }
+  documentLifecycle?: string
+  frameId?: number
 }
 
 export interface SidePanelMessageResponse {
   ok: boolean
   error?: string
+}
+
+export interface SidePanelNavigationGuard {
+  version(tabId: number): number
+  invalidate(tabId: number): void
+  markBound(tabId: number, repository: RepositoryIdentity): void
+  canOpen(tabId: number, repository: RepositoryIdentity): boolean
+  prepareOpen(
+    tabId: number,
+    repository: RepositoryIdentity,
+  ): Promise<SidePanelMessageResponse>
 }
 
 export function createSidePanelMessageClient(
@@ -59,6 +75,7 @@ export function createSidePanelMessageClient(
 
 export function createSidePanelMessageHandler(
   sidePanel: SidePanelApi,
+  navigation?: SidePanelNavigationGuard,
 ): (
   message: unknown,
   sender: SidePanelMessageSender,
@@ -66,6 +83,17 @@ export function createSidePanelMessageHandler(
   return (message, sender) => {
     if (!isSidePanelMessage(message)) {
       return undefined
+    }
+
+    if (
+      (sender.frameId !== undefined && sender.frameId !== 0) ||
+      (sender.documentLifecycle !== undefined &&
+        sender.documentLifecycle !== "active")
+    ) {
+      return Promise.resolve({
+        ok: false,
+        error: "The repository document is no longer active.",
+      })
     }
 
     const tabId = sender.tab?.id
@@ -78,15 +106,31 @@ export function createSidePanelMessageHandler(
     }
 
     if (message.type === SET_SIDE_PANEL_CONTEXT) {
-      return setContext(sidePanel, tabId, message.repository)
+      navigation?.invalidate(tabId)
+      const version = navigation?.version(tabId)
+      return setContext(
+        sidePanel,
+        tabId,
+        message.repository,
+        () => version === navigation?.version(tabId),
+        (bound) => navigation?.markBound(tabId, bound),
+      )
     }
 
     const path = createSidePanelPath(message.repository, tabId)
-    const configure = sidePanel.setOptions({
-      tabId,
-      path,
-      enabled: true,
-    })
+    navigation?.invalidate(tabId)
+    if (navigation && !navigation.canOpen(tabId, message.repository)) {
+      return navigation.prepareOpen(tabId, message.repository)
+    }
+    const configure = sidePanel.setOptions(
+      navigation
+        ? { tabId, enabled: true }
+        : {
+            tabId,
+            path,
+            enabled: true,
+          },
+    )
     const open = sidePanel.open({ tabId })
 
     return Promise.all([configure, open]).then(
@@ -136,17 +180,39 @@ async function setContext(
   sidePanel: SidePanelApi,
   tabId: number,
   repository: RepositoryIdentity | null,
+  isCurrent: () => boolean,
+  onBound: (repository: RepositoryIdentity) => void,
 ): Promise<SidePanelMessageResponse> {
   try {
+    const current = repository ? await sidePanel.getOptions?.({ tabId }) : null
+    if (!isCurrent())
+      return { ok: false, error: "The repository navigation changed." }
+    // Discovery does not replace an open job UI. Only explicit Open may rebind.
+    const boundUrl = current?.path
+      ? new URL(current.path, "https://extension.invalid/")
+      : null
+    const hasBoundRepository =
+      boundUrl?.origin === "https://extension.invalid" &&
+      boundUrl?.pathname === "/sidepanel.html" &&
+      parseSidePanelTabId(boundUrl) === tabId &&
+      parseSidePanelRepository(boundUrl) !== null
     await sidePanel.setOptions(
       repository
-        ? {
-            tabId,
-            path: createSidePanelPath(repository, tabId),
-            enabled: true,
-          }
+        ? hasBoundRepository
+          ? { tabId, enabled: true }
+          : {
+              tabId,
+              path: createSidePanelPath(repository, tabId),
+              enabled: true,
+            }
         : { tabId, enabled: false },
     )
+    if (repository && isCurrent())
+      onBound(
+        hasBoundRepository && boundUrl
+          ? parseSidePanelRepository(boundUrl)!
+          : repository,
+      )
     return { ok: true }
   } catch {
     return { ok: false, error: "Chrome could not update the side panel." }

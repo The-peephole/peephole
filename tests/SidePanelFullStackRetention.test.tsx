@@ -5,6 +5,12 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { SidePanelApp } from "../entrypoints/sidepanel/App"
+import {
+  createTabFullStackControlStore,
+  type RetainedFullStackControl,
+} from "../core/sidepanel/fullStackRetention"
+import { createNavigationBarrier } from "../core/sidepanel/navigationBarrier"
+import { createSidePanelNavigation } from "../core/sidepanel/navigation"
 import type { FullStackPreviewApi } from "../core/fullstack/apiClient"
 import type { PreviewApi } from "../core/preview/apiClient"
 import type {
@@ -569,6 +575,10 @@ async function renderSidePanel({
   roots,
   strict = false,
   previewApi = null,
+  initial = null,
+  persist,
+  onCreatePending,
+  repository = { owner: "The-peephole", repo: "peephole-fixture-fullstack" },
 }: {
   analysisForBranch: (
     branch: string,
@@ -579,6 +589,10 @@ async function renderSidePanel({
   roots: Root[]
   strict?: boolean
   previewApi?: PreviewApi | null
+  initial?: RetainedFullStackControl | null
+  persist?: (control: RetainedFullStackControl | null) => Promise<void>
+  onCreatePending?: (pending: boolean) => void
+  repository?: { owner: string; repo: string }
 }): Promise<HTMLDivElement> {
   const container = document.createElement("div")
   container.id = "root"
@@ -595,6 +609,9 @@ async function renderSidePanel({
       <SidePanelApp
         fullStackPreviewApi={api}
         fullStackPreviewEnabled
+        initialFullStackControl={initial}
+        persistFullStackControl={persist}
+        onCreatePendingChange={onCreatePending}
         loadBuildTargetAnalysis={loadTarget}
         loadRepositoryAnalysis={loadRepositoryAnalysis}
         loadRepositoryBranches={() =>
@@ -615,10 +632,7 @@ async function renderSidePanel({
         }
         previewApi={previewApi}
         previewArtifactBaseDomain="preview.example.test"
-        repository={{
-          owner: "The-peephole",
-          repo: "peephole-fixture-fullstack",
-        }}
+        repository={repository}
       />
     )
     root.render(strict ? <StrictMode>{app}</StrictMode> : app)
@@ -783,4 +797,275 @@ function getButton(container: HTMLElement, label: string): HTMLButtonElement {
   )
   if (!button) throw new Error(`Button not found: ${label}`)
   return button
+}
+
+describe("Sidepanel navigation recovery", () => {
+  const roots: Root[] = []
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    for (const root of roots) act(() => root.unmount())
+    roots.length = 0
+    document.body.innerHTML = ""
+  })
+  const loadTarget: BuildTargetAnalysisLoader = async (_, target) =>
+    createTargetAnalysis(createRootAnalysis(), target.sourceRoot)
+  it("rehydrates an admitted job across panel reload, names the original repository and stops without Create", async () => {
+    const analysis = createRootAnalysis(),
+      queued = createPreview(analysis)
+    const store = createTabFullStackControlStore(17, createMemoryStorage())
+    const api = createApi({ create: vi.fn().mockResolvedValue(queued) })
+    const container = await renderSidePanel({
+      analysisForBranch: () => analysis,
+      api,
+      roots,
+      persist: store.save,
+      loadTarget,
+    })
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+    const initial = await store.load()
+    expect(initial?.preview.id).toBe(queued.id)
+    await act(async () => roots.pop()!.unmount())
+    container.remove()
+    const stop = vi.fn().mockResolvedValue({ ...queued, status: "stopped" })
+    const restoredApi = createApi({ create: vi.fn(), stop })
+    const restored = await renderSidePanel({
+      analysisForBranch: () => ({
+        ...analysis,
+        repository: { ...analysis.repository, repo: "another-repository" },
+      }),
+      api: restoredApi,
+      roots,
+      initial,
+      persist: store.save,
+      repository: { owner: "The-peephole", repo: "another-repository" },
+      loadTarget,
+    })
+    expect(restored.textContent).toContain("Checking saved full-stack preview")
+    expect(restored.textContent).toContain(
+      "Full-stack controls: The-peephole/peephole-fixture-fullstack",
+    )
+    expect(restored.querySelector("iframe")).toBeNull()
+    await act(async () =>
+      getButton(restored, "Stop full-stack preview").click(),
+    )
+    expect(stop).toHaveBeenCalledWith(
+      queued.id,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    expect(restoredApi.create).not.toHaveBeenCalled()
+    expect(api.create).toHaveBeenCalledTimes(1)
+  })
+  it("revalidates a saved ready preview before embedding; an expired server response cannot show an iframe", async () => {
+    vi.useFakeTimers()
+    const analysis = createRootAnalysis(),
+      initial = {
+        analysis: {
+          ...analysis,
+          ...createTargetAnalysis(analysis, "frontend"),
+        },
+        preview: {
+          ...createPreview(analysis),
+          status: "ready" as const,
+          url: `https://${createPreview(analysis).id}.preview.example.test/`,
+          expiresAt: "2099-01-01T00:00:00Z",
+        },
+      }
+    const api = createApi({
+      get: vi.fn().mockResolvedValue({
+        ...initial.preview,
+        status: "expired",
+        url: null,
+      }),
+      create: vi.fn(),
+    })
+    const container = await renderSidePanel({
+      analysisForBranch: () => analysis,
+      api,
+      roots,
+      initial,
+      loadTarget,
+    })
+    expect(container.querySelector("iframe")).toBeNull()
+    await act(async () => vi.advanceTimersByTimeAsync(2000))
+    expect(container.textContent).toContain("Full-stack preview expired")
+    expect(container.querySelector("iframe")).toBeNull()
+    expect(api.create).not.toHaveBeenCalled()
+  })
+  it("defers hiding until Create returns and saved controls are acknowledged", async () => {
+    const analysis = createRootAnalysis(),
+      queued = createPreview(analysis)
+    const create = createDeferred<FullStackPreview>(),
+      ack = createDeferred<void>()
+    const store = createTabFullStackControlStore(17, {
+      ...createMemoryStorage(),
+      set: vi.fn(() => ack.promise),
+    })
+    const barrier = createNavigationBarrier(store)
+    barrier.ready()
+    const panelApi = {
+      setOptions: vi.fn().mockResolvedValue(undefined),
+      open: vi.fn(),
+    }
+    const nav = createSidePanelNavigation(panelApi, () => barrier.wait())
+    const container = await renderSidePanel({
+      analysisForBranch: () => analysis,
+      api: createApi({ create: vi.fn(() => create.promise) }),
+      roots,
+      persist: barrier.save,
+      onCreatePending: barrier.setCreating,
+      loadTarget,
+    })
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+    const hide = nav.onUpdated(17, { status: "loading" })
+    expect(panelApi.setOptions).not.toHaveBeenCalled()
+    await act(async () => create.resolve(queued))
+    expect(panelApi.setOptions).not.toHaveBeenCalled()
+    await act(async () => ack.resolve())
+    await hide
+    expect(panelApi.setOptions).toHaveBeenCalledWith({
+      tabId: 17,
+      enabled: false,
+    })
+    expect(container.textContent).toContain(queued.id)
+  })
+  it("keeps admission retry controls visible after a lost Create response", async () => {
+    const analysis = createRootAnalysis(),
+      barrier = createNavigationBarrier(
+        createTabFullStackControlStore(17, createMemoryStorage()),
+      )
+    barrier.ready()
+    const container = await renderSidePanel({
+      analysisForBranch: () => analysis,
+      api: createApi({
+        create: vi.fn().mockRejectedValue(new Error("Response lost")),
+      }),
+      roots,
+      persist: barrier.save,
+      onCreatePending: barrier.setCreating,
+      loadTarget,
+    })
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+    let safe = false
+    void barrier.wait().then(() => {
+      safe = true
+    })
+    await act(async () => Promise.resolve())
+    expect(safe).toBe(false)
+    expect(getButton(container, "Retry")).toBeTruthy()
+  })
+  it("isolates snapshots by tab, rejects mismatched identities and excludes unrelated input/session fields", async () => {
+    const analysis = createRootAnalysis(),
+      control = {
+        analysis: {
+          ...analysis,
+          ...createTargetAnalysis(analysis, "frontend"),
+        },
+        preview: createPreview(analysis),
+      }
+    const storage = createMemoryStorage(),
+      a = createTabFullStackControlStore(17, storage),
+      b = createTabFullStackControlStore(42, storage)
+    const extra = {
+      ...control,
+      analysis: {
+        ...control.analysis,
+        environmentValues: { APP_GREETING: "DO_NOT_STORE" },
+      },
+      preview: {
+        ...control.preview,
+        userEnvironment: [{ name: "APP_GREETING", value: "DO_NOT_STORE" }],
+      },
+      userEnvironment: [{ name: "APP_GREETING", value: "DO_NOT_STORE" }],
+      session: "DO_NOT_STORE",
+    }
+    await a.save(extra)
+    expect(await b.load()).toBeNull()
+    expect(JSON.stringify(storage.values)).not.toContain("DO_NOT_STORE")
+    const first = createDeferred<void>(),
+      order: string[] = []
+    const ordered = createTabFullStackControlStore(17, {
+      ...storage,
+      set: async (item) => {
+        const status = (Object.values(item)[0] as { preview: FullStackPreview })
+          .preview.status
+        order.push(status)
+        if (status === "queued") await first.promise
+      },
+    })
+    const earlier = ordered.save(control),
+      later = ordered.save({
+        ...control,
+        preview: { ...control.preview, status: "stopped" },
+      })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(order).toEqual(["queued"])
+    first.resolve()
+    await Promise.all([earlier, later])
+    expect(order).toEqual(["queued", "stopped"])
+    storage.values["peepholeFullStackControl:17"] = {
+      version: 1,
+      analysis: control.analysis,
+      preview: {
+        ...control.preview,
+        repository: {
+          ...control.preview.repository,
+          commitSha: "f".repeat(40),
+        },
+      },
+    }
+    await expect(a.load()).rejects.toThrow("identity")
+  })
+  it("keeps Stop available and refuses hiding when persistence fails", async () => {
+    const analysis = createRootAnalysis(),
+      queued = createPreview(analysis),
+      barrier = createNavigationBarrier(
+        createTabFullStackControlStore(17, {
+          ...createMemoryStorage(),
+          set: async () => {
+            throw new Error("Unavailable")
+          },
+        }),
+      )
+    barrier.ready()
+    const api = createApi({ create: vi.fn().mockResolvedValue(queued) })
+    const container = await renderSidePanel({
+      analysisForBranch: () => analysis,
+      api,
+      roots,
+      persist: barrier.save,
+      onCreatePending: barrier.setCreating,
+      loadTarget,
+    })
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+    expect(container.textContent).toContain(
+      "Keep this panel open until you stop",
+    )
+    expect(getButton(container, "Cancel full-stack preview")).toBeTruthy()
+    await expect(barrier.wait()).rejects.toThrow("not safe")
+    expect(api.create).toHaveBeenCalledTimes(1)
+  })
+})
+
+function createMemoryStorage() {
+  const values: Record<string, unknown> = {}
+  return {
+    values,
+    get: async (key: string) => ({ [key]: values[key] }),
+    set: async (items: Record<string, unknown>) => {
+      Object.assign(values, structuredClone(items))
+    },
+    remove: async (key: string) => {
+      delete values[key]
+    },
+  }
 }

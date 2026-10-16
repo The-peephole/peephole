@@ -270,7 +270,7 @@ function parseErrorResponse(
   )
 }
 
-function parseFullStackPreview(value: unknown): FullStackPreview {
+export function parseFullStackPreview(value: unknown): FullStackPreview {
   if (
     !isObject(value) ||
     typeof value.id !== "string" ||

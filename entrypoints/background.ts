@@ -19,7 +19,8 @@ import {
   clearStoredPreviewSession,
   getStoredPreviewSession,
 } from "../core/preview/sessionStorage"
-import { createSidePanelMessageHandler } from "../core/sidepanel/messages"
+import { createSidePanelNavigation } from "../core/sidepanel/navigation"
+import { PREPARE_SIDE_PANEL_NAVIGATION } from "../core/sidepanel/navigationBarrier"
 import { createGitHubThemeMessageHandler } from "../core/sidepanel/themeMessages"
 import { createSidePanelThemeStore } from "../core/sidepanel/themeStorage"
 
@@ -55,9 +56,40 @@ export default defineBackground(() => {
   const handleLiveDeploymentMessage = createLiveDeploymentMessageHandler(
     liveDeploymentCache.load,
   )
-  const handleSidePanelMessage = createSidePanelMessageHandler(
+  const sidePanelNavigation = createSidePanelNavigation(
     browser.sidePanel,
+    async (tabId) => {
+      try {
+        const reply = await browser.runtime.sendMessage({
+          type: PREPARE_SIDE_PANEL_NAVIGATION,
+          tabId,
+        })
+        if (reply === undefined) return // No panel for this tab has a request to protect.
+        if (reply?.ok !== true)
+          throw new Error("Preview controls are not ready to hide.")
+      } catch (error) {
+        // No open panel has any in-flight UI request to protect. Other failures
+        // leave Peephole visible; never discard a possibly admitted job's controls.
+        if (
+          error instanceof Error &&
+          error.message ===
+            "Could not establish connection. Receiving end does not exist."
+        )
+          return
+        throw error
+      }
+    },
   )
+  const handleSidePanelMessage = sidePanelNavigation.handleMessage
+  // Register synchronously so navigation events wake a suspended worker.
+  browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    void sidePanelNavigation.onUpdated(tabId, changeInfo).catch(() => {
+      console.warn(
+        "Peephole kept its panel available because preview controls were not ready to hide.",
+      )
+    })
+  })
+  void sidePanelNavigation.initialize().catch(() => undefined)
   const handleGitHubThemeMessage = createGitHubThemeMessageHandler(
     createSidePanelThemeStore(),
     { send: (message) => browser.runtime.sendMessage(message) },

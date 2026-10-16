@@ -70,6 +70,7 @@ export interface FullStackPreviewPanelProps {
   retainedPreview?: FullStackPreview | null
   onRetainedPreviewChange?: (preview: FullStackPreview | null) => void
   onCreatePendingChange?: (pending: boolean) => void
+  restoringPreview?: boolean
   /** M12 build-time opt-in (`WXT_USER_ENVIRONMENT_ENABLED`). Defaults to
    * the Side Panel's `UserEnvironmentEnabledContext`. */
   userEnvironmentEnabled?: boolean
@@ -87,6 +88,7 @@ export function FullStackPreviewPanel({
   retainedPreview,
   onRetainedPreviewChange,
   onCreatePendingChange,
+  restoringPreview = false,
   userEnvironmentEnabled: userEnvironmentEnabledProp,
 }: FullStackPreviewPanelProps) {
   const userEnvironmentEnabledContext = useContext(
@@ -576,6 +578,27 @@ export function FullStackPreviewPanel({
               </button>
             )}
           </div>
+        </section>
+      ) : preview && restoringPreview ? (
+        <section className="peephole__job" role="status">
+          <strong>Checking saved full-stack preview...</strong>
+          <p>Full-stack job {preview.id}</p>
+          <button
+            className="peephole__secondary"
+            type="button"
+            onClick={() =>
+              stopFullStackPreview(
+                fullStackPreviewApi,
+                preview,
+                activeRequest,
+                setState,
+                setAuthenticationStatus,
+                setRetainedPreview,
+              )
+            }
+          >
+            Stop full-stack preview
+          </button>
         </section>
       ) : preview ? (
         <FullStackPreviewState
