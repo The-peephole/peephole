@@ -1,4 +1,5 @@
-import { useCallback, useState } from "react"
+import { useCallback, useLayoutEffect, useState, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 
 import { RepositoryAnalysisView } from "../../components/RepositoryAnalysisView"
 import { BackendRuntimeControl } from "../../components/BackendRuntimeControl"
@@ -45,6 +46,24 @@ interface RetainedFullStackControl {
   preview: FullStackPreview
 }
 
+type FullStackAnalysis = BuildTargetAnalysis & RepositoryAnalysis
+
+// Discovery selects a candidate; the stable workspace below owns its job UI.
+// Register before paint so a changed target never exposes the old Run button.
+function FullStackSelection({
+  analysis,
+  onSelect,
+}: {
+  analysis: FullStackAnalysis
+  onSelect: (analysis: FullStackAnalysis | null) => void
+}) {
+  useLayoutEffect(() => {
+    onSelect(analysis)
+    return () => onSelect(null)
+  }, [analysis, onSelect])
+  return null
+}
+
 export function SidePanelApp({
   repository,
   loadRepositoryAnalysis,
@@ -62,13 +81,28 @@ export function SidePanelApp({
 }: SidePanelAppProps) {
   const [retainedFullStackControl, setRetainedFullStackControl] =
     useState<RetainedFullStackControl | null>(null)
+  const [selectedFullStackAnalysis, selectFullStackAnalysis] =
+    useState<FullStackAnalysis | null>(null)
+  const [fullStackCreatePending, setFullStackCreatePending] = useState(false)
+  const [detailsHost, setDetailsHost] = useState<HTMLDivElement | null>(null)
+  const fullStackAnalysis =
+    retainedFullStackControl?.analysis ?? selectedFullStackAnalysis
+  // Only analysis details use a portal. The workspace and its iframe never
+  // reparent or change keys when Create returns, analysis reloads, or targets change.
+  const renderAnalysisDetails = useCallback(
+    (details: ReactNode) =>
+      detailsHost ? createPortal(details, detailsHost) : null,
+    [detailsHost],
+  )
   const updateRetainedFullStackPreview = useCallback(
     (preview: FullStackPreview | null) => {
       setRetainedFullStackControl((current) =>
-        preview && current ? { ...current, preview } : null,
+        preview && fullStackAnalysis
+          ? { analysis: current?.analysis ?? fullStackAnalysis, preview }
+          : null,
       )
     },
-    [],
+    [fullStackAnalysis],
   )
 
   return (
@@ -80,27 +114,16 @@ export function SidePanelApp({
         </div>
       </header>
 
-      {fullStackPreviewEnabled && retainedFullStackControl && (
-        <FullStackPreviewPanel
-          analysis={retainedFullStackControl.analysis}
-          configurationError={previewConfigurationError}
-          connectGitHub={connectGitHub}
-          fullStackPreviewApi={fullStackPreviewApi}
-          key={`active:${retainedFullStackControl.preview.id}`}
-          onRetainedPreviewChange={updateRetainedFullStackPreview}
-          previewArtifactBaseDomain={previewArtifactBaseDomain}
-          retainedPreview={retainedFullStackControl.preview}
-        />
-      )}
-
       {repository ? (
         <RepositoryAnalysisView
+          fullStackCreatePending={fullStackCreatePending}
           hasRetainedFullStackPreview={Boolean(retainedFullStackControl)}
           loadRepositoryAnalysis={loadRepositoryAnalysis}
           loadBuildTargetAnalysis={loadBuildTargetAnalysis}
           loadRepositoryBranches={loadRepositoryBranches}
           loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
           repository={repository}
+          renderAnalysisDetails={renderAnalysisDetails}
           renderBackendRuntimeControls={
             backendRuntimeEnabled
               ? ({ candidate, repository: repo }) => (
@@ -116,22 +139,12 @@ export function SidePanelApp({
           }
           renderFullStackPreviewControls={
             fullStackPreviewEnabled
-              ? (analysis, options) =>
+              ? (analysis) =>
                   retainedFullStackControl ? null : (
-                    <FullStackPreviewPanel
+                    <FullStackSelection
                       analysis={analysis}
-                      configurationError={previewConfigurationError}
-                      connectGitHub={connectGitHub}
-                      fullStackPreviewApi={fullStackPreviewApi}
-                      key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
-                      onCreatePendingChange={options?.onCreatePendingChange}
-                      onRetainedPreviewChange={(preview) =>
-                        setRetainedFullStackControl(
-                          preview ? { analysis, preview } : null,
-                        )
-                      }
-                      previewArtifactBaseDomain={previewArtifactBaseDomain}
-                      retainedPreview={null}
+                      key={`fullstack-selection:${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
+                      onSelect={selectFullStackAnalysis}
                     />
                   )
               : undefined
@@ -141,7 +154,7 @@ export function SidePanelApp({
               analysis={analysis}
               configurationError={previewConfigurationError}
               connectGitHub={connectGitHub}
-              key={`${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
+              key={`native:${analysis.repository.repositoryId}:${analysis.repository.commitSha}:${analysis.target.sourceRoot}`}
               previewApi={previewApi}
               previewArtifactBaseDomain={previewArtifactBaseDomain}
             />
@@ -153,6 +166,20 @@ export function SidePanelApp({
           <p>Open a GitHub repository and click its Peephole button.</p>
         </section>
       )}
+      {fullStackPreviewEnabled && fullStackAnalysis && (
+        <FullStackPreviewPanel
+          analysis={fullStackAnalysis}
+          configurationError={previewConfigurationError}
+          connectGitHub={connectGitHub}
+          fullStackPreviewApi={fullStackPreviewApi}
+          key={`fullstack:${fullStackAnalysis.repository.repositoryId}:${fullStackAnalysis.repository.commitSha}:${fullStackAnalysis.target.sourceRoot}`}
+          onCreatePendingChange={setFullStackCreatePending}
+          onRetainedPreviewChange={updateRetainedFullStackPreview}
+          previewArtifactBaseDomain={previewArtifactBaseDomain}
+          retainedPreview={retainedFullStackControl?.preview ?? null}
+        />
+      )}
+      <div className="peephole__analysis-details" ref={setDetailsHost} />
     </main>
   )
 }

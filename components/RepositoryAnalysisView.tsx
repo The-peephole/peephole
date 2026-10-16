@@ -47,6 +47,9 @@ interface RepositoryAnalysisViewProps {
     options?: FullStackPreviewRenderOptions,
   ) => ReactNode
   hasRetainedFullStackPreview?: boolean
+  fullStackCreatePending?: boolean
+  /** Optional layout slot; details keep their analysis lifecycle and visibility. */
+  renderAnalysisDetails?: (details: ReactNode) => ReactNode
   /**
    * Rendered only for a candidate `resolveBackendExecutionSupport` reports
    * as supported -- an unsupported candidate always keeps the plain
@@ -90,6 +93,8 @@ function RepositoryAnalysisSession({
   renderPreviewControls,
   renderFullStackPreviewControls,
   hasRetainedFullStackPreview = false,
+  fullStackCreatePending: controlledCreatePending,
+  renderAnalysisDetails,
   renderBackendRuntimeControls,
 }: RepositoryAnalysisViewProps) {
   const [analysisState, setAnalysisState] = useState<AnalysisState>({
@@ -104,9 +109,10 @@ function RepositoryAnalysisSession({
   const [selectedRef, setSelectedRef] = useState<RepositoryRefSelection>(
     DEFAULT_REPOSITORY_REF,
   )
-  // A full-stack Create in flight is owned by a panel that a branch or
-  // target change would unmount (aborting it and losing the server job ID).
-  const [fullStackCreatePending, setFullStackCreatePending] = useState(false)
+  // Keep the selected request identity fixed until Create returns its job ID.
+  // The caller can own the workspace independently of this analysis session.
+  const [localCreatePending, setFullStackCreatePending] = useState(false)
+  const fullStackCreatePending = controlledCreatePending ?? localCreatePending
 
   useEffect(() => {
     const abortController = new AbortController()
@@ -224,6 +230,7 @@ function RepositoryAnalysisSession({
         selectedCommitSha={preservedAnalysis?.repository.commitSha ?? null}
       />
       <AnalysisContent
+        renderAnalysisDetails={renderAnalysisDetails}
         analysisState={analysisState}
         onRetry={() => setAnalysisRequestVersion((version) => version + 1)}
         renderPreviewControls={renderPreviewControls}
@@ -349,6 +356,7 @@ function Detail({ label, value }: { label: string; value: string }) {
 
 function AnalysisContent({
   analysisState,
+  renderAnalysisDetails,
   onRetry,
   renderPreviewControls,
   renderFullStackPreviewControls,
@@ -360,6 +368,7 @@ function AnalysisContent({
   selectedBranch,
 }: {
   analysisState: AnalysisState
+  renderAnalysisDetails?: (details: ReactNode) => ReactNode
   onRetry: () => void
   renderPreviewControls?: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
@@ -403,11 +412,26 @@ function AnalysisContent({
         <div hidden={!ready}>
           <AnalysisResults
             analysis={preservedAnalysis}
+            renderAnalysisDetails={
+              renderAnalysisDetails
+                ? (details) =>
+                    renderAnalysisDetails(
+                      <div
+                        hidden={!ready}
+                        className="peephole__analysis-details-content"
+                      >
+                        {details}
+                      </div>,
+                    )
+                : undefined
+            }
             key={`${preservedAnalysis.repository.repositoryId}:${preservedAnalysis.repository.commitSha}:${selectedBranch}`}
             loadBuildTargetAnalysis={loadBuildTargetAnalysis}
             onRetryRepositoryAnalysis={onRetry}
             renderPreviewControls={renderPreviewControls}
-            renderFullStackPreviewControls={renderFullStackPreviewControls}
+            renderFullStackPreviewControls={
+              ready ? renderFullStackPreviewControls : undefined
+            }
             hasRetainedFullStackPreview={hasRetainedFullStackPreview}
             fullStackCreatePending={fullStackCreatePending}
             onFullStackCreatePendingChange={onFullStackCreatePendingChange}
@@ -421,6 +445,7 @@ function AnalysisContent({
 
 function AnalysisResults({
   analysis,
+  renderAnalysisDetails,
   loadBuildTargetAnalysis,
   renderPreviewControls,
   renderFullStackPreviewControls,
@@ -431,6 +456,7 @@ function AnalysisResults({
   onRetryRepositoryAnalysis,
 }: {
   analysis: RepositoryAnalysis
+  renderAnalysisDetails?: (details: ReactNode) => ReactNode
   loadBuildTargetAnalysis: BuildTargetAnalysisLoader
   renderPreviewControls?: (
     analysis: BuildTargetAnalysis & RepositoryAnalysis,
@@ -503,7 +529,16 @@ function AnalysisResults({
   ])
 
   const targetAnalysis =
-    targetState.status === "ready" ? targetState.value : null
+    selectedSourceRoot === "."
+      ? rootAnalysis
+      : targetState.status === "ready" &&
+          targetState.value.target.sourceRoot === selectedSourceRoot
+        ? targetState.value
+        : null
+  const selectedAnalysis = useMemo(
+    () => (targetAnalysis ? { ...analysis, ...targetAnalysis } : null),
+    [analysis, targetAnalysis],
+  )
 
   return (
     <div className="peephole__analysis">
@@ -535,15 +570,16 @@ function AnalysisResults({
           </button>
         </div>
       )}
-      {targetAnalysis && (
+      {targetAnalysis && selectedAnalysis && (
         <>
           <PreviewStatus mode={targetAnalysis.preview.mode} />
-          {renderPreviewControls?.({ ...analysis, ...targetAnalysis })}
+          {renderPreviewControls?.(selectedAnalysis)}
           {renderFullStackPreviewControls &&
             (targetAnalysis.target.sourceRoot === "." &&
             targetAnalysis.preview.mode !== "native-static-build" ? (
               <RootFullStackDiscovery
                 analysis={analysis}
+                createPending={fullStackCreatePending}
                 hasRetainedFullStackPreview={hasRetainedFullStackPreview}
                 loadBuildTargetAnalysis={loadBuildTargetAnalysis}
                 onCreatePendingChange={onFullStackCreatePendingChange}
@@ -556,152 +592,177 @@ function AnalysisResults({
                 job controls. Stop or finish it before running a new target.
               </p>
             ) : (
-              renderFullStackPreviewControls(
-                { ...analysis, ...targetAnalysis },
-                { onCreatePendingChange: onFullStackCreatePendingChange },
-              )
+              renderFullStackPreviewControls(selectedAnalysis, {
+                onCreatePendingChange: onFullStackCreatePendingChange,
+              })
             ))}
 
-          <section className="peephole__section">
-            <h3>Stack</h3>
-            <dl className="peephole__facts">
-              <Detail
-                label="Framework"
-                value={formatFramework(targetAnalysis.technologies.framework)}
-              />
-              <Detail
-                label="TypeScript"
-                value={
-                  targetAnalysis.technologies.typescript
-                    ? "Detected"
-                    : "Not detected"
-                }
-              />
-              <Detail label="Package" value={targetAnalysis.packageManager} />
-            </dl>
-          </section>
-
-          <section className="peephole__section">
-            <h3>Build plan</h3>
-            <dl className="peephole__facts">
-              <Detail
-                label="Native build"
-                value={
-                  targetAnalysis.preview.blockers.length === 0
-                    ? "Compatible"
-                    : "Blocked"
-                }
-              />
-              <Detail
-                label="Install"
-                value={targetAnalysis.runtime.installCommand ?? "Not required"}
-              />
-              <Detail
-                label="Build"
-                value={targetAnalysis.runtime.buildCommand ?? "Not required"}
-              />
-              <Detail
-                label="Output"
-                value={targetAnalysis.runtime.outputDirectory ?? "Unknown"}
-              />
-            </dl>
-          </section>
-
-          <section className="peephole__section">
-            <h3>Structure</h3>
-            <dl className="peephole__facts">
-              <Detail
-                label="Layout"
-                value={formatStructureLayout(analysis.structure.layout)}
-              />
-            </dl>
-            {analysis.structure.projects.length > 0 && (
-              <ul aria-label="Detected projects" className="peephole__list">
-                {analysis.structure.projects.map((project) => (
-                  <li key={project.path}>
-                    <code>{project.path}</code>
-                    {project.packageName ? ` — ${project.packageName}` : ""}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {(analysis.structure.truncated || !analysis.structure.complete) && (
-              <p className="peephole__muted">
-                {!analysis.structure.complete &&
-                  "Structure analysis is incomplete. "}
-                {analysis.structure.truncated &&
-                  "Additional projects may exist beyond Peephole's bounded scan."}
-              </p>
-            )}
-          </section>
-
-          <BackendSection
-            backend={analysis.backend}
-            renderBackendRuntimeControls={renderBackendRuntimeControls}
-            repository={analysis.repository}
-          />
-
-          <section className="peephole__section">
-            <h3>Environment</h3>
-            <EnvironmentRequirementGroup
-              requirements={targetAnalysis.environmentRequirements}
-              sourceRoot={targetAnalysis.target.sourceRoot}
+          {renderAnalysisDetails ? (
+            renderAnalysisDetails(
+              <AnalysisDetails
+                analysis={analysis}
+                targetAnalysis={targetAnalysis}
+                renderBackendRuntimeControls={renderBackendRuntimeControls}
+              />,
+            )
+          ) : (
+            <AnalysisDetails
+              analysis={analysis}
+              targetAnalysis={targetAnalysis}
+              renderBackendRuntimeControls={renderBackendRuntimeControls}
             />
-            {analysis.backend.candidates.map((candidate) => (
-              <EnvironmentRequirementGroup
-                key={candidate.sourceRoot}
-                requirements={candidate.environmentRequirements}
-                sourceRoot={candidate.sourceRoot}
-              />
-            ))}
-            {targetAnalysis.environmentRequirements.length === 0 &&
-              analysis.backend.candidates.every(
-                (candidate) => candidate.environmentRequirements.length === 0,
-              ) && (
-                <p className="peephole__muted">
-                  No template variables detected.
-                </p>
-              )}
-          </section>
-
-          {targetAnalysis.preview.blockers.length > 0 && (
-            <section className="peephole__section peephole__section--blocked">
-              <h3>Blockers</h3>
-              <ul className="peephole__list">
-                {targetAnalysis.preview.blockers.map((blocker) => (
-                  <li key={`${blocker.code}:${blocker.message}`}>
-                    {blocker.message}
-                  </li>
-                ))}
-              </ul>
-            </section>
           )}
-
-          {targetAnalysis.warnings.length > 0 && (
-            <section className="peephole__section">
-              <h3>Warnings</h3>
-              <ul className="peephole__list">
-                {targetAnalysis.warnings.map((warning) => (
-                  <li key={warning}>{warning}</li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          <details className="peephole__evidence">
-            <summary>
-              Evidence ({targetAnalysis.preview.evidence.length})
-            </summary>
-            <ul className="peephole__list">
-              {targetAnalysis.preview.evidence.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-            <p>{targetAnalysis.inspectedFiles.length} known files detected</p>
-          </details>
         </>
       )}
     </div>
+  )
+}
+
+function AnalysisDetails({
+  analysis,
+  targetAnalysis,
+  renderBackendRuntimeControls,
+}: {
+  analysis: RepositoryAnalysis
+  targetAnalysis: BuildTargetAnalysis
+  renderBackendRuntimeControls?: RepositoryAnalysisViewProps["renderBackendRuntimeControls"]
+}) {
+  return (
+    <>
+      <section className="peephole__section">
+        <h3>Stack</h3>
+        <dl className="peephole__facts">
+          <Detail
+            label="Framework"
+            value={formatFramework(targetAnalysis.technologies.framework)}
+          />
+          <Detail
+            label="TypeScript"
+            value={
+              targetAnalysis.technologies.typescript
+                ? "Detected"
+                : "Not detected"
+            }
+          />
+          <Detail label="Package" value={targetAnalysis.packageManager} />
+        </dl>
+      </section>
+
+      <section className="peephole__section">
+        <h3>Build plan</h3>
+        <dl className="peephole__facts">
+          <Detail
+            label="Native build"
+            value={
+              targetAnalysis.preview.blockers.length === 0
+                ? "Compatible"
+                : "Blocked"
+            }
+          />
+          <Detail
+            label="Install"
+            value={targetAnalysis.runtime.installCommand ?? "Not required"}
+          />
+          <Detail
+            label="Build"
+            value={targetAnalysis.runtime.buildCommand ?? "Not required"}
+          />
+          <Detail
+            label="Output"
+            value={targetAnalysis.runtime.outputDirectory ?? "Unknown"}
+          />
+        </dl>
+      </section>
+
+      <section className="peephole__section">
+        <h3>Structure</h3>
+        <dl className="peephole__facts">
+          <Detail
+            label="Layout"
+            value={formatStructureLayout(analysis.structure.layout)}
+          />
+        </dl>
+        {analysis.structure.projects.length > 0 && (
+          <ul aria-label="Detected projects" className="peephole__list">
+            {analysis.structure.projects.map((project) => (
+              <li key={project.path}>
+                <code>{project.path}</code>
+                {project.packageName ? ` — ${project.packageName}` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+        {(analysis.structure.truncated || !analysis.structure.complete) && (
+          <p className="peephole__muted">
+            {!analysis.structure.complete &&
+              "Structure analysis is incomplete. "}
+            {analysis.structure.truncated &&
+              "Additional projects may exist beyond Peephole's bounded scan."}
+          </p>
+        )}
+      </section>
+
+      <BackendSection
+        backend={analysis.backend}
+        renderBackendRuntimeControls={renderBackendRuntimeControls}
+        repository={analysis.repository}
+      />
+
+      <section className="peephole__section">
+        <h3>Environment</h3>
+        <EnvironmentRequirementGroup
+          requirements={targetAnalysis.environmentRequirements}
+          sourceRoot={targetAnalysis.target.sourceRoot}
+        />
+        {analysis.backend.candidates.map((candidate) => (
+          <EnvironmentRequirementGroup
+            key={candidate.sourceRoot}
+            requirements={candidate.environmentRequirements}
+            sourceRoot={candidate.sourceRoot}
+          />
+        ))}
+        {targetAnalysis.environmentRequirements.length === 0 &&
+          analysis.backend.candidates.every(
+            (candidate) => candidate.environmentRequirements.length === 0,
+          ) && (
+            <p className="peephole__muted">No template variables detected.</p>
+          )}
+      </section>
+
+      {targetAnalysis.preview.blockers.length > 0 && (
+        <section className="peephole__section peephole__section--blocked">
+          <h3>Blockers</h3>
+          <ul className="peephole__list">
+            {targetAnalysis.preview.blockers.map((blocker) => (
+              <li key={`${blocker.code}:${blocker.message}`}>
+                {blocker.message}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {targetAnalysis.warnings.length > 0 && (
+        <section className="peephole__section">
+          <h3>Warnings</h3>
+          <ul className="peephole__list">
+            {targetAnalysis.warnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <details className="peephole__evidence">
+        <summary>Evidence ({targetAnalysis.preview.evidence.length})</summary>
+        <ul className="peephole__list">
+          {targetAnalysis.preview.evidence.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+        <p>{targetAnalysis.inspectedFiles.length} known files detected</p>
+      </details>
+    </>
   )
 }
 
