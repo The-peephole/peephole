@@ -22,6 +22,7 @@ import { UserEnvironmentEnabledContext } from "./userEnvironmentContext"
 interface RootFullStackDiscoveryProps {
   analysis: RepositoryAnalysis
   hasRetainedFullStackPreview?: boolean
+  createPending?: boolean
   loadBuildTargetAnalysis: BuildTargetAnalysisLoader
   onCreatePendingChange?: (pending: boolean) => void
   onRetryStructure: () => void
@@ -53,6 +54,7 @@ type DiscoveryState =
 export function RootFullStackDiscovery({
   analysis,
   hasRetainedFullStackPreview = false,
+  createPending: controlledCreatePending = false,
   loadBuildTargetAnalysis,
   onCreatePendingChange,
   onRetryStructure,
@@ -76,7 +78,8 @@ export function RootFullStackDiscovery({
   const [requestVersion, setRequestVersion] = useState(0)
   const [state, setState] = useState<DiscoveryState>({ status: "loading" })
   const [selectedSourceRoot, setSelectedSourceRoot] = useState("")
-  const [createPending, setCreatePending] = useState(false)
+  const [localCreatePending, setCreatePending] = useState(false)
+  const createPending = controlledCreatePending || localCreatePending
   // Must stay referentially stable: the panel aborts its in-flight Create
   // whenever this callback identity changes.
   const handleCreatePendingChange = useCallback(
@@ -141,6 +144,18 @@ export function RootFullStackDiscovery({
     requestVersion,
     structureIsComplete,
   ])
+
+  const selectedFrontendAnalysis = useMemo(() => {
+    if (state.status !== "ready") return null
+    const selected = state.results.find(
+      (result) =>
+        isEligibleFrontend(result) &&
+        result.project.path === selectedSourceRoot,
+    )
+    return selected?.status === "ready"
+      ? { ...analysis, ...selected.value }
+      : null
+  }, [analysis, selectedSourceRoot, state])
 
   if (!structureIsComplete) {
     return (
@@ -363,7 +378,7 @@ export function RootFullStackDiscovery({
                 ]
           }
         />
-      ) : eligibleFrontends.length === 0 ? null : !selectedFrontend ? (
+      ) : eligibleFrontends.length === 0 ? null : !selectedFrontendAnalysis ? (
         <p className="peephole__muted">
           Choose an explicit frontend target to continue.
         </p>
@@ -373,10 +388,9 @@ export function RootFullStackDiscovery({
             Detection does not start a job. The server remains authoritative,
             and a preview runs only after you press the button below.
           </p>
-          {renderControls(
-            { ...analysis, ...selectedFrontend.value },
-            { onCreatePendingChange: handleCreatePendingChange },
-          )}
+          {renderControls(selectedFrontendAnalysis, {
+            onCreatePendingChange: handleCreatePendingChange,
+          })}
         </>
       )}
     </section>

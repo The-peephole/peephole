@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
-import { act } from "react"
+import { act, StrictMode } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { SidePanelApp } from "../entrypoints/sidepanel/App"
 import type { FullStackPreviewApi } from "../core/fullstack/apiClient"
+import type { PreviewApi } from "../core/preview/apiClient"
 import type {
   BuildTargetAnalysis,
   BuildTargetAnalysisLoader,
@@ -61,6 +62,222 @@ describe("SidePanelApp full-stack retention", () => {
     for (const root of roots) act(() => root.unmount())
     roots.length = 0
     document.body.innerHTML = ""
+  })
+
+  it.each([false, true])(
+    "keeps one native Build card across ten root/frontend round trips (StrictMode %s)",
+    async (strict) => {
+      const analysis = createRootAnalysis()
+      const errors = vi.spyOn(console, "error")
+      const previewApi = { create: vi.fn(), get: vi.fn(), cancel: vi.fn() }
+      const container = await renderSidePanel({
+        analysisForBranch: () => analysis,
+        api: createApi(),
+        loadTarget: async (_repository, target) =>
+          createTargetAnalysis(analysis, target.sourceRoot),
+        roots,
+        strict,
+        previewApi,
+      })
+      const select = getSelect(container, "preview-target")
+      for (let cycle = 0; cycle < 10; cycle++) {
+        await act(async () => setSelectValue(select, "frontend"))
+        expect(
+          container.querySelectorAll(".peephole__preview-action"),
+        ).toHaveLength(1)
+        expect(container.textContent).toContain("Native preview compatible")
+        const oldButton = getButton(container, "Build preview")
+        expect(oldButton.disabled).toBe(false)
+        await act(async () => setSelectValue(select, "."))
+        expect(
+          container.querySelectorAll(".peephole__preview-action"),
+        ).toHaveLength(0)
+        expect(container.textContent).toContain("Native preview blocked")
+        expect(oldButton.isConnected).toBe(false)
+        await act(async () => oldButton.click())
+        expect(container.querySelectorAll(".peephole-panel")).toHaveLength(1)
+        expect(document.querySelectorAll("#root")).toHaveLength(1)
+        expect(container.querySelectorAll(".peephole__analysis")).toHaveLength(
+          1,
+        )
+      }
+      expect(previewApi.create).not.toHaveBeenCalled()
+      expect(errors).not.toHaveBeenCalled()
+    },
+  )
+
+  it("ignores slow target replies after rapid target changes", async () => {
+    const analysis = createRootAnalysis()
+    const replies: ReturnType<typeof createDeferred<BuildTargetAnalysis>>[] = []
+    const signals: (AbortSignal | undefined)[] = []
+    let slow = false
+    const previewApi = { create: vi.fn(), get: vi.fn(), cancel: vi.fn() }
+    const container = await renderSidePanel({
+      analysisForBranch: () => analysis,
+      api: createApi(),
+      roots,
+      previewApi,
+      loadTarget: async (_repository, target, options) => {
+        if (!slow) return createTargetAnalysis(analysis, target.sourceRoot)
+        const reply = createDeferred<BuildTargetAnalysis>()
+        replies.push(reply)
+        signals.push(options?.signal)
+        return reply.promise
+      },
+    })
+    slow = true
+    const target = getSelect(container, "preview-target")
+    await act(async () => setSelectValue(target, "frontend"))
+    expect(
+      container.querySelectorAll(".peephole__preview-action"),
+    ).toHaveLength(0)
+    expect(container.textContent).toContain(
+      "Inspecting selected preview target",
+    )
+    await act(async () => setSelectValue(target, "."))
+    expect(signals[0]?.aborted).toBe(true)
+    await act(async () => setSelectValue(target, "frontend"))
+    const latest = replies.at(-1)!
+    await act(async () =>
+      latest.resolve(createTargetAnalysis(analysis, "frontend")),
+    )
+    expect(
+      container.querySelectorAll(".peephole__preview-action"),
+    ).toHaveLength(1)
+    await act(async () => {
+      for (const reply of replies.slice(0, -1))
+        reply.resolve({
+          ...createTargetAnalysis(analysis, "frontend"),
+          warnings: ["STALE TARGET"],
+        })
+    })
+    expect(container.textContent).not.toContain("STALE TARGET")
+    await act(async () => setSelectValue(target, "."))
+    expect(
+      container.querySelectorAll(".peephole__preview-action"),
+    ).toHaveLength(0)
+    expect(previewApi.create).not.toHaveBeenCalled()
+  })
+
+  it("ignores an old branch reply and hides inactive analysis details while loading", async () => {
+    const main = createRootAnalysis({ commitSha: "1".repeat(40) })
+    const feature = createRootAnalysis({ commitSha: "2".repeat(40) })
+    const reply = createDeferred<RepositoryAnalysis>()
+    const container = await renderSidePanel({
+      analysisForBranch: (branch) =>
+        branch === "feature" ? reply.promise : main,
+      api: createApi(),
+      roots,
+      branches: ["main", "feature"],
+      loadTarget: async (_repository, target) =>
+        createTargetAnalysis(main, target.sourceRoot),
+    })
+    await act(async () =>
+      setSelectValue(getSelect(container, "branch"), "feature"),
+    )
+    expect(
+      container.querySelector<HTMLDivElement>(
+        ".peephole__analysis-details-content",
+      )?.hidden,
+    ).toBe(true)
+    expect(
+      Array.from(container.querySelectorAll("button")).some(
+        (button) => button.textContent === "Run full-stack preview",
+      ),
+    ).toBe(false)
+    await act(async () =>
+      setSelectValue(getSelect(container, "branch"), "main"),
+    )
+    await act(async () => reply.resolve(feature))
+    expect(getSelect(container, "branch").value).toBe("main")
+    expect(container.textContent).toContain(
+      main.repository.commitSha.slice(0, 7),
+    )
+    expect(container.textContent).not.toContain(
+      feature.repository.commitSha.slice(0, 7),
+    )
+    expect(
+      container.querySelector<HTMLDivElement>(
+        ".peephole__analysis-details-content",
+      )?.hidden,
+    ).toBe(false)
+  })
+
+  it("keeps the same workspace and ready iframe between discovery and details through branch/target changes", async () => {
+    const main = createRootAnalysis()
+    const feature = createRootAnalysis({ commitSha: "2".repeat(40) })
+    const ready: FullStackPreview = {
+      ...createPreview(main),
+      status: "ready",
+      url: `https://${createPreview(main).id}.preview.example.test/`,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    }
+    const api = createApi({
+      create: vi.fn().mockResolvedValue(ready),
+      stop: vi
+        .fn()
+        .mockResolvedValue({ ...ready, status: "stopped", url: null }),
+      get: vi.fn().mockResolvedValue(ready),
+    })
+    const container = await renderSidePanel({
+      analysisForBranch: (branch) => (branch === "feature" ? feature : main),
+      api,
+      roots,
+      strict: true,
+      branches: ["main", "feature"],
+      loadTarget: async (repository, target) =>
+        createTargetAnalysis(
+          repository.commitSha === feature.repository.commitSha
+            ? feature
+            : main,
+          target.sourceRoot,
+        ),
+    })
+    const panel = container.querySelector(".peephole__fullstack")!
+    const labelId = panel.getAttribute("aria-labelledby")
+    const assertPosition = () => {
+      expect(container.querySelector(".peephole__fullstack")).toBe(panel)
+      expect(panel.getAttribute("aria-labelledby")).toBe(labelId)
+      expect(panel.parentElement?.className).toBe("peephole-panel")
+      expect(
+        panel.compareDocumentPosition(
+          container.querySelector(".peephole__analysis")!,
+        ) & Node.DOCUMENT_POSITION_PRECEDING,
+      ).toBeTruthy()
+      expect(
+        panel.compareDocumentPosition(
+          container.querySelector(".peephole__analysis-details")!,
+        ) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy()
+    }
+    assertPosition()
+    await act(async () =>
+      getButton(container, "Run full-stack preview").click(),
+    )
+    assertPosition()
+    const iframe = panel.querySelector("iframe")!
+    expect(iframe).toBeTruthy()
+    iframe.dataset.retainedState = "preserved"
+    await act(async () =>
+      setSelectValue(getSelect(container, "preview-target"), "frontend"),
+    )
+    assertPosition()
+    expect(panel.querySelector("iframe")).toBe(iframe)
+    await act(async () =>
+      setSelectValue(getSelect(container, "branch"), "feature"),
+    )
+    assertPosition()
+    expect(panel.querySelector("iframe")).toBe(iframe)
+    expect(iframe.dataset.retainedState).toBe("preserved")
+    expect(iframe.getAttribute("src")).toBe(ready.url)
+    await act(async () =>
+      getButton(container, "Stop full-stack preview").click(),
+    )
+    expect(api.stop).toHaveBeenCalledWith(
+      ready.id,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    expect(api.create).toHaveBeenCalledTimes(1)
   })
 
   it("keeps the create request and active job attached when the frontend changes", async () => {
@@ -350,14 +567,21 @@ async function renderSidePanel({
   branches = ["main"],
   loadTarget,
   roots,
+  strict = false,
+  previewApi = null,
 }: {
-  analysisForBranch: (branch: string) => RepositoryAnalysis
+  analysisForBranch: (
+    branch: string,
+  ) => RepositoryAnalysis | Promise<RepositoryAnalysis>
   api: FullStackPreviewApi
   branches?: string[]
   loadTarget: BuildTargetAnalysisLoader
   roots: Root[]
+  strict?: boolean
+  previewApi?: PreviewApi | null
 }): Promise<HTMLDivElement> {
   const container = document.createElement("div")
+  container.id = "root"
   document.body.append(container)
   const root = createRoot(container)
   roots.push(root)
@@ -367,7 +591,7 @@ async function renderSidePanel({
   )
 
   await act(async () => {
-    root.render(
+    const app = (
       <SidePanelApp
         fullStackPreviewApi={api}
         fullStackPreviewEnabled
@@ -389,13 +613,15 @@ async function renderSidePanel({
             evidence: [],
           })
         }
-        previewApi={null}
+        previewApi={previewApi}
+        previewArtifactBaseDomain="preview.example.test"
         repository={{
           owner: "The-peephole",
           repo: "peephole-fixture-fullstack",
         }}
-      />,
+      />
     )
+    root.render(strict ? <StrictMode>{app}</StrictMode> : app)
   })
   return container
 }

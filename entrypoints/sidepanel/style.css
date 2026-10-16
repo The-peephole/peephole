@@ -241,7 +241,8 @@ a {
   height: 14px;
   width: 14px;
 }
-.peephole__analysis {
+.peephole__analysis,
+.peephole__analysis-details-content:not([hidden]) {
   display: grid;
   gap: 12px;
 }
@@ -353,6 +354,10 @@ a {
 .peephole__fullstack {
   display: grid;
   gap: 10px;
+}
+
+.peephole-panel > .peephole__fullstack {
+  margin: 12px 0;
 }
 
 .peephole__discovery {
