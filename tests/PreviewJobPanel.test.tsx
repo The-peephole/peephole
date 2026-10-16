@@ -289,6 +289,120 @@ describe("PreviewJobPanel", () => {
     expect(iframe?.getAttribute("referrerpolicy")).toBe("no-referrer")
   })
 
+  it("closes and shows only the ready iframe without creating or cancelling a job", async () => {
+    const ready = createReadyJob()
+    const api = createApi({ create: vi.fn().mockResolvedValue(ready) })
+    const container = await renderPanel(api, roots)
+    await act(async () => getButton("Build preview").click())
+    const initialFrame = container.querySelector("iframe")!
+    const toggle = getButton("Close preview")
+    toggle.focus()
+    for (let cycle = 0; cycle < 5; cycle++) {
+      await act(async () => getButton("Close preview").click())
+      expect(container.querySelector("iframe")).toBeNull()
+      expect(getButton("Show preview")).toBe(toggle)
+      expect(toggle.getAttribute("aria-expanded")).toBe("false")
+      expect(document.activeElement).toBe(toggle)
+      expect(
+        container.querySelector('a[target="_blank"]')?.getAttribute("href"),
+      ).toBe(ready.artifact?.url)
+      await act(async () => getButton("Show preview").click())
+      expect(container.querySelectorAll("iframe")).toHaveLength(1)
+      expect(container.querySelector("iframe")).not.toBe(initialFrame)
+      expect(container.querySelector("iframe")?.getAttribute("src")).toBe(
+        ready.artifact?.url,
+      )
+      expect(toggle.getAttribute("aria-expanded")).toBe("true")
+      expect(
+        document
+          .getElementById(toggle.getAttribute("aria-controls")!)
+          ?.contains(container.querySelector("iframe")),
+      ).toBe(true)
+      expect(document.activeElement).toBe(toggle)
+    }
+    expect(api.create).toHaveBeenCalledTimes(1)
+    expect(api.cancel).not.toHaveBeenCalled()
+    expect(api.get).not.toHaveBeenCalled()
+  })
+
+  it.each(["job", "artifact"])(
+    "does not offer Show after the %s TTL expires while closed",
+    async (deadline) => {
+      vi.useFakeTimers()
+      const ready = createReadyJob()
+      if (deadline === "job")
+        ready.expiresAt = new Date(Date.now() + 1000).toISOString()
+      else ready.artifact!.expiresAt = new Date(Date.now() + 1000).toISOString()
+      const api = createApi({ create: vi.fn().mockResolvedValue(ready) })
+      const container = await renderPanel(api, roots)
+      await act(async () => getButton("Build preview").click())
+      await act(async () => getButton("Close preview").click())
+      await act(async () => vi.advanceTimersByTimeAsync(1000))
+      expect(findButton("Show preview")).toBeUndefined()
+      expect(container.querySelector("iframe")).toBeNull()
+      expect(container.textContent).toContain("Preview expired")
+      expect(api.create).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it("checks TTL on Show even before a delayed expiry timer runs", async () => {
+    const ready = createReadyJob()
+    const api = createApi({ create: vi.fn().mockResolvedValue(ready) })
+    const container = await renderPanel(api, roots)
+    await act(async () => getButton("Build preview").click())
+    await act(async () => getButton("Close preview").click())
+    vi.mocked(Date.now).mockReturnValue(Date.parse(ready.artifact!.expiresAt))
+    await act(async () => getButton("Show preview").click())
+    expect(container.querySelector("iframe")).toBeNull()
+    expect(findButton("Show preview")).toBeUndefined()
+    expect(container.textContent).toContain("Preview expired")
+    expect(api.create).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(["target", "branch"])(
+    "does not restore a closed iframe after a %s change",
+    async (change) => {
+      const api = createApi({
+        create: vi.fn().mockResolvedValue(createReadyJob()),
+      })
+      const container = await renderPanel(api, roots)
+      await act(async () => getButton("Build preview").click())
+      await act(async () => getButton("Close preview").click())
+      const nextAnalysis =
+        change === "branch"
+          ? {
+              ...supportedAnalysis,
+              repository: {
+                ...supportedAnalysis.repository,
+                commitSha: "f".repeat(40),
+              },
+            }
+          : {
+              ...supportedAnalysis,
+              target: { sourceRoot: "frontend" },
+              targetAnalyzerVersion: "test",
+              preview: {
+                ...supportedAnalysis.preview,
+                contractVersion: "static-v2",
+              },
+            }
+      await act(async () =>
+        roots[0]!.render(
+          <PreviewJobPanel
+            analysis={nextAnalysis}
+            previewApi={api}
+            getSession={async () => activeSession}
+            clearSession={async () => undefined}
+          />,
+        ),
+      )
+      expect(container.querySelector("iframe")).toBeNull()
+      expect(findButton("Show preview")).toBeUndefined()
+      expect(getButton("Build preview")).toBeDefined()
+      expect(api.create).toHaveBeenCalledTimes(1)
+    },
+  )
+
   it.each([
     [
       "https://artifact-12345678-1234-1234-1234-123456789abc.3.34.33.24.nip.io/path",
@@ -450,6 +564,17 @@ function createApi(overrides: Partial<PreviewApi> = {}): PreviewApi {
     get: vi.fn().mockRejectedValue(new Error("Not configured in test.")),
     cancel: vi.fn().mockRejectedValue(new Error("Not configured in test.")),
     ...overrides,
+  }
+}
+
+function createReadyJob(): PreviewJob {
+  return {
+    ...queuedJob,
+    status: "ready",
+    artifact: {
+      url: "http://127.0.0.1:54321/",
+      expiresAt: queuedJob.expiresAt,
+    },
   }
 }
 
