@@ -1186,9 +1186,9 @@ path. Both sides are off by default (`PEEPHOLE_GITHUB_GATEWAY_ENABLED`,
 
 ## D-035 - User-provided preview configuration (M12): non-sensitive values only, admitted with the full-stack request, delivered through a third tmpfs file
 
-**Status:** Accepted for implementation behind default-off flags; NOT
-deployed; real-gVisor and Chrome E2E verification pending. Does not change
-D-032 or D-033.
+**Status (updated 2026-10-16):** Accepted for implementation behind default-off
+flags; M12-A/B limited Production Canary verified, then rolled back with M12
+OFF. General rollout is not complete. Does not change D-032 or D-033.
 
 Repositories declare variables M9-M11 cannot provide. Accepting a value is
 not the same as keeping it secret: the backend is untrusted code and the
@@ -1236,3 +1236,16 @@ Side Panel acknowledgement resets on every value edit; (E-001) the value
 total is 6 KiB so the worst-case JSON-escaped request fits the unchanged
 16 KiB API body limit. Scope (non-sensitive configuration only, M12-C not
 implemented) is unchanged.
+
+**Production verification update (2026-10-16):** one Chrome Fullstack Canary
+at server SHA `aa26a11f0f00d4e78dd8ccb199cc0d7280fcb082` and fixture
+`90afaa0c3f650744300afc5d8fed00fd4a0ef5c8` passed frontend/backend execution,
+`APP_GREETING` delivery/display, ordinary Stop, ownership revoke and zero
+physical-resource residue. The subsequent `ROLLBACK_COMMITTED` (exit 0)
+restored `87d691e5f712f00022bceaea3986fbc64feb992b`, M12 OFF and the Stable
+rootfs, with health/readiness/smoke and 70 s stability PASS. See the
+[closure record and evidence limits](M12_PRODUCTION_CANARY_20261016.md).
+This is limited functional acceptance, not all lifecycle/crash boundaries,
+separate M12 combined SQL-query E2E, long-term operation or M12-C acceptance.
+The 2026-10-14 failure cause remains unconfirmed. Stage 12 remains unchecked
+until the release gates and formal operating activation are completed.
