@@ -311,8 +311,8 @@ cmd_build_rootfs() {
   verify_parent "$parent"
   require_root
   local rootfs="$parent/rootfs"
-  # build-base-rootfs.sh deletes an existing output directory, so only a
-  # never-used path under the verified parent is ever passed to it.
+  # Both this wrapper and the builder refuse an existing output path. Only
+  # a never-used path under the verified parent is ever passed to it.
   [[ ! -e "$rootfs" && ! -L "$rootfs" ]] ||
     die "$rootfs already exists; tear down and set up a new parent instead"
   "$REPOSITORY_ROOT/scripts/gvisor/build-base-rootfs.sh" "$rootfs"
