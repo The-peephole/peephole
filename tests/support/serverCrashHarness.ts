@@ -430,6 +430,54 @@ export async function stopOwnedServer(
   ])
 }
 
+/** A fresh server may start only after a confirmed SIGKILL exit. Any other
+ * outcome (unprovable ownership, exit timeout, normal exit, SIGTERM) means the
+ * first server may still be alive and sharing the database, ports and roots:
+ * no second server, no recovery, H1/H2 INCONCLUSIVE. */
+export function freshStartupDecision(
+  crash: CrashOutcome,
+): { allowed: true } | { allowed: false; code: string } {
+  return crash.kind === "CRASHED"
+    ? { allowed: true }
+    : { allowed: false, code: `CRASH_${crash.reason}` }
+}
+
+/** Teardown policy: every signal goes through re-verified helpers; an owned
+ * server that cannot be re-proven, does not stop, or any unverified child that
+ * may still be alive leaves `manualInspection` set, and the caller must then
+ * preserve the test roots instead of releasing them. */
+export async function teardownServerChildren(input: {
+  servers: readonly OwnedServer[]
+  unverified: readonly UnverifiedChild[]
+  environment: NodeJS.ProcessEnv
+  inspection?: ProcessInspection
+  stopTimeoutMs?: number
+}): Promise<{ manualInspection: boolean }> {
+  const inspection = input.inspection ?? linuxProcessInspection
+  let manualInspection = false
+  for (const server of input.servers) {
+    if (server.child.exitCode !== null || server.child.signalCode !== null)
+      continue
+    try {
+      const identity = await reverifyOwnedServer(server, inspection)
+      if (identity.state === "T")
+        await thawOwnedServer(server, input.environment, inspection)
+      if (
+        (await stopOwnedServer(server, inspection, input.stopTimeoutMs)) ===
+        null
+      )
+        manualInspection = true
+    } catch {
+      manualInspection = true
+    }
+  }
+  // Never signalled: identity was not proven.
+  for (const child of input.unverified)
+    if (child.child.exitCode === null && child.child.signalCode === null)
+      manualInspection = true
+  return { manualInspection }
+}
+
 export function classifyExit(
   exit: { code: number | null; signal: NodeJS.Signals | null } | null,
 ): CrashOutcome {

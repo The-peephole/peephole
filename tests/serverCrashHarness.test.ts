@@ -19,6 +19,7 @@ import {
   crashOwnedServer,
   formatB2Evidence,
   freezeOwnedServer,
+  freshStartupDecision,
   inspectOwnedServer,
   linuxProcessInspection,
   OWNED_RESOURCE_KINDS,
@@ -30,6 +31,7 @@ import {
   stopOwnedServer,
   syntheticEnvironment,
   syntheticServerSecrets,
+  teardownServerChildren,
   thawOwnedServer,
   type ExpectedServer,
   type H1Facts,
@@ -328,6 +330,69 @@ describe("owned server identity", () => {
         expect(crashed.child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL")
       })
 
+      it("allows a fresh server only when the gated crash path confirms SIGKILL", async () => {
+        const reused = fakeServer({})
+        const reusedCrash = await crashOwnedServer(reused, allGates, reusedView)
+        expect(freshStartupDecision(reusedCrash)).toEqual({
+          allowed: false,
+          code: "CRASH_PID_REUSED",
+        })
+        expect(reused.child.kill).not.toHaveBeenCalled()
+
+        const stuck = fakeServer({})
+        const stuckCrash = await crashOwnedServer(
+          stuck,
+          allGates,
+          procView({}),
+          20,
+        )
+        expect(freshStartupDecision(stuckCrash)).toEqual({
+          allowed: false,
+          code: "CRASH_EXIT_TIMEOUT",
+        })
+        expect(stuck.child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL")
+
+        for (const [exit, code] of [
+          [{ code: 0, signal: null }, "CRASH_NORMAL_EXIT"],
+          [{ code: null, signal: "SIGTERM" }, "CRASH_SIGNAL_SIGTERM"],
+        ] as const) {
+          const server = fakeServer({})
+          server.exited = Promise.resolve(exit)
+          expect(
+            freshStartupDecision(
+              await crashOwnedServer(server, allGates, procView({})),
+            ),
+          ).toEqual({ allowed: false, code })
+        }
+
+        const killed = fakeServer({})
+        killed.exited = Promise.resolve({ code: null, signal: "SIGKILL" })
+        expect(
+          freshStartupDecision(
+            await crashOwnedServer(killed, allGates, procView({})),
+          ),
+        ).toEqual({ allowed: true })
+      })
+
+      it("thaws a frozen owned server before its re-verified teardown stop", async () => {
+        const frozen = fakeServer({})
+        frozen.exited = Promise.resolve({ code: 0, signal: null })
+        expect(
+          await teardownServerChildren({
+            servers: [frozen],
+            unverified: [],
+            environment: allGates,
+            inspection: procView({
+              stat: `4242 (node) T 4000 ${"0 ".repeat(17)}777001`,
+            }),
+          }),
+        ).toEqual({ manualInspection: false })
+        expect(vi.mocked(frozen.child.kill).mock.calls).toEqual([
+          ["SIGCONT"],
+          ["SIGTERM"],
+        ])
+      })
+
       it("does not count a SIGKILL whose handle reports a normal exit", async () => {
         const server = fakeServer({})
         server.exited = Promise.resolve({ code: 0, signal: null })
@@ -338,6 +403,134 @@ describe("owned server identity", () => {
       })
     },
   )
+
+  it.each([
+    ["ownership no longer provable", "PID_REUSED"],
+    ["an ownership error", "OWNERSHIP"],
+    ["an exit timeout", "EXIT_TIMEOUT"],
+    ["a normal exit", "NORMAL_EXIT"],
+    ["a SIGTERM exit", "SIGNAL_SIGTERM"],
+  ])("forbids a fresh server after %s", (_kind, reason) => {
+    expect(freshStartupDecision({ kind: "INCONCLUSIVE", reason })).toEqual({
+      allowed: false,
+      code: `CRASH_${reason}`,
+    })
+  })
+
+  it("allows a fresh server only after a confirmed SIGKILL exit", () => {
+    expect(freshStartupDecision({ kind: "CRASHED" })).toEqual({
+      allowed: true,
+    })
+    expect(
+      freshStartupDecision(classifyExit({ code: null, signal: "SIGKILL" })),
+    ).toEqual({ allowed: true })
+  })
+
+  it("records a refused fresh start as INCONCLUSIVE H1 and H2 evidence only", () => {
+    const decision = freshStartupDecision({
+      kind: "INCONCLUSIVE",
+      reason: "EXIT_TIMEOUT",
+    })
+    expect(decision.allowed).toBe(false)
+    if (decision.allowed) return
+    for (const scenario of ["H1", "H2"] as const) {
+      const line = formatB2Evidence(
+        {
+          schema: "peephole-b2-server-crash/v1",
+          scenario,
+          verdict: "INCONCLUSIVE",
+          code: decision.code,
+          sourceSha: "c".repeat(40),
+          stages: ["frozen", "boundary-proven", "sigkill"],
+        },
+        ["f".repeat(32)],
+      )
+      const record = JSON.parse(line.slice(line.indexOf(" ") + 1)) as {
+        verdict: string
+        code: string
+      }
+      expect(record).toMatchObject({
+        verdict: "INCONCLUSIVE",
+        code: "CRASH_EXIT_TIMEOUT",
+      })
+    }
+  })
+
+  describe("teardown policy", () => {
+    function unverifiedChild(alive: boolean) {
+      return {
+        child: {
+          exitCode: alive ? null : 0,
+          signalCode: null,
+          kill: vi.fn(() => true),
+        } as unknown as OwnedServer["child"],
+        exited: new Promise<never>(() => undefined),
+        reason: "PROC_UNREADABLE",
+      }
+    }
+
+    it("never signals an unverified child and preserves roots while it may be alive", async () => {
+      const alive = unverifiedChild(true)
+      expect(
+        await teardownServerChildren({
+          servers: [],
+          unverified: [alive],
+          environment: {},
+          inspection: procView({}),
+        }),
+      ).toEqual({ manualInspection: true })
+      expect(alive.child.kill).not.toHaveBeenCalled()
+      expect(
+        await teardownServerChildren({
+          servers: [],
+          unverified: [unverifiedChild(false)],
+          environment: {},
+          inspection: procView({}),
+        }),
+      ).toEqual({ manualInspection: false })
+    })
+
+    it("sends nothing to an owned server whose identity can no longer be proven", async () => {
+      const server = fakeServer({})
+      expect(
+        await teardownServerChildren({
+          servers: [server],
+          unverified: [],
+          environment: {},
+          inspection: procView({
+            stat: `4242 (node) S 4000 ${"0 ".repeat(17)}888002`,
+          }),
+        }),
+      ).toEqual({ manualInspection: true })
+      expect(server.child.kill).not.toHaveBeenCalled()
+    })
+
+    it("stops a re-verified owned server and releases roots only if it exits", async () => {
+      const stops = fakeServer({})
+      stops.exited = Promise.resolve({ code: 0, signal: null })
+      const hangs = fakeServer({})
+      const exitedAlready = fakeServer({ exitCode: 0 })
+      expect(
+        await teardownServerChildren({
+          servers: [stops, exitedAlready],
+          unverified: [],
+          environment: {},
+          inspection: procView({}),
+        }),
+      ).toEqual({ manualInspection: false })
+      expect(stops.child.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM")
+      expect(exitedAlready.child.kill).not.toHaveBeenCalled()
+      expect(
+        await teardownServerChildren({
+          servers: [hangs],
+          unverified: [],
+          environment: {},
+          inspection: procView({}),
+          stopTimeoutMs: 10,
+        }),
+      ).toEqual({ manualInspection: true })
+    })
+  })
 
   it("never signals anything while the real gate is off", async () => {
     const server = fakeServer({})
@@ -975,5 +1168,31 @@ describe("B2 boundary ordering with the real FullStackPreviewWorkerLoop", () => 
     )
     controller.abort()
     await done
+  })
+})
+
+describe("real suite wiring (static, the suite itself is Linux-only)", () => {
+  it("refuses the fresh server unless the crash was confirmed, before spawning it", async () => {
+    const { readFile } = await import("node:fs/promises")
+    const source = await readFile(
+      path.resolve("tests/realServerCrashRecovery.test.ts"),
+      "utf8",
+    )
+    const order = [
+      "const crash = await crashOwnedServer(first, process.env)",
+      "const decision = freshStartupDecision(crash)",
+      "if (!decision.allowed)",
+      "inconclusive(decision.code,",
+      'const second = await start("fresh-spawn")',
+    ].map((token) => {
+      const index = source.indexOf(token)
+      expect(index, `missing: ${token}`).toBeGreaterThan(-1)
+      return index
+    })
+    expect(order).toEqual([...order].sort((left, right) => left - right))
+    expect(source.match(/start\("fresh-spawn"\)/g)).toHaveLength(1)
+    // Teardown goes through the shared, re-verifying policy only.
+    expect(source).toContain("await teardownServerChildren({")
+    expect(source).not.toMatch(/\.kill\(/)
   })
 })

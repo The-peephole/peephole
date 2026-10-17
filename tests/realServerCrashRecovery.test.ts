@@ -56,19 +56,19 @@ import {
   formatB2Evidence,
   freeLoopbackPort,
   freezeOwnedServer,
-  linuxProcessInspection,
+  freshStartupDecision,
   loopbackAccepts,
   loopbackRequest,
   newServerNonce,
   OWNED_RESOURCE_KINDS,
   parseB2Fixture,
   realServerCrashEnabled,
-  reverifyOwnedServer,
   SERVER_LISTENING_MARKER,
   spawnOwnedServer,
   stopOwnedServer,
   syntheticEnvironment,
   syntheticServerSecrets,
+  teardownServerChildren,
   thawOwnedServer,
   type B2Evidence,
   type B2Fixture,
@@ -147,24 +147,11 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
       // (PID, PPID, start time, executable, argv, nonce). A child whose
       // identity cannot be proven is never signalled; it, or any child that
       // did not stop, keeps the test roots for manual inspection.
-      let manualInspection = false
-      for (const server of servers) {
-        if (server.child.exitCode !== null || server.child.signalCode !== null)
-          continue
-        try {
-          const identity = await reverifyOwnedServer(
-            server,
-            linuxProcessInspection,
-          )
-          if (identity.state === "T") await thawOwnedServer(server, process.env)
-          if ((await stopOwnedServer(server)) === null) manualInspection = true
-        } catch {
-          manualInspection = true
-        }
-      }
-      for (const child of unverified)
-        if (child.child.exitCode === null && child.child.signalCode === null)
-          manualInspection = true
+      const { manualInspection } = await teardownServerChildren({
+        servers,
+        unverified,
+        environment: process.env,
+      })
       await database?.close()
       if (!runs) return
       if (manualInspection) {
@@ -519,6 +506,13 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
           ])
         }
         const crash = await crashOwnedServer(first, process.env)
+        // Only a confirmed SIGKILL exit allows a second server: otherwise the
+        // first may still be alive on the same database, ports and roots.
+        // Nothing more is signalled here; afterAll re-verifies before any
+        // signal and preserves the roots if it cannot prove a stop.
+        const decision = freshStartupDecision(crash)
+        if (!decision.allowed)
+          inconclusive(decision.code, ["frozen", "boundary-proven", "sigkill"])
 
         // ---------------------------------------------- fresh server process
         const second = await start("fresh-spawn")

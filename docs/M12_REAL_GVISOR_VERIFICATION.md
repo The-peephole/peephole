@@ -542,7 +542,11 @@ database. H2's boundary needs A=`ready`, route 200 and A's queue `leased`;
 H1's needs B's parent and queue row both `queued`. SIGKILL is sent only when
 both are proven; otherwise the server is resumed, stopped normally and the
 run is INCONCLUSIVE. Only an exit by SIGKILL counts as a crash; a normal exit,
-SIGTERM or timeout is INCONCLUSIVE.
+SIGTERM or timeout is INCONCLUSIVE. The fresh server is started only after a
+confirmed SIGKILL exit (`freshStartupDecision`): with unprovable ownership, an
+exit timeout, a normal exit or SIGTERM the first server may still be alive on
+the same database, ports and roots, so no second server or recovery runs, H1
+and H2 are recorded INCONCLUSIVE, and nothing more is signalled.
 
 Every SIGSTOP, SIGCONT, SIGKILL and SIGTERM (including the normal stop of the
 recovered server and teardown) is preceded by a full identity re-check (PID,
