@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type Dispatch,
@@ -153,7 +154,7 @@ export function PreviewJobPanel({
     let timer: number
     const checkExpiry = () => {
       const remaining = expiresAt - Date.now()
-      if (remaining <= 0) {
+      if (!Number.isFinite(remaining) || remaining <= 0) {
         setState({
           status: "job",
           job: { ...job, status: "expired", artifact: null },
@@ -310,9 +311,23 @@ export function PreviewJobPanel({
   const { job } = state
 
   if (job.status === "ready") {
+    // A prop change can render before the identity-reset effect runs.
+    if (
+      job.repository.repositoryId !== targetAnalysis.repository.repositoryId ||
+      job.repository.commitSha !== targetAnalysis.repository.commitSha ||
+      job.plan.sourceRoot !== targetAnalysis.target.sourceRoot
+    )
+      return null
     return (
       <ReadyPreview
+        key={`${repositoryKey}:${job.id}`}
         job={job}
+        onExpired={() =>
+          setState({
+            status: "job",
+            job: { ...job, status: "expired", artifact: null },
+          })
+        }
         previewArtifactBaseDomain={previewArtifactBaseDomain}
       />
     )
@@ -385,11 +400,15 @@ export function PreviewJobPanel({
 
 function ReadyPreview({
   job,
+  onExpired,
   previewArtifactBaseDomain,
 }: {
   job: PreviewJob
+  onExpired: () => void
   previewArtifactBaseDomain: string | null
 }) {
+  const [visible, setVisible] = useState(true)
+  const frameRegionId = useId()
   const artifactUrl = job.artifact?.url ?? null
   const trusted =
     artifactUrl !== null &&
@@ -400,13 +419,41 @@ function ReadyPreview({
       <strong>Preview ready</strong>
       {trusted && artifactUrl ? (
         <>
-          <iframe
-            className="peephole__preview-frame"
-            referrerPolicy="no-referrer"
-            sandbox="allow-scripts allow-same-origin allow-forms"
-            src={artifactUrl}
-            title="Peephole preview"
-          />
+          <button
+            aria-controls={frameRegionId}
+            aria-expanded={visible}
+            className="peephole__secondary peephole__preview-visibility"
+            onClick={() => {
+              const deadline = Math.min(
+                Date.parse(job.expiresAt),
+                Date.parse(job.artifact?.expiresAt ?? job.expiresAt),
+              )
+              if (!Number.isFinite(deadline) || Date.now() >= deadline) {
+                onExpired()
+                return
+              }
+              setVisible((current) => !current)
+            }}
+            type="button"
+          >
+            {visible ? "Close preview" : "Show preview"}
+          </button>
+          <div hidden={!visible} id={frameRegionId}>
+            {visible && (
+              <iframe
+                className="peephole__preview-frame"
+                referrerPolicy="no-referrer"
+                sandbox="allow-scripts allow-same-origin allow-forms"
+                src={artifactUrl}
+                title="Peephole preview"
+              />
+            )}
+          </div>
+          {!visible && (
+            <p className="peephole__action-note">
+              Preview hidden in this panel. You can reopen it until it expires.
+            </p>
+          )}
           <a
             className="peephole__link"
             href={artifactUrl}

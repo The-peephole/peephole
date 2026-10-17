@@ -394,6 +394,11 @@ a {
   gap: 8px;
 }
 
+.peephole__preview-visibility:focus-visible {
+  outline: 2px solid var(--peephole-focus);
+  outline-offset: 2px;
+}
+
 .peephole__primary,
 .peephole__secondary {
   border-radius: 6px;
