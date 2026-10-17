@@ -303,10 +303,13 @@ describe("owned server identity", () => {
       } finally {
         server.child.kill("SIGTERM")
       }
-      expect(classifyExit(await server.exited)).toEqual({
-        kind: "INCONCLUSIVE",
-        reason: "NORMAL_EXIT",
-      })
+      // SIGTERM may land before the child installs its handler (default
+      // termination) or after (exit 0); neither is ever a crash.
+      const outcome = classifyExit(await server.exited)
+      expect(outcome.kind).toBe("INCONCLUSIVE")
+      expect(["NORMAL_EXIT", "SIGNAL_SIGTERM"]).toContain(
+        outcome.kind === "INCONCLUSIVE" ? outcome.reason : "CRASHED",
+      )
       await expect(
         reverifyOwnedServer(server, linuxProcessInspection),
       ).rejects.toMatchObject({
