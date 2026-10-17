@@ -247,7 +247,107 @@ unreadable inventory or cleanup failure never closes B1. G6 uses synthetic
 M11-shaped material only; it does not establish SQL connectivity or B2's
 actual-server SIGKILL/startup recovery.
 
-The log contains only safe codes, booleans, statuses, and paths:
+### R5-1B isolated journal adapter (portable verification only)
+
+`tests/support/runM12JournalVerification.ts` is a test-only controller for
+**a separately provisioned, credential-free Linux VM**. It does not provision
+the VM, edit configuration, or create/start/stop any service. It was not run
+against Linux/journald/gVisor in R5-1B. **B1 remains OPEN**; the actual journal
+result is **NOT_RUN**, regardless of Portable/CI results.
+
+This controller reuses the existing Vitest file, selecting `G[1-6]:|H2/H3:`:
+six G1-G5 cases, G6's pending-signal boundary, and H2/H3 (eight selected cases).
+It awaits the complete child, including Vitest error/reporting output and
+`withEnvironment`'s independent stop/destroy/remove cleanup. Only then does it
+write the end marker, synchronize the namespace and inspect its complete
+record set. A failed child is still scanned and remains a failed lifecycle
+run even if its journal scan passes. This does not add H1 or actual SIGKILL.
+
+The isolation boundary requires all of the following; a directory name or
+an operator boolean alone is not accepted as proof:
+
+- A fresh, root-owned namespace `peephole-m12-<32 lowercase hex run id>` and
+  identically named `.service`, used exclusively for this one invocation.
+- The unit's live `LogNamespace`, `InvocationID`, `MainPID`, `ActiveState`,
+  `StandardOutput=journal`, `StandardError=journal`, and both zero unit log-rate
+  limits match the running controller. No `Environment` property is read.
+- `/run/log/journal/<machine id>.<namespace>` and every ancestor are canonical,
+  root-owned, non-symlink and not group/world writable. The source directory's
+  device/inode is unchanged after collection.
+- The root-owned namespace config is exactly `M12_JOURNAL_CONFIG` in the
+  controller. `systemd-analyze cat-config` must show those same settings without
+  overriding/unknown drop-ins: volatile storage, debug-level storage, disabled
+  rate limits, no kernel reads, unchanged audit policy, no syslog/kernel/console/
+  wall forwarding. Configuration is checked before and after the run.
+- Every read record has the expected trusted `_NAMESPACE`, `_MACHINE_ID` and
+  `_BOOT_ID`. The begin/control/end records additionally match the test unit,
+  invocation and controller PID, appear exactly once and in order, and enclose
+  at least one scenario record. The positive control is a distinct non-secret
+  synthetic message deliberately written only to this isolated journal; M12
+  material values are never deliberately logged.
+
+The collector uses only `journalctl --namespace=<exact name> --sync`, followed
+by `--namespace=<exact name> --no-pager --output=json --all`. There is no host
+namespace fallback, wildcard/merged namespace, time/unit filter, tail count or
+field projection. Commands are bounded to 10 seconds/4 MiB; parsing/scanning
+has a 30-second budget and a 10,000-record bound. Nonzero exit, stderr warnings,
+overflow, missing trailing record delimiter, malformed/null fields, split
+`line-max` records, unreadable sources, source changes, absent controls or
+empty scope prevent PASS. The tool decodes JSON escapes, repeated fields and
+binary byte arrays before reusing `scanFileForRawValueStatus`; no journal
+export is written to disk. `combineScanStatuses` retains FAIL over INCOMPLETE.
+
+| Result | Required meaning |
+| --- | --- |
+| PASS | Proven source, observed working positive control, nonempty bounded scope, all records/fields inspected, neither M12 synthetic value found |
+| FAIL | An M12 synthetic value was found, including when another field is incomplete |
+| INCOMPLETE | Collection/isolation/coverage/control/completion cannot be proven; never a clean result |
+| NOT_RUN | No native isolated journal execution (the R5-1B implementation result) |
+
+Only status, run id, fixed scenario scope, counts, completion and lifecycle
+success booleans are emitted as `[m12-journal-evidence]`. Require **both** scan
+PASS and `scenarioPassed=true`/controller exit 0, eight actual selected test
+passes, existing per-scenario evidence and readable clean parent status. Keep
+the safe evidence and test/source/tool-version identities; do not copy raw
+journal records, assertion output, environment values or credentials into
+release evidence. The deliberate control message stays in the isolated input.
+
+**R5-2 approval/preparation, not performed here:** approve the dedicated VM,
+existing test roots/rootfs/tmpfs/network prerequisites and one namespace-specific
+config/test unit. The operator must establish that the config was installed
+before the fresh namespace daemon started, that the namespace is not reused,
+that no forwarding/log agents or other workloads/credentials are present, and
+that its supported systemd version honors these settings. File checks cannot
+prove an already running daemon reloaded a changed config, or reconstruct
+discarded/vacuumed records. Preserve those bootstrap facts and stop if unknown.
+Do not modify host-global journald settings or any Production unit. Unit setup
+and lifecycle execution need the separate R5-2 approval; this PR supplies no
+service installation/start/stop script.
+
+After that approval, the test unit's direct entry point is
+`node --import tsx tests/support/runM12JournalVerification.ts`, with repository
+working directory, root, `Type=exec` (active while the command runs),
+`LogNamespace`/unit name as above, both existing real
+gates exactly `1`, the four explicit existing test roots, and
+`PEEPHOLE_M12_TEST_JOURNAL_RUN_ID=<run id>`. Let systemd supply `INVOCATION_ID`;
+never hand-forge it. The controller rejects a wrapper PID in place of MainPID.
+Do not run this entry point in a shell, on a general host or against Production.
+
+Coverage is the two fixed M12 synthetic values and the captured test invocation,
+including its ProcessRunner/error/cleanup output. It does not prove M10's random
+secrets, M11 credentials, arbitrary values, host memory, unallocated blocks,
+unrelated units, future output after the boundary, or B2 startup recovery.
+Outer host teardown/status is separate evidence and is not inside this scan.
+The old direct Vitest commands do not collect journal evidence. Reuse the
+2026-10-16 Canary functional/normal Stop/cleanup/rollback evidence for its
+original scope; it cannot fill these journal or pending-signal gaps.
+
+API references: [journalctl namespace/JSON output/sync](https://www.freedesktop.org/software/systemd/man/latest/journalctl.html),
+[trusted journal fields](https://www.freedesktop.org/software/systemd/man/latest/systemd.journal-fields.html),
+and [namespace-specific journald configuration](https://www.freedesktop.org/software/systemd/man/latest/journald.conf.html).
+Native version compatibility and actual collection remain R5-2 checks.
+
+The existing direct-test log contains only safe codes, booleans, statuses, and paths:
 
 - `[m12-real-preflight]` — gate booleans, the four roots, and the protected
   roots.
