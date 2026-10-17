@@ -1,5 +1,8 @@
 import type { RepositoryIdentity } from "../../types/repository"
-import { getRepositoryKey } from "../../utils/githubUrl"
+import {
+  getRepositoryKey,
+  isGitHubRepositoryOverviewUrl,
+} from "../../utils/githubUrl"
 import {
   findPeepholeInjectionTarget,
   getRepositoryFromGitHubPage,
@@ -20,6 +23,7 @@ export class GitHubPageController {
   private currentContextKey: string | null = null
   private hasReportedRepositoryContext = false
   private mountedUi: MountedPeepholeUi | null = null
+  private mountedTarget: HTMLElement | null = null
   private mutationObserver: MutationObserver | null = null
   private scheduledFrame: number | null = null
 
@@ -42,6 +46,19 @@ export class GitHubPageController {
     this.mutationObserver.observe(this.document.documentElement, {
       childList: true,
       subtree: true,
+      attributes: true,
+      attributeFilter: [
+        "class",
+        "style",
+        "hidden",
+        "aria-hidden",
+        "inert",
+        "aria-label",
+        "data-testid",
+        "content",
+        "href",
+        "id",
+      ],
     })
   }
 
@@ -88,22 +105,29 @@ export class GitHubPageController {
     const repositoryKey = getRepositoryKey(repository)
     this.updateRepositoryContext(repository)
 
+    // Subpages still publish repository context, but never carry an action.
+    const target = isGitHubRepositoryOverviewUrl(this.location.href)
+      ? findPeepholeInjectionTarget(this.document, repository)
+      : null
+
     if (
+      target &&
+      this.mountedTarget === target &&
       this.currentRepositoryKey === repositoryKey &&
-      this.mountedUi?.element.isConnected
+      this.mountedUi?.element.parentElement === target &&
+      this.mountedUi.isIntact()
     ) {
       return
     }
 
     this.removeUi()
 
-    const target = findPeepholeInjectionTarget(this.document, repository)
-
     if (!target) {
       return
     }
 
     this.mountedUi = this.mountUi(target, repository)
+    this.mountedTarget = target
     this.currentRepositoryKey = repositoryKey
   }
 
@@ -125,6 +149,7 @@ export class GitHubPageController {
   private removeUi(): void {
     this.mountedUi?.unmount()
     this.mountedUi = null
+    this.mountedTarget = null
     this.currentRepositoryKey = null
   }
 }

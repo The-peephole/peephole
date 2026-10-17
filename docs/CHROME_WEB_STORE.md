@@ -14,6 +14,15 @@ Store listing. The listing is public at
   published.
 - The extension ID stays the same.
 
+**v0.3.0 R2 candidate note (2026-10-17):** the Repository button is offered
+only on the repository overview (`/owner/repo` or `/owner/repo/`); query and
+hash changes retain the same button. It sits with the verified Watch/Star/Fork
+actions and is omitted when that area is unavailable. Repository subpages
+continue to supply Side Panel context. Before a future store submission,
+refresh overview screenshots in Light, Dark and Dark Dimmed and check narrow
+layouts and real GitHub SPA transitions. This note records local candidate
+work, without changing the version, permissions or store submission status.
+
 Public listing fields can be checked without Dashboard access. Permissions,
 privacy answers, distribution, account, and policy prompts are Dashboard-only.
 The owner completed them for the v0.2.0 submission; the exact answers are not
