@@ -37,6 +37,7 @@ import type {
 import type { BackendRuntimePlan } from "../types/backendRuntime"
 import type { GeneratedSecretMaterial } from "../types/backendRuntimeSecrets"
 import type { TemporaryDatabaseRuntimeCredentialMaterial } from "../types/temporaryDatabase"
+import { PendingSignalProcessRunner } from "./support/pendingSignalProcessRunner"
 
 const SECRET_MARKER = "M10BMarker_7Hn9-Q"
 // The credential's resourceId (below, in databaseCredential()) is fixed via
@@ -926,6 +927,122 @@ describe("GVisorBackendRuntimeProcess", () => {
       processRunner.calls.filter((call) => call.args.includes("delete")),
     ).toHaveLength(1)
   })
+
+  it.each(["none", "M10", "M11", "M12"])(
+    "pending signal with all three materials retains independent cleanup failure: %s",
+    async (failure) => {
+      const runner = new FakeProcessRunner()
+      runner.killResult = {
+        exitCode: 1,
+        timedOut: false,
+        stdout: "",
+        stderr: "not found",
+      }
+      const runscRootDir = "/test/pending-signal-runsc"
+      const boundary = new PendingSignalProcessRunner(runner, runscRootDir)
+      const remove = (label: string) => {
+        const operation = vi.fn<(runtimeId: string) => Promise<void>>()
+        return label === failure
+          ? operation.mockRejectedValue(new Error(`${label} cleanup failed`))
+          : operation.mockResolvedValue(undefined)
+      }
+      const removeSecret = remove("M10")
+      const removeDatabase = remove("M11")
+      const removeUser = remove("M12")
+      const userRoot = path.join(
+        os.tmpdir(),
+        `${path.basename(bundleDir)}-user`,
+      )
+      const runtime = new GVisorBackendRuntimeProcess({
+        runscRootDir,
+        processRunner: boundary,
+        generatedSecretFilesystem: {
+          rootDir: secretRoot,
+          create: async () => path.join(secretRoot, "job-backend"),
+          remove: removeSecret,
+        },
+        databaseCredentialFilesystem: {
+          rootDir: dbCredentialRoot,
+          create: async () =>
+            path.join(dbCredentialRoot, "job-backend", "database-url"),
+          remove: removeDatabase,
+        },
+        userEnvironmentFilesystem: {
+          rootDir: userRoot,
+          create: async () => path.join(userRoot, "job-backend", "user-env"),
+          remove: removeUser,
+        },
+      })
+      const workspace = fakeWorkspace(bundleDir, "127.0.0.1")
+      const handle = await runtime.start(
+        workspace,
+        {
+          ...databaseAndSecretPlan,
+          internalPort: port,
+          userEnvironmentNames: ["APP_GREETING"],
+        },
+        {
+          runtimeId: "job-backend",
+          values: new Map([
+            ["SESSION_SECRET", createOpaqueSecretValue(SECRET_MARKER)],
+          ]),
+        },
+        databaseCredential(),
+        {
+          runtimeId: "job-backend",
+          values: new Map([
+            ["APP_GREETING", createOpaqueSecretValue("portable-test-value")],
+          ]),
+        },
+      )
+      boundary.arm(workspace.listContainers()[0]!)
+      const stopped = handle.stop().then(
+        () => null,
+        (error: unknown) => error,
+      )
+      try {
+        await boundary.waitUntilPending()
+        expect(boundary.delegated).toBe(false)
+        runner.finishRun()
+        const exited = await handle.waitForExit().then(
+          () => true,
+          () => false,
+        )
+        expect(exited).toBe(failure === "none")
+        expect(boundary.pending).toBe(true)
+      } finally {
+        boundary.release()
+        await stopped
+      }
+      const error = await stopped
+      if (failure === "none") expect(error).toBeNull()
+      else {
+        expect(error).toBeInstanceOf(AggregateError)
+        expect((error as AggregateError).errors).toHaveLength(2)
+        expect((error as AggregateError).errors[0].message).toContain(
+          "stop command failed",
+        )
+        expect((error as AggregateError).errors[1].message).toContain(
+          "credential cleanup failed",
+        )
+      }
+      for (const operation of [removeSecret, removeDatabase, removeUser]) {
+        expect(operation).toHaveBeenCalledWith("job-backend")
+      }
+      for (const [label, operation] of [
+        ["M10", removeSecret],
+        ["M11", removeDatabase],
+        ["M12", removeUser],
+      ] as const) {
+        if (label !== failure) expect(operation).toHaveBeenCalledTimes(1)
+      }
+      expect(boundary.signalResult?.exitCode).toBe(1)
+      expect(workspace.listContainers()).toEqual([])
+      expect(
+        runner.calls.filter((call) => call.args.includes("delete")),
+      ).toHaveLength(1)
+    },
+  )
 
   it("stop() sends SIGTERM, not SIGKILL, so the trusted secret bootstrap can forward it", async () => {
     const processRunner = new FakeProcessRunner()

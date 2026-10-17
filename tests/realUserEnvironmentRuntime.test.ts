@@ -86,6 +86,8 @@ import {
   reconcileDedicatedRunscStateForCleanup,
   scanRunscStateForRawValue,
 } from "./support/realRunscStateInspection"
+import { PendingSignalProcessRunner } from "./support/pendingSignalProcessRunner"
+import { safeRealTest } from "./support/safeRealTest"
 
 /**
  * M12 real Linux/gVisor verification. Skipped unless BOTH
@@ -783,6 +785,87 @@ describe.skipIf(!m12RealSuiteEnabled(process.env))(
         evidence("G5", { staleReaped: true, unrelatedPreserved: true })
       })
     }, 60_000)
+
+    it(
+      "G6: confirms natural exit and cleanup while the scoped SIGTERM runner request is pending",
+      safeRealTest(async () => {
+        let signalExitCode: number | null = null
+        await withEnvironment(async (environment) => {
+          const workspace = await allocateWithFixture(environment, "g6")
+          const boundary = new PendingSignalProcessRunner(
+            environment.processRunner,
+            environment.paths.runscRootDir,
+          )
+          const runtime = new GVisorBackendRuntimeProcess({
+            runscRootDir: environment.paths.runscRootDir,
+            processRunner: boundary,
+            maxRuntimeMs: 120_000,
+            generatedSecretFilesystem: environment.generatedSecretFilesystem,
+            databaseCredentialFilesystem:
+              environment.databaseCredentialFilesystem,
+            userEnvironmentFilesystem: environment.userEnvironmentFilesystem,
+          })
+          const handle = await runtime.start(
+            workspace,
+            {
+              ...basePlan,
+              generatedSecretNames: ["SESSION_SECRET"],
+              databaseRequirement: { name: "DATABASE_URL" },
+              userEnvironmentNames: ["APP_GREETING"],
+            },
+            takeGeneratedSecret(workspace.id),
+            syntheticDatabaseCredential(workspace.id),
+            takeUserMaterial(workspace.id, [
+              { name: "APP_GREETING", value: SYNTHETIC_VALUE },
+            ]),
+          )
+          environment.handles.push(handle)
+          await handle.waitUntilReady(30_000)
+          expect(workspace.listContainers()).toHaveLength(1)
+          boundary.arm(workspace.listContainers()[0]!)
+          const stopped = handle.stop().then(
+            () => true,
+            () => false,
+          )
+          try {
+            await boundary.waitUntilPending()
+            expect(boundary.delegated).toBe(false)
+            // The fixture exits itself. No host signal has been delegated.
+            await getJson(handle, "/exit")
+            expect(await handle.waitForExit()).toEqual({ exitCode: 0 })
+            expect(boundary.pending).toBe(true)
+            expect(workspace.listContainers()).toEqual([])
+            await expectEmpty(environment.paths.generatedSecretRoot)
+            await expectEmpty(environment.paths.databaseCredentialRoot)
+            await expectEmpty(environment.paths.userEnvironmentRoot)
+          } finally {
+            // Even a failed assertion must unblock the existing owned cleanup.
+            boundary.release()
+            await stopped
+          }
+          expect(await stopped).toBe(true)
+          // This is the real NodeProcessRunner/runsc result, never a fabricated
+          // "not found". Null exit/timeout cannot attest this boundary.
+          expect(boundary.signalResult?.timedOut).toBe(false)
+          signalExitCode = boundary.signalResult?.exitCode ?? null
+          expect(signalExitCode !== null && signalExitCode !== 0).toBe(true)
+          await handle.stop()
+          expect(await handle.waitForExit()).toEqual({ exitCode: 0 })
+        })
+        // Emit only after the scenario AND outer owned-resource cleanup pass.
+        evidence("G6-pending-signal", {
+          execution: "REAL_GVISOR",
+          runnerBoundaryReached: true,
+          naturalExitCode: 0,
+          signalExitCode,
+          independentMaterialCleanup: true,
+          ownedCleanup: true,
+          databaseConnectivity: "NOT_RUN",
+          journal: "NOT_RUN",
+        })
+      }),
+      120_000,
+    )
 
     it("H2/H3: after supervisor ownership loss, fresh reapers clean every test-owned resource, idempotently", async () => {
       await withEnvironment(

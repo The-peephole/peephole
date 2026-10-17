@@ -220,7 +220,34 @@ execution was performed for this correction. The commands above define the
 remaining Linux lifecycle recheck; retain the historical 12/12 evidence at
 its exact commit rather than attributing it to the newer branch HEAD.
 
-The log contains only booleans, statuses, and paths:
+### R5-1A pending-signal test addition (real execution still pending)
+
+`G6` adds a test-only `PendingSignalProcessRunner` around the existing real
+`NodeProcessRunner`; no production hook or runtime behavior changes. It holds
+only the exact test-root/container SIGTERM request at the awaited runner
+boundary. The host kill command has not started while held: this is not a
+claim that a kernel signal syscall is suspended. The fixture's `/exit` then
+causes actual natural exit, observed as exit code 0, and all three material
+cleanups must finish before release. The unchanged runner then executes the
+actual runsc kill against the deleted container; its nonzero, non-timeout
+result must be tolerated only with that confirmed exit and successful cleanup.
+The evidence record is emitted after outer owned-resource cleanup succeeds.
+
+Portable tests validate this gate and M10/M11/M12 independent cleanup failure
+handling; the existing forced-deletion/unconfirmed-exit and graceful-stop
+regressions remain required. Portable PASS and an opt-in skip are not Linux
+boundary PASS. G6 has not been executed on a real host by this implementation
+phase. **B1 remains OPEN**, including journal non-leakage (R5-1B).
+
+On a separately approved dedicated host, reuse the gates/roots above and run
+`-t 'G6:'` in addition to the existing six G1-G5 cases and one H2/H3 case.
+Require test exit 0, the `G6-pending-signal` evidence, real nonzero signal exit
+code, and clean parent status. A missing boundary, timeout, skipped suite,
+unreadable inventory or cleanup failure never closes B1. G6 uses synthetic
+M11-shaped material only; it does not establish SQL connectivity or B2's
+actual-server SIGKILL/startup recovery.
+
+The log contains only safe codes, booleans, statuses, and paths:
 
 - `[m12-real-preflight]` — gate booleans, the four roots, and the protected
   roots.
