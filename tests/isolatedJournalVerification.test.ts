@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   journalIdentity,
+  journalRunPassed,
   JOURNAL_MAX_BYTES,
   JOURNAL_MAX_RECORDS,
   M12_JOURNAL_SENTINELS,
@@ -336,5 +337,156 @@ describe("isolated journal verification (portable inputs, not Linux evidence)", 
       ].every((name) => filter.test(name)),
     ).toBe(true)
     expect(filter.test("E1:")).toBe(false)
+  })
+})
+
+describe("live resource audit ordering and overall verdict (portable)", () => {
+  const passing = {
+    mounts: "PASS",
+    processes: "PASS",
+    network: "PASS",
+  } as const
+
+  function withResources(
+    audit: () => Promise<typeof passing | Record<string, string>>,
+    snapshot: () => Promise<unknown> = async () => ({ mounts: [] }),
+  ) {
+    const f = fixture()
+    const order: string[] = []
+    const writeMarker = f.io.writeMarker
+    f.io.writeMarker = vi.fn(async (message: string) => {
+      order.push(message)
+      await writeMarker(message)
+    })
+    const collect = f.io.collect
+    f.io.collect = vi.fn(async (namespace: string) => {
+      order.push("collect")
+      return collect(namespace)
+    })
+    f.scenario.mockImplementation(async () => {
+      order.push("scenario")
+      f.append("scenario and cleanup completed")
+      return 0
+    })
+    f.io.resources = {
+      snapshot: vi.fn(async () => {
+        order.push("snapshot")
+        return snapshot()
+      }),
+      audit: vi.fn(async () => {
+        order.push("audit")
+        return (await audit()) as typeof passing
+      }),
+    }
+    return { ...f, order }
+  }
+
+  it("snapshots before the child and audits after it, before the end marker", async () => {
+    const f = withResources(async () => passing)
+    const result = await verifyIsolatedJournalRun(scope, f.scenario, f.io)
+    expect(f.order).toEqual([
+      "snapshot",
+      identity.begin,
+      identity.control,
+      "scenario",
+      "audit",
+      identity.end,
+      "collect",
+    ])
+    expect(result).toMatchObject({
+      status: "PASS",
+      scenarioRan: true,
+      resourceAudit: "PASS",
+      resources: passing,
+    })
+    expect(journalRunPassed(result)).toBe(true)
+  })
+
+  it("still audits and collects after a failed child, without hiding the failure", async () => {
+    const f = withResources(async () => passing)
+    f.scenario.mockImplementation(async () => {
+      f.order.push("scenario")
+      f.append("scenario failed")
+      return 1
+    })
+    const result = await verifyIsolatedJournalRun(scope, f.scenario, f.io)
+    expect(f.order.slice(3)).toEqual([
+      "scenario",
+      "audit",
+      identity.end,
+      "collect",
+    ])
+    expect(result).toMatchObject({
+      scenarioPassed: false,
+      resourceAudit: "PASS",
+    })
+    expect(journalRunPassed(result)).toBe(false)
+  })
+
+  it.each([
+    ["a failed audit", async () => ({ ...passing, network: "FAIL" }), "FAIL"],
+    [
+      "an incomplete audit",
+      async () => ({ ...passing, processes: "INCOMPLETE" }),
+      "INCOMPLETE",
+    ],
+    [
+      "a throwing audit",
+      async () => {
+        throw new Error("raw audit detail")
+      },
+      "INCOMPLETE",
+    ],
+  ])(
+    "still collects and scans the journal after %s",
+    async (_kind, audit, expected) => {
+      const f = withResources(audit)
+      const result = await verifyIsolatedJournalRun(scope, f.scenario, f.io)
+      expect(f.io.collect).toHaveBeenCalledOnce()
+      expect(result.status).toBe("PASS")
+      expect(result.resourceAudit).toBe(expected)
+      expect(journalRunPassed(result)).toBe(false)
+      expect(JSON.stringify(result)).not.toContain("raw audit detail")
+    },
+  )
+
+  it("does not run the child when the baseline cannot be attributed", async () => {
+    const f = withResources(
+      async () => passing,
+      async () => {
+        throw new Error("RESOURCE_AUDIT_BASELINE_NOT_CLEAN")
+      },
+    )
+    const result = await verifyIsolatedJournalRun(scope, f.scenario, f.io)
+    expect(f.scenario).not.toHaveBeenCalled()
+    expect(f.io.resources?.audit).not.toHaveBeenCalled()
+    expect(result).toMatchObject({
+      scenarioRan: false,
+      scenarioPassed: false,
+      resourceAudit: "INCOMPLETE",
+    })
+    expect(journalRunPassed(result)).toBe(false)
+  })
+
+  it("never passes overall without a live audit (NOT_RUN)", async () => {
+    const f = fixture()
+    const result = await verifyIsolatedJournalRun(scope, f.scenario, f.io)
+    expect(result).toMatchObject({
+      status: "PASS",
+      resourceAudit: "NOT_RUN",
+      resources: null,
+    })
+    expect(journalRunPassed(result)).toBe(false)
+  })
+
+  it("keeps a journal sentinel FAIL even with a passing audit", async () => {
+    const f = withResources(async () => passing)
+    f.scenario.mockImplementation(async () => {
+      f.append(M12_JOURNAL_SENTINELS[1])
+      return 0
+    })
+    const result = await verifyIsolatedJournalRun(scope, f.scenario, f.io)
+    expect(result).toMatchObject({ status: "FAIL", resourceAudit: "PASS" })
+    expect(journalRunPassed(result)).toBe(false)
   })
 })

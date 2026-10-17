@@ -2,12 +2,13 @@
  * transient (systemd-run) test unit. This file never creates/configures/
  * starts/stops a systemd unit. */
 import { execFile, spawn } from "node:child_process"
-import { lstat, readFile, realpath } from "node:fs/promises"
+import { lstat, readdir, readFile, readlink, realpath } from "node:fs/promises"
 import path from "node:path/posix"
 import { fileURLToPath } from "node:url"
 
 import {
   journalIdentity,
+  journalRunPassed,
   JOURNAL_MAX_BYTES,
   M12_JOURNAL_TEST_FILTER,
   verifyIsolatedJournalRun,
@@ -19,6 +20,13 @@ import {
   m12RealSuiteEnabled,
   readM12HarnessConfig,
 } from "./m12RealGvisorHarness"
+import {
+  auditResources,
+  snapshotResources,
+  type ResourceAuditOperations,
+  type ResourceAuditScope,
+  type ResourceSnapshot,
+} from "./m12ResourceAudit"
 
 // An exact, namespace-specific config is deliberately required rather than
 // assuming the host's effective defaults. Provisioning needs separate approval.
@@ -60,6 +68,18 @@ function command(binary: string, args: string[]): Promise<Buffer> {
 
 /** Each ancestor must remain canonical/non-symlink and root-owned, with no
  * group/world write access. Returns identity, not contents or a raw error. */
+export const linuxResourceAuditOperations: ResourceAuditOperations = {
+  readFile: (candidate) => readFile(candidate, "utf8"),
+  readdir: async (candidate) =>
+    (await readdir(candidate, { withFileTypes: true })).map((entry) => ({
+      name: entry.name,
+      directory: entry.isDirectory(),
+    })),
+  readlink: (candidate) => readlink(candidate),
+  command: async (binary, args) =>
+    (await command(binary, args)).toString("utf8"),
+}
+
 export async function inspectOwnedJournalPath(
   candidate: string,
   directory: boolean,
@@ -219,7 +239,7 @@ async function main(): Promise<void> {
     // or reading a namespace, not only later inside the Vitest child.
     if ((await findProductionHostMarkers()).length > 0)
       throw new Error("ISOLATED_JOURNAL_HOST_REFUSED")
-    await readM12HarnessConfig(process.env)
+    const config = await readM12HarnessConfig(process.env)
     const scope: JournalScope = {
       runId: process.env.PEEPHOLE_M12_TEST_JOURNAL_RUN_ID ?? "",
       invocationId: process.env.INVOCATION_ID ?? "",
@@ -228,6 +248,16 @@ async function main(): Promise<void> {
       bootId: (await readFile("/proc/sys/kernel/random/boot_id", "utf8"))
         .trim()
         .replaceAll("-", ""),
+    }
+    const auditScope: ResourceAuditScope = {
+      roots: [
+        config.workspaceRoot,
+        config.runscRoot,
+        config.tmpfsRoot,
+        config.baseRootfs,
+      ],
+      unit: journalIdentity(scope).unit,
+      pid: process.pid,
     }
     const repository = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
@@ -247,10 +277,20 @@ async function main(): Promise<void> {
             )
           }),
         collect: collectLinuxJournal,
+        resources: {
+          snapshot: () =>
+            snapshotResources(auditScope, linuxResourceAuditOperations),
+          audit: (before) =>
+            auditResources(
+              auditScope,
+              before as ResourceSnapshot,
+              linuxResourceAuditOperations,
+            ),
+        },
       },
     )
     process.stdout.write(`[m12-journal-evidence] ${JSON.stringify(result)}\n`)
-    exitCode = result.status === "PASS" && result.scenarioPassed ? 0 : 1
+    exitCode = journalRunPassed(result) ? 0 : 1
   } catch {
     process.stdout.write(
       '[m12-journal-evidence] {"status":"INCOMPLETE","complete":false}\n',

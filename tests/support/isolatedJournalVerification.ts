@@ -5,6 +5,10 @@ import {
   scanFileForRawValueStatus,
   type ScanStatus,
 } from "./m12RealGvisorHarness"
+import {
+  combineResourceAudit,
+  type ResourceAuditResult,
+} from "./m12ResourceAudit"
 
 // The same non-credential values delivered by realUserEnvironmentRuntime.
 export const M12_JOURNAL_SENTINELS = [
@@ -49,6 +53,13 @@ export interface JournalIO {
    * and reject any timeout, stderr warning, nonzero exit or buffer overflow. */
   collect(namespace: string): Promise<Buffer>
   now?(): number
+  /** Live owned-resource audit inside the still-running unit. `snapshot`
+   * must throw unless every later finding is attributable to this run; the
+   * child is then not run. Absent: `resourceAudit` stays NOT_RUN. */
+  resources?: {
+    snapshot(): Promise<unknown>
+    audit(before: unknown): Promise<ResourceAuditResult>
+  }
 }
 
 export interface JournalEvidence {
@@ -60,7 +71,24 @@ export interface JournalEvidence {
   bytes: number
   complete: boolean
   positiveControl: boolean
+  scenarioRan: boolean
   scenarioPassed: boolean
+  resourceAudit: ScanStatus | "NOT_RUN"
+  resources: ResourceAuditResult | null
+}
+
+/** The only overall PASS: a clean, complete journal scan with a detected
+ * control, a lifecycle child that actually ran and exited 0, and a live
+ * resource audit that passed. `status` alone is the journal scan only. */
+export function journalRunPassed(evidence: JournalEvidence): boolean {
+  return (
+    evidence.status === "PASS" &&
+    evidence.complete &&
+    evidence.positiveControl &&
+    evidence.scenarioRan &&
+    evidence.scenarioPassed &&
+    evidence.resourceAudit === "PASS"
+  )
 }
 
 export function journalIdentity(scope: JournalScope) {
@@ -149,20 +177,47 @@ export async function verifyIsolatedJournalRun(
     bytes: 0,
     complete: false,
     positiveControl: false,
+    scenarioRan: false,
     scenarioPassed: false,
+    resourceAudit: "NOT_RUN",
+    resources: null,
   }
   const statuses: ScanStatus[] = []
   try {
     const identity = journalIdentity(scope)
     const before = await io.inspect()
     if (!validSource(scope, before)) return evidence
+    let baseline: unknown
+    let runScenario = true
+    if (io.resources) {
+      try {
+        baseline = await io.resources.snapshot()
+      } catch {
+        // Unknown or non-attributable baseline: never run the lifecycle.
+        evidence.resourceAudit = "INCOMPLETE"
+        runScenario = false
+      }
+    }
     await io.writeMarker(identity.begin)
     // Deliberate NON-CREDENTIAL positive control in this isolated input only.
     await io.writeMarker(identity.control)
-    try {
-      evidence.scenarioPassed = (await scenario()) === 0
-    } catch {
-      evidence.scenarioPassed = false
+    if (runScenario) {
+      evidence.scenarioRan = true
+      try {
+        evidence.scenarioPassed = (await scenario()) === 0
+      } catch {
+        evidence.scenarioPassed = false
+      }
+      // Audited even after a failed child, before the unit can be torn down.
+      // An audit failure never skips journal collection below.
+      if (io.resources) {
+        try {
+          evidence.resources = await io.resources.audit(baseline)
+          evidence.resourceAudit = combineResourceAudit(evidence.resources)
+        } catch {
+          evidence.resourceAudit = "INCOMPLETE"
+        }
+      }
     }
     // Includes child stderr, ProcessRunner errors and the last cleanup/reporter
     // output, even when the child failed. End must be observed, never assumed.
