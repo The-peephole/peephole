@@ -131,3 +131,18 @@ describe("production startup safety gates", () => {
     expect(order).toEqual([...order].sort((left, right) => left - right))
   })
 })
+
+describe("production network lease directory wiring", () => {
+  it("passes the configured lease directory to the one shared lease manager", async () => {
+    const source = await readFile(
+      path.resolve("services/production/server.ts"),
+      "utf8",
+    )
+    expect(source).toContain(
+      "new NetworkLeaseManager({\n    leaseDir: productionConfig.networkLeaseDir,\n  })",
+    )
+    expect(source.match(/new NetworkLeaseManager\(/g)).toHaveLength(1)
+    // Both the startup reaper and the provisioner share that manager.
+    expect(source.match(/leaseManager: networkLeaseManager/g)).toHaveLength(2)
+  })
+})

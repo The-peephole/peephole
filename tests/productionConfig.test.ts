@@ -460,3 +460,75 @@ describe("readProductionConfig temporary databases (M11)", () => {
     expect(message).not.toContain("placeholder-secret")
   })
 })
+
+describe("readProductionConfig network lease directory", () => {
+  it("keeps NetworkLeaseManager's historical default when unset or empty", () => {
+    for (const value of [undefined, "", "   "]) {
+      const config = readProductionConfig(
+        value === undefined ? {} : { PEEPHOLE_NETWORK_LEASE_DIR: value },
+      )
+      expect(config.networkLeaseDir).toBe("/var/run/peephole/net-leases")
+    }
+  })
+
+  it("does not newly validate existing deployments that use the default", () => {
+    // A runsc root that already contains the default lease directory must
+    // keep starting exactly as before this setting existed.
+    const config = readProductionConfig({
+      PEEPHOLE_GVISOR_RUNSC_ROOT: "/var/run/peephole",
+    })
+    expect(config.networkLeaseDir).toBe("/var/run/peephole/net-leases")
+  })
+
+  it("accepts a canonical absolute operator path outside every resource root", () => {
+    expect(
+      readProductionConfig({
+        PEEPHOLE_NETWORK_LEASE_DIR: "/srv/peephole-test/net-leases",
+      }).networkLeaseDir,
+    ).toBe("/srv/peephole-test/net-leases")
+  })
+
+  it.each([
+    "relative/net-leases",
+    "./net-leases",
+    "/srv/a/../net-leases",
+    "/srv//net-leases",
+    "/srv/net-leases/",
+    "/",
+  ])("rejects the non-canonical path %s", (value) => {
+    expect(() =>
+      readProductionConfig({ PEEPHOLE_NETWORK_LEASE_DIR: value }),
+    ).toThrow(/canonical absolute directory/)
+  })
+
+  it.each([
+    ["equal to the runsc root", "/var/run/peephole/runsc"],
+    ["inside the bundles root", "/var/lib/peephole/jobs/leases"],
+    ["inside the generated-secret root", "/run/peephole/secrets/leases"],
+    ["inside the user-environment root", "/run/peephole/user-env/leases"],
+    ["inside the database-credential root", "/run/peephole/db-credentials/x"],
+    ["inside the artifact root", "/var/lib/peephole/artifacts/x"],
+    ["inside the base rootfs", "/var/lib/peephole/base-rootfs/x"],
+    ["containing several roots", "/var/lib/peephole"],
+    ["containing the memory-backed roots", "/run/peephole"],
+  ])("rejects a lease directory %s", (_kind, value) => {
+    expect(() =>
+      readProductionConfig({ PEEPHOLE_NETWORK_LEASE_DIR: value }),
+    ).toThrow(/must not overlap another resource root/)
+  })
+
+  it("checks overlap against overridden roots, including disabled M11/M12 roots", () => {
+    expect(() =>
+      readProductionConfig({
+        PEEPHOLE_USER_ENVIRONMENT_ROOT: "/srv/test/user-env",
+        PEEPHOLE_NETWORK_LEASE_DIR: "/srv/test",
+      }),
+    ).toThrow(/overlap/)
+    expect(() =>
+      readProductionConfig({
+        PEEPHOLE_DATABASE_CREDENTIAL_ROOT: "/srv/test/db",
+        PEEPHOLE_NETWORK_LEASE_DIR: "/srv/test/db/leases",
+      }),
+    ).toThrow(/overlap/)
+  })
+})

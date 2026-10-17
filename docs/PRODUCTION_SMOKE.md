@@ -160,7 +160,7 @@ Optional host controls:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PEEPHOLE_SMOKE_NETWORK_LEASE_DIR` | `/var/run/peephole/net-leases` | Dedicated network lease root |
+| `PEEPHOLE_SMOKE_NETWORK_LEASE_DIR` | `/var/run/peephole/net-leases` | Dedicated network lease root; must equal production's `PEEPHOLE_NETWORK_LEASE_DIR` when that is set |
 | `PEEPHOLE_SMOKE_HOST_POLL_INTERVAL_MS` | 2,000 ms | Quiescence poll interval |
 | `PEEPHOLE_SMOKE_HOST_TIMEOUT_MS` | 60 seconds | Maximum cleanup wait, bounded to five minutes |
 | `PEEPHOLE_SMOKE_LOG_SINCE` | `15 minutes ago` | Journal window for known worker/cleanup errors |

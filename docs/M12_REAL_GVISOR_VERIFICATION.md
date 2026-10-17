@@ -490,6 +490,134 @@ mount under the parent must be its tmpfs). `status` prints `INCOMPLETE` and
 exits non-zero whenever the mount table or a root cannot be listed; an
 INCOMPLETE status is never evidence of a clean parent.
 
+### R5-3A B2 owned server crash and startup recovery (portable verification only)
+
+H2/H3 above model ownership loss inside one test process; they are not a real
+server crash. B2 needs the actual production server process to die by SIGKILL
+and a fresh process to recover. `tests/realServerCrashRecovery.test.ts`
+prepares that run; **it has not been executed. B2 remains OPEN and every real
+crash/recovery result is NOT_RUN.**
+
+**Production configuration change (approved minimal extension).**
+`PEEPHOLE_NETWORK_LEASE_DIR` is now read by `services/production/config.ts`
+and passed to the one shared `NetworkLeaseManager` in `server.ts` (startup
+reaper and provisioner). Unset or empty keeps `/var/run/peephole/net-leases`
+with no new validation, so existing deployments behave exactly as before. An
+explicit value must be a canonical absolute path that does not equal, contain
+or lie inside any other resource root (rootfs, bundles, runsc, generated
+secrets, artifacts, database credentials, user environment). It is
+string-level: do not point it through a symlink alias. Changing it on a host
+that has live or crashed leases is not supported: the startup network reaper
+then sees the old netns/veth/firewall objects as unowned and refuses to start
+(fail-closed, nothing is skipped or deleted); a lease marker whose host
+objects are already gone stays as an inert file under the old directory. No
+lease migration procedure is defined. `PEEPHOLE_SMOKE_NETWORK_LEASE_DIR` must
+match it.
+
+**Fixture.** The harness (`tests/support/serverCrashHarness.ts`) spawns the
+unmodified `services/production/server.ts` as `node --import tsx <entry>`
+(no npm/tsx wrapper process) with a fresh allowlisted environment (the
+operator environment is not inherited): every resource root inside the M12
+test run directories, M12 on, M11 off, synthetic session/OAuth secrets, a
+dedicated empty loopback `peephole_b2_test*` database, and a per-run nonce.
+The database URL may carry no query string or fragment at all (not even an
+empty `?` or `#`): node-postgres would let `?host=`/`?port=` and similar
+parameters override the loopback host, so they are refused.
+Ownership is proven from the ChildProcess handle plus `/proc`: direct-child
+PPID, `/proc/<pid>/exe`, argv exactly `[node, --import, tsx, <entry>]`, the
+nonce as an exact environ entry, and the `/proc/<pid>/stat` start time, which
+is re-checked before every signal (PID reuse, replacement or an exited handle
+is refused). No name search or broad PID selection exists.
+
+**Boundaries (two previews).** The server runs one
+`FullStackPreviewWorkerLoop`, which awaits `worker.run()`, and
+`FullStackPreviewSupervisor.monitorLifecycle()` keeps that run alive while a
+preview is ready. So once A is `ready` (route 200 through the artifact host)
+its queue row stays `leased` and it holds the only orchestration slot. B,
+admitted after that (its M12 values held only by the in-memory broker),
+therefore stays `queued` with a `queued` queue row and never reaches START.
+A Portable test drives the real loop to confirm B is not leased while A's run
+is pending. Every wait checks its timeout result: A not ready, a rejected
+admission, or B not settled as queued behind a leased A stops the run as
+INCONCLUSIVE before any signal. The server is then frozen with SIGSTOP
+(`/proc` state `T`) and the durable rows are read directly from the test
+database. H2's boundary needs A=`ready`, route 200 and A's queue `leased`;
+H1's needs B's parent and queue row both `queued`. SIGKILL is sent only when
+both are proven; otherwise the server is resumed, stopped normally and the
+run is INCONCLUSIVE. Only an exit by SIGKILL counts as a crash; a normal exit,
+SIGTERM or timeout is INCONCLUSIVE. The fresh server is started only after a
+confirmed SIGKILL exit (`freshStartupDecision`): with unprovable ownership, an
+exit timeout, a normal exit or SIGTERM the first server may still be alive on
+the same database, ports and roots, so no second server or recovery runs, H1
+and H2 are recorded INCONCLUSIVE, and nothing more is signalled.
+
+Every SIGSTOP, SIGCONT, SIGKILL and SIGTERM (including the normal stop of the
+recovered server and teardown) is preceded by a full identity re-check (PID,
+PPID, start time, executable, argv, nonce); on failure nothing is sent. If
+the identity check right after spawn fails, the child handle is kept, the
+child is never signalled, the run is INCONCLUSIVE, and the test roots are
+preserved (not released) for manual inspection while any such child may be
+alive. The resource inventory is taken only after a proven normal stop.
+
+**Verdicts after a fresh, identity-proven restart.**
+
+- H1 (B): PASS only for `failed`/`CONFIGURATION_UNAVAILABLE` with no
+  user-environment file ever delivered. Becoming `ready` or delivered
+  material is FAIL. `ORCHESTRATION_UNAVAILABLE`, a frontend failure or no
+  terminal state is INCONCLUSIVE, not a substitute.
+- Previews in `building_frontend`/`starting_backend` at a crash are failed
+  with `ORCHESTRATION_UNAVAILABLE` by the reconciler. That is covered by the
+  existing Portable reconciler tests, is not part of this real scenario, and
+  never counts as H1.
+- H2 (A): at the first moment the restarted API answers, A must already be
+  `failed`/`ORCHESTRATION_UNAVAILABLE` (a `ready` answer is FAIL), its old
+  route must not return 200, and its queue delivery must be cancelled or
+  absent. After B is terminal and the recovered server stops normally, the
+  owned inventory (loop devices, lease markers, runsc containers, Peephole
+  netns/veth/iptables via the PR #67 `networkState`, M10/M11/M12 material
+  files, new mounts) must all be 0; fresh startup reapers re-run must change
+  nothing. Any unreadable area is INCONCLUSIVE; FAIL dominates.
+- R0: with a generated-secret root that is not memory-backed, the server
+  must terminate with status 1 after the physical reapers, without ever
+  accepting a connection or logging the listener line (recovery failure
+  keeps listeners closed).
+
+Evidence lines `[b2-server-crash-evidence]` carry only scenario, verdict,
+code, stages, counts and the source SHA, and are refused if they contain the
+database URL, any session/OAuth secret or token, the nonce or a synthetic
+user value. Child stdout is kept in memory (bounded) and stderr is drained;
+neither is printed.
+
+**Portable coverage (no real crash).** Config default/override/rejection,
+lease-directory change refusal by the network reaper, single shared lease
+manager wiring, process identity (wrong parent/executable/argv/nonce, wrapper
+processes, PID reuse, exited handles), gate default-off, verdict tables,
+evidence sanitization, a fresh broker returning nothing, and that the child
+environment is accepted by the real production/API/OAuth parsers. On Linux
+CI a harmless idle child (never the server, never SIGKILL) validates the
+`/proc` identity parsing against the kernel.
+
+**Linux run requirements (separate approval).** A credential-free,
+non-Production VM with no Production marker; the M12 test parent and rootfs
+from section 3; root; a dedicated empty loopback PostgreSQL database named
+`peephole_b2_test*`; outbound access to the public fixture repository on
+GitHub (unauthenticated, 60 requests/hour); and:
+
+```bash
+export PEEPHOLE_REAL_GVISOR_TESTS=1 PEEPHOLE_M12_REAL_GVISOR_TESTS=1 \
+  PEEPHOLE_B2_REAL_SERVER_CRASH=1
+export PEEPHOLE_B2_TEST_DATABASE_URL=<loopback peephole_b2_test* URL, no ?query or #fragment>
+export PEEPHOLE_B2_TEST_FIXTURE='{"repositoryId":<id>,"owner":"<owner>","name":"<repo>","commitSha":"<40 hex>","frontendSourceRoot":"<dir>","backendSourceRoot":"<dir>","environmentNames":["<NAME>"]}'
+node node_modules/vitest/vitest.mjs run tests/realServerCrashRecovery.test.ts
+```
+
+Not yet established on a real host: that the fixture reaches `ready`, that A
+keeps its queue row `leased` so B is frozen as `queued`, the
+actual SIGKILL/fresh-start behavior, reconciliation timing relative to the
+first API answer, the inventory and repeated-reap results, and the R0 exit
+path. Real-gate variables must be left unset in Portable runs: older
+real-gVisor suites gate on a non-empty value, so `0` enables them.
+
 ## 6. Cleanup
 
 Each test creates `peephole-m12-{workspaceRoot,runscRoot,tmpfsRoot}-*` run
