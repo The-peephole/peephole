@@ -103,7 +103,9 @@ async function main(): Promise<void> {
   // until all marker-owned resources left by an earlier process have been
   // reconciled against authoritative runsc state.
   await orphanReaper.reapAll()
-  const networkLeaseManager = new NetworkLeaseManager()
+  const networkLeaseManager = new NetworkLeaseManager({
+    leaseDir: productionConfig.networkLeaseDir,
+  })
   const networkActivityRegistry = new NetworkAllocationRegistry()
   const networkOrphanReaper = new NetworkOrphanReaper({
     leaseManager: networkLeaseManager,

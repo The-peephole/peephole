@@ -146,7 +146,9 @@ async function peepholeRules(
   return count
 }
 
-async function networkState(operations: ResourceAuditOperations) {
+/** Peephole-shaped netns/link/rule counts in the host network namespace.
+ * Also reused (read-only) by the B2 server-crash inventory. */
+export async function networkState(operations: ResourceAuditOperations) {
   await assertHostNetworkNamespace(operations)
   return {
     namespaces: (await netnsNames(operations)).length,

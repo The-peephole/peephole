@@ -1396,3 +1396,46 @@ function replaceDatabaseRule(
   if (index < 0) throw new Error("The installed DB accept rule was not found.")
   rules.splice(index, 1, databaseRule(chain, replacement))
 }
+
+describe("NetworkOrphanReaper after a lease directory change", () => {
+  let previousRoot: string
+  let currentRoot: string
+
+  beforeEach(async () => {
+    previousRoot = await mkdtemp(path.join(os.tmpdir(), "peephole-leases-old-"))
+    currentRoot = await mkdtemp(path.join(os.tmpdir(), "peephole-leases-new-"))
+  })
+
+  afterEach(async () => {
+    await rm(previousRoot, { recursive: true, force: true })
+    await rm(currentRoot, { recursive: true, force: true })
+  })
+
+  it.each(["veth", "partial", "full"] as const)(
+    "refuses (never skips or deletes) %s host state owned by a lease under the previous directory",
+    async (state) => {
+      const lease = await allocate(managerFor(previousRoot, false))
+      const host = new FakeNetworkHost()
+      host.install(lease, state)
+      const before = {
+        namespaces: [...host.namespaces],
+        links: [...host.links],
+        ipv4: host.ipv4.length,
+        nat: host.nat.length,
+      }
+      const reaper = new NetworkOrphanReaper({
+        leaseManager: managerFor(currentRoot, false),
+        processRunner: host,
+      })
+
+      await expect(reaper.reapAll()).rejects.toThrow(/Unowned Peephole/)
+      expect({
+        namespaces: [...host.namespaces],
+        links: [...host.links],
+        ipv4: host.ipv4.length,
+        nat: host.nat.length,
+      }).toEqual(before)
+      expect(await readdir(previousRoot)).toEqual([String(lease.index)])
+    },
+  )
+})

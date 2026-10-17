@@ -20,6 +20,10 @@ export interface ProductionConfig {
   baseRootfsImage: string
   bundlesRootDir: string
   runscRootDir: string
+  /** Durable network lease markers (netns/veth/firewall ownership). Changing
+   * it on a host with existing leases makes startup refuse their unowned
+   * resources rather than silently skipping them; there is no migration. */
+  networkLeaseDir: string
   /** Dedicated memory-backed host root reserved for generated-secret
    * material. M10-B defines it but does not enable broker/supervisor wiring. */
   generatedSecretRootDir: string
@@ -77,6 +81,8 @@ const DEFAULTS = {
   baseRootfsImage: "/var/lib/peephole/base-rootfs",
   bundlesRootDir: "/var/lib/peephole/jobs",
   runscRootDir: "/var/run/peephole/runsc",
+  // NetworkLeaseManager's own default; unchanged when the variable is unset.
+  networkLeaseDir: "/var/run/peephole/net-leases",
   generatedSecretRootDir: "/run/peephole/secrets",
   artifactStorageDir: "/var/lib/peephole/artifacts",
   orphanReaperMaxAgeMs: 30 * 60_000,
@@ -125,6 +131,7 @@ export function readProductionConfig(
       environment.PEEPHOLE_GVISOR_RUNSC_ROOT,
       DEFAULTS.runscRootDir,
     ),
+    networkLeaseDir: DEFAULTS.networkLeaseDir as string,
     generatedSecretRootDir: readAbsolutePath(
       "PEEPHOLE_GENERATED_SECRET_ROOT",
       environment.PEEPHOLE_GENERATED_SECRET_ROOT,
@@ -199,7 +206,53 @@ export function readProductionConfig(
       "PEEPHOLE_ARTIFACT_TLS_ASK_PORT must differ from PEEPHOLE_ARTIFACT_PORT.",
     )
   }
+  config.networkLeaseDir = readNetworkLeaseDir(environment, [
+    config.baseRootfsImage,
+    config.bundlesRootDir,
+    config.runscRootDir,
+    config.generatedSecretRootDir,
+    config.artifactStorageDir,
+    config.temporaryDatabases.credentialRootDir,
+    config.userEnvironment.rootDir,
+  ])
   return config
+}
+
+/** Unset or empty keeps the historical default exactly (no new validation,
+ * so existing deployments cannot regress). An explicit operator value must
+ * be a canonical absolute path that neither equals, contains, nor lies inside
+ * another resource root: another reaper must never see lease markers, and the
+ * network reaper must never see foreign files as leases. String-level only;
+ * operators must not point it through a symlink alias (e.g. /var/run). */
+function readNetworkLeaseDir(
+  environment: NodeJS.ProcessEnv,
+  otherRoots: readonly string[],
+): string {
+  const configured = environment.PEEPHOLE_NETWORK_LEASE_DIR?.trim()
+  if (!configured) return DEFAULTS.networkLeaseDir
+  if (
+    !path.posix.isAbsolute(configured) ||
+    path.posix.normalize(configured) !== configured ||
+    configured === "/" ||
+    configured.endsWith("/")
+  ) {
+    throw new Error(
+      "PEEPHOLE_NETWORK_LEASE_DIR must be a canonical absolute directory path.",
+    )
+  }
+  for (const root of otherRoots) {
+    const other = path.posix.normalize(root)
+    if (
+      configured === other ||
+      configured.startsWith(`${other}/`) ||
+      other.startsWith(`${configured}/`)
+    ) {
+      throw new Error(
+        "PEEPHOLE_NETWORK_LEASE_DIR must not overlap another resource root.",
+      )
+    }
+  }
+  return configured
 }
 
 /** Only the exact value "1" enables M12; unset, empty, or "0" disables it,
