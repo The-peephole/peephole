@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest"
 
-import { parseGitHubRepositoryUrl } from "../utils/githubUrl"
+import {
+  parseGitHubRepositoryUrl,
+  isGitHubRepositoryOverviewUrl,
+} from "../utils/githubUrl"
 
 describe("parseGitHubRepositoryUrl", () => {
   it.each([
@@ -30,5 +33,43 @@ describe("parseGitHubRepositoryUrl", () => {
     "not a URL",
   ])("rejects a non-repository URL: %s", (url) => {
     expect(parseGitHubRepositoryUrl(url)).toBeNull()
+  })
+})
+
+describe("Repository overview button policy", () => {
+  it.each(["", "/", "?tab=readme", "#readme", "/?tab=readme#readme"])(
+    "accepts a root with suffix %s",
+    (suffix) => {
+      expect(
+        isGitHubRepositoryOverviewUrl(`https://github.com/owner/repo${suffix}`),
+      ).toBe(true)
+    },
+  )
+  it.each([
+    "actions",
+    "issues",
+    "pulls",
+    "settings",
+    "tree/main",
+    "blob/main/README.md",
+    "discussions",
+    "releases",
+    "anything",
+  ])("hides the button on %s while retaining repository identity", (path) => {
+    const url = `https://github.com/owner/repo/${path}?query=value#fragment`
+    expect(isGitHubRepositoryOverviewUrl(url)).toBe(false)
+    expect(parseGitHubRepositoryUrl(url)).toEqual({
+      owner: "owner",
+      repo: "repo",
+    })
+  })
+  it.each([
+    "https://github.com/owner//repo",
+    "https://github.com/owner/repo//",
+    "https://github.com/settings/profile",
+    "https://example.com/owner/repo",
+    "not a URL",
+  ])("rejects a non-overview %s", (url) => {
+    expect(isGitHubRepositoryOverviewUrl(url)).toBe(false)
   })
 })

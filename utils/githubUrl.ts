@@ -73,3 +73,9 @@ export function parseGitHubRepositoryUrl(
 export function getRepositoryKey(repository: RepositoryIdentity): string {
   return `${repository.owner.toLowerCase()}/${repository.repo.toLowerCase()}`
 }
+
+/** Query/hash describe the same overview; every deeper pathname is excluded. */
+export function isGitHubRepositoryOverviewUrl(urlValue: string): boolean {
+  if (!parseGitHubRepositoryUrl(urlValue)) return false
+  return /^\/[^/]+\/[^/]+\/?$/.test(new URL(urlValue).pathname)
+}

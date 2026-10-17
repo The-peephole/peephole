@@ -41,41 +41,42 @@ export function findPeepholeInjectionTarget(
   document: Document,
   repository: RepositoryIdentity,
 ): HTMLElement | null {
-  const repositoryKey = getRepositoryKey(repository)
-  const repositoryAction = Array.from(
-    document.querySelectorAll<HTMLElement>("button[aria-label], a[aria-label]"),
-  ).find((element) => {
-    const label = element.getAttribute("aria-label")?.toLowerCase() ?? ""
-
-    return (
-      label.includes(repositoryKey) &&
-      (label.startsWith("watch:") ||
-        label.startsWith("star ") ||
-        label.startsWith("fork ")) &&
-      isElementVisible(element)
-    )
-  })
-  const currentActionList = repositoryAction?.closest<HTMLElement>("ul")
-
-  if (currentActionList && isElementVisible(currentActionList)) {
-    return currentActionList
-  }
-
-  const legacyActionList = Array.from(
+  // Current GitHub uses repo-header-actions; older pages use pagehead-actions.
+  // Neither the selector nor a single matching label alone establishes a group.
+  const repositoryKey = getRepositoryKey(repository).replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  )
+  const identity = new RegExp(
+    `(?:^|\\s)${repositoryKey}(?:[.,:]?(?:\\s|$))`,
+    "i",
+  )
+  const actionLists = Array.from(
     document.querySelectorAll<HTMLElement>(
-      `${REPOSITORY_HEADER_SELECTOR} ul.pagehead-actions`,
+      `ul[data-testid="repo-header-actions"], ${REPOSITORY_HEADER_SELECTOR} ul.pagehead-actions`,
     ),
-  ).find(isElementVisible)
-
-  if (legacyActionList) {
-    return legacyActionList
-  }
-
-  const visibleHeader = Array.from(
-    document.querySelectorAll<HTMLElement>(REPOSITORY_HEADER_SELECTOR),
-  ).find(isElementVisible)
-
-  return visibleHeader ?? document.body
+  )
+  return (
+    actionLists.find((list) => {
+      if (
+        !isElementVisible(list) ||
+        list.closest(".markdown-body, #readme, nav")
+      )
+        return false
+      const kinds = new Set<string>()
+      for (const action of list.querySelectorAll<HTMLElement>(
+        "button[aria-label], a[aria-label]",
+      )) {
+        if (action.closest("ul") !== list || !isElementVisible(action)) continue
+        const label = action.getAttribute("aria-label") ?? ""
+        if (!identity.test(label)) continue
+        if (/^watch:/i.test(label)) kinds.add("watch")
+        if (/^(?:un)?star /i.test(label)) kinds.add("star")
+        if (/^fork /i.test(label)) kinds.add("fork")
+      }
+      return kinds.size >= 2
+    }) ?? null
+  )
 }
 
 function isElementVisible(element: HTMLElement): boolean {
@@ -85,6 +86,9 @@ function isElementVisible(element: HTMLElement): boolean {
     const style = current.ownerDocument.defaultView?.getComputedStyle(current)
 
     if (
+      current.hidden ||
+      current.hasAttribute("inert") ||
+      current.getAttribute("aria-hidden") === "true" ||
       style?.display === "none" ||
       style?.visibility === "hidden" ||
       style?.visibility === "collapse"
