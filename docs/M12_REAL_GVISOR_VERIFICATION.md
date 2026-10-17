@@ -526,15 +526,31 @@ nonce as an exact environ entry, and the `/proc/<pid>/stat` start time, which
 is re-checked before every signal (PID reuse, replacement or an exited handle
 is refused). No name search or broad PID selection exists.
 
-**Boundaries.** A is brought to `ready` and its route answers 200 through
-the artifact host. C then occupies the single full-stack orchestration slot,
-so B, admitted next (its M12 values held only by the in-memory broker),
-stays `queued` with a `queued` queue row. The server is frozen with SIGSTOP
-(`/proc` state `T`); the durable rows are read directly from the test
-database. Only if A=`ready` (route 200) and B=`queued` are both proven is
-SIGKILL sent; otherwise the server is resumed, stopped normally and the run is
-INCONCLUSIVE. Only an exit by SIGKILL counts as a crash; a normal exit, SIGTERM
-or timeout is INCONCLUSIVE.
+**Boundaries (two previews).** The server runs one
+`FullStackPreviewWorkerLoop`, which awaits `worker.run()`, and
+`FullStackPreviewSupervisor.monitorLifecycle()` keeps that run alive while a
+preview is ready. So once A is `ready` (route 200 through the artifact host)
+its queue row stays `leased` and it holds the only orchestration slot. B,
+admitted after that (its M12 values held only by the in-memory broker),
+therefore stays `queued` with a `queued` queue row and never reaches START.
+A Portable test drives the real loop to confirm B is not leased while A's run
+is pending. Every wait checks its timeout result: A not ready, a rejected
+admission, or B not settled as queued behind a leased A stops the run as
+INCONCLUSIVE before any signal. The server is then frozen with SIGSTOP
+(`/proc` state `T`) and the durable rows are read directly from the test
+database. H2's boundary needs A=`ready`, route 200 and A's queue `leased`;
+H1's needs B's parent and queue row both `queued`. SIGKILL is sent only when
+both are proven; otherwise the server is resumed, stopped normally and the
+run is INCONCLUSIVE. Only an exit by SIGKILL counts as a crash; a normal exit,
+SIGTERM or timeout is INCONCLUSIVE.
+
+Every SIGSTOP, SIGCONT, SIGKILL and SIGTERM (including the normal stop of the
+recovered server and teardown) is preceded by a full identity re-check (PID,
+PPID, start time, executable, argv, nonce); on failure nothing is sent. If
+the identity check right after spawn fails, the child handle is kept, the
+child is never signalled, the run is INCONCLUSIVE, and the test roots are
+preserved (not released) for manual inspection while any such child may be
+alive. The resource inventory is taken only after a proven normal stop.
 
 **Verdicts after a fresh, identity-proven restart.**
 
@@ -542,8 +558,10 @@ or timeout is INCONCLUSIVE.
   user-environment file ever delivered. Becoming `ready` or delivered
   material is FAIL. `ORCHESTRATION_UNAVAILABLE`, a frontend failure or no
   terminal state is INCONCLUSIVE, not a substitute.
-- Auxiliary (C, in progress at the crash): `ORCHESTRATION_UNAVAILABLE` is
-  recorded separately and never counts as H1.
+- Previews in `building_frontend`/`starting_backend` at a crash are failed
+  with `ORCHESTRATION_UNAVAILABLE` by the reconciler. That is covered by the
+  existing Portable reconciler tests, is not part of this real scenario, and
+  never counts as H1.
 - H2 (A): at the first moment the restarted API answers, A must already be
   `failed`/`ORCHESTRATION_UNAVAILABLE` (a `ready` answer is FAIL), its old
   route must not return 200, and its queue delivery must be cancelled or
@@ -586,8 +604,8 @@ export PEEPHOLE_B2_TEST_FIXTURE='{"repositoryId":<id>,"owner":"<owner>","name":"
 node node_modules/vitest/vitest.mjs run tests/realServerCrashRecovery.test.ts
 ```
 
-Not yet established on a real host: that the fixture reaches `ready`, that C
-holds the orchestration slot long enough for B to be frozen as `queued`, the
+Not yet established on a real host: that the fixture reaches `ready`, that A
+keeps its queue row `leased` so B is frozen as `queued`, the
 actual SIGKILL/fresh-start behavior, reconciliation timing relative to the
 first API answer, the inventory and repeated-reap results, and the R0 exit
 path. Real-gate variables must be left unset in Portable runs: older

@@ -1,6 +1,8 @@
 import path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
+import { FullStackPreviewWorkerLoop } from "../services/fullstack-preview-worker/fullStackPreviewWorkerLoop"
+import type { FullStackPreviewQueueConsumer } from "../services/fullstack-preview-api/ports"
 import { readGitHubAppOAuthConfig } from "../services/preview-api/githubAppOAuthConfig"
 import { readPreviewApiServerConfig } from "../services/preview-api/serverConfig"
 import { readProductionConfig } from "../services/production/config"
@@ -25,6 +27,7 @@ import {
   reverifyOwnedServer,
   SERVER_NONCE_VARIABLE,
   spawnOwnedServer,
+  stopOwnedServer,
   syntheticEnvironment,
   syntheticServerSecrets,
   thawOwnedServer,
@@ -220,6 +223,122 @@ describe("owned server identity", () => {
     ).rejects.toMatchObject({ reason })
   })
 
+  it("keeps the handle of a spawned child whose first identity check fails, and never signals it", async () => {
+    const result = await spawnOwnedServer({
+      repository: process.cwd(),
+      entry: path.resolve("tests/support/b2IdleChild.ts"),
+      environment: { PATH: process.env.PATH ?? "" },
+      nonce: "a".repeat(32),
+      inspection: {
+        readFile: async () => {
+          throw new Error("EACCES")
+        },
+        readlink: async () => "/usr/bin/node",
+      },
+    })
+    expect(result.kind).toBe("UNVERIFIED")
+    if (result.kind !== "UNVERIFIED") return
+    const { child, exited, reason } = result.unverified
+    expect(reason).toBe("PROC_UNREADABLE")
+    // Still tracked and alive: the harness sent it nothing.
+    expect(child.pid).toBeGreaterThan(0)
+    expect(child.killed).toBe(false)
+    expect(child.signalCode).toBeNull()
+    // Test-side cleanup through the retained handle only.
+    child.kill()
+    await exited
+  }, 30_000)
+
+  it("re-verifies identity before a normal SIGTERM stop", async () => {
+    const reused = fakeServer({})
+    await expect(
+      stopOwnedServer(
+        reused,
+        procView({ stat: `4242 (node) S 4000 ${"0 ".repeat(17)}888002` }),
+      ),
+    ).rejects.toMatchObject({ reason: "PID_REUSED" })
+    await expect(
+      stopOwnedServer(fakeServer({}), procView({ environ: ["PATH=/x"] })),
+    ).rejects.toMatchObject({ reason: "NONCE_MISMATCH" })
+    expect(reused.child.kill).not.toHaveBeenCalled()
+
+    const owned = fakeServer({})
+    owned.exited = Promise.resolve({ code: 0, signal: null })
+    expect(await stopOwnedServer(owned, procView({}))).toEqual({
+      code: 0,
+      signal: null,
+    })
+    expect(owned.child.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM")
+  })
+
+  // The gated paths are reachable only on Linux; fake children only.
+  describe.runIf(process.platform === "linux")(
+    "gated signals re-verify identity first (fake child, Linux gate)",
+    () => {
+      const reusedView = procView({
+        stat: `4242 (node) S 4000 ${"0 ".repeat(17)}888002`,
+      })
+
+      it("sends no SIGSTOP, SIGCONT or SIGKILL to a reused PID", async () => {
+        const server = fakeServer({})
+        await expect(
+          freezeOwnedServer(server, allGates, reusedView),
+        ).rejects.toMatchObject({ reason: "PID_REUSED" })
+        await expect(
+          thawOwnedServer(server, allGates, reusedView),
+        ).rejects.toMatchObject({ reason: "PID_REUSED" })
+        expect(await crashOwnedServer(server, allGates, reusedView)).toEqual({
+          kind: "INCONCLUSIVE",
+          reason: "PID_REUSED",
+        })
+        expect(server.child.kill).not.toHaveBeenCalled()
+      })
+
+      it("sends no signal to an exited or replaced handle", async () => {
+        for (const child of [{ exitCode: 1 }, { pid: 5151 }]) {
+          const server = fakeServer(child)
+          await expect(
+            freezeOwnedServer(server, allGates, procView({})),
+          ).rejects.toBeDefined()
+          expect(
+            (await crashOwnedServer(server, allGates, procView({}))).kind,
+          ).toBe("INCONCLUSIVE")
+          expect(server.child.kill).not.toHaveBeenCalled()
+        }
+      })
+
+      it("signals only the verified owned PID once each", async () => {
+        const stopped = fakeServer({})
+        await freezeOwnedServer(
+          stopped,
+          allGates,
+          procView({ stat: `4242 (node) T 4000 ${"0 ".repeat(17)}777001` }),
+        )
+        expect(stopped.child.kill).toHaveBeenCalledExactlyOnceWith("SIGSTOP")
+
+        const resumed = fakeServer({})
+        await thawOwnedServer(resumed, allGates, procView({}))
+        expect(resumed.child.kill).toHaveBeenCalledExactlyOnceWith("SIGCONT")
+
+        const crashed = fakeServer({})
+        crashed.exited = Promise.resolve({ code: null, signal: "SIGKILL" })
+        expect(await crashOwnedServer(crashed, allGates, procView({}))).toEqual(
+          { kind: "CRASHED" },
+        )
+        expect(crashed.child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL")
+      })
+
+      it("does not count a SIGKILL whose handle reports a normal exit", async () => {
+        const server = fakeServer({})
+        server.exited = Promise.resolve({ code: 0, signal: null })
+        expect(await crashOwnedServer(server, allGates, procView({}))).toEqual({
+          kind: "INCONCLUSIVE",
+          reason: "NORMAL_EXIT",
+        })
+      })
+    },
+  )
+
   it("never signals anything while the real gate is off", async () => {
     const server = fakeServer({})
     await expect(
@@ -273,7 +392,7 @@ describe("owned server identity", () => {
     async () => {
       const nonce = "e".repeat(32)
       const childEntry = path.resolve("tests/support/b2IdleChild.ts")
-      const server = await spawnOwnedServer({
+      const result = await spawnOwnedServer({
         repository: process.cwd(),
         entry: childEntry,
         environment: {
@@ -282,6 +401,9 @@ describe("owned server identity", () => {
         },
         nonce,
       })
+      if (result.kind !== "OWNED") throw new Error(result.unverified.reason)
+      const server = result.server
+      let exit: Awaited<ReturnType<typeof stopOwnedServer>>
       try {
         expect(server.identity.ppid).toBe(process.pid)
         const again = await reverifyOwnedServer(server, linuxProcessInspection)
@@ -301,11 +423,12 @@ describe("owned server identity", () => {
           ),
         ).rejects.toMatchObject({ reason: "NOT_DIRECT_CHILD" })
       } finally {
-        server.child.kill("SIGTERM")
+        // The re-verified stop path, exactly as the real suite uses it.
+        exit = await stopOwnedServer(server, linuxProcessInspection, 10_000)
       }
       // SIGTERM may land before the child installs its handler (default
       // termination) or after (exit 0); neither is ever a crash.
-      const outcome = classifyExit(await server.exited)
+      const outcome = classifyExit(exit)
       expect(outcome.kind).toBe("INCONCLUSIVE")
       expect(["NORMAL_EXIT", "SIGNAL_SIGTERM"]).toContain(
         outcome.kind === "INCONCLUSIVE" ? outcome.reason : "CRASHED",
@@ -467,35 +590,40 @@ describe("B2 boundary and verdict classification", () => {
     frozen: true,
     aStatus: "ready",
     aRouteStatus: 200,
+    aQueueStatus: "leased",
     bStatus: "queued",
     bQueueStatus: "queued",
-    cStatus: "building_frontend",
   }
 
-  it("requires a frozen server, a served ready A and a queued B", () => {
-    expect(classifyBoundary(frozen)).toEqual({
-      h1: true,
-      h2: true,
-      auxiliary: true,
-    })
+  it("requires a frozen server, a served ready A holding the slot, and a queued B", () => {
+    expect(classifyBoundary(frozen)).toEqual({ h1: true, h2: true })
     expect(classifyBoundary({ ...frozen, frozen: false })).toEqual({
       h1: false,
       h2: false,
-      auxiliary: false,
     })
-    expect(classifyBoundary({ ...frozen, aRouteStatus: 404 }).h2).toBe(false)
-    expect(
-      classifyBoundary({ ...frozen, aStatus: "starting_backend" }).h2,
-    ).toBe(false)
-    expect(
-      classifyBoundary({ ...frozen, bStatus: "building_frontend" }).h1,
-    ).toBe(false)
-    expect(classifyBoundary({ ...frozen, bQueueStatus: "leased" }).h1).toBe(
-      false,
-    )
-    expect(classifyBoundary({ ...frozen, cStatus: "ready" }).auxiliary).toBe(
-      false,
-    )
+  })
+
+  it.each([
+    ["A's route not served", { aRouteStatus: 404 }],
+    ["A's route unreachable", { aRouteStatus: null }],
+    ["A not yet ready", { aStatus: "starting_backend" }],
+    ["A no longer holding the slot", { aQueueStatus: "cancelled" }],
+    ["A's queue row missing", { aQueueStatus: null }],
+  ])("H2 boundary is not reached with %s", (_kind, override) => {
+    const result = classifyBoundary({ ...frozen, ...override })
+    expect(result.h2).toBe(false)
+    expect(result.h1).toBe(true)
+  })
+
+  it.each([
+    ["B already started", { bStatus: "building_frontend" }],
+    ["B's queue row leased", { bQueueStatus: "leased" }],
+    ["B's queue row missing", { bQueueStatus: null }],
+    ["B not admitted", { bStatus: null, bQueueStatus: null }],
+  ])("H1 boundary is not reached with %s", (_kind, override) => {
+    const result = classifyBoundary({ ...frozen, ...override })
+    expect(result.h1).toBe(false)
+    expect(result.h2).toBe(true)
   })
 
   const h1: H1Facts = {
@@ -778,5 +906,74 @@ describe("B2 evidence", () => {
     expect(() =>
       formatB2Evidence({ ...record, sourceSha: "main" }, []),
     ).toThrow("B2_EVIDENCE_SOURCE_SHA_INVALID")
+  })
+})
+
+describe("B2 boundary ordering with the real FullStackPreviewWorkerLoop", () => {
+  it("does not lease B while A's run (a ready preview's lifecycle monitor) is still running", async () => {
+    const preview = (previewId: string) => ({
+      previewId,
+      repository: {
+        repositoryId: 1,
+        owner: "example",
+        name: "fixture",
+        commitSha: "a".repeat(40),
+      },
+      frontendSourceRoot: "web",
+      backendSourceRoot: "api",
+    })
+    const rows = new Map<string, "queued" | "leased" | "done">([
+      ["fullstack-aaaaaaaa", "queued"],
+      ["fullstack-bbbbbbbb", "queued"],
+    ])
+    const queue: FullStackPreviewQueueConsumer = {
+      lease: vi.fn(async () => {
+        for (const [id, status] of rows)
+          if (status === "queued") {
+            rows.set(id, "leased")
+            return { preview: preview(id), attempts: 1 }
+          }
+        return null
+      }),
+      acknowledge: vi.fn(async (id: string) => {
+        rows.set(id, "done")
+        return true
+      }),
+      release: vi.fn(async () => true),
+      renew: vi.fn(async () => true),
+    }
+    let finishA: () => void = () => undefined
+    const runs: string[] = []
+    const worker = {
+      run: vi.fn(async (queued: { previewId: string }) => {
+        runs.push(queued.previewId)
+        if (queued.previewId === "fullstack-aaaaaaaa")
+          // Models monitorLifecycle(): A stays ready until it stops.
+          await new Promise<void>((resolve) => {
+            finishA = resolve
+          })
+      }),
+    }
+    const loop = new FullStackPreviewWorkerLoop(queue, worker, {
+      workerId: "b2-portable",
+      pollIntervalMs: 10,
+      wait: () => new Promise((resolve) => setTimeout(resolve, 1)),
+    })
+    const controller = new AbortController()
+    const done = loop.runUntilStopped(controller.signal)
+
+    await vi.waitFor(() => expect(runs).toEqual(["fullstack-aaaaaaaa"]))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    // The one loop is inside A's run: B is never leased, so START cannot run.
+    expect(queue.lease).toHaveBeenCalledTimes(1)
+    expect(rows.get("fullstack-bbbbbbbb")).toBe("queued")
+    expect(rows.get("fullstack-aaaaaaaa")).toBe("leased")
+
+    finishA()
+    await vi.waitFor(() =>
+      expect(runs).toEqual(["fullstack-aaaaaaaa", "fullstack-bbbbbbbb"]),
+    )
+    controller.abort()
+    await done
   })
 })

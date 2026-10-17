@@ -261,13 +261,27 @@ export function assertRootsWithin(
 
 const MAX_STDOUT_LINES = 200
 
+/** A spawned child whose identity could not be proven. It is never
+ * signalled by the harness; the run is INCONCLUSIVE, the handle is kept so
+ * its exit can still be observed, and the test roots are preserved for
+ * manual inspection while it may be alive. */
+export interface UnverifiedChild {
+  child: ChildProcess
+  exited: OwnedServer["exited"]
+  reason: string
+}
+
+export type SpawnResult =
+  | { kind: "OWNED"; server: OwnedServer }
+  | { kind: "UNVERIFIED"; unverified: UnverifiedChild }
+
 export async function spawnOwnedServer(input: {
   repository: string
   entry: string
   environment: NodeJS.ProcessEnv
   nonce: string
   inspection?: ProcessInspection
-}): Promise<OwnedServer> {
+}): Promise<SpawnResult> {
   const executable = await realpath(process.execPath)
   const child = spawn(executable, ["--import", "tsx", input.entry], {
     cwd: input.repository,
@@ -298,13 +312,32 @@ export async function spawnOwnedServer(input: {
     nonce: input.nonce,
   }
   const pid = child.pid
-  if (pid === undefined) throw new ServerOwnershipError("SPAWN_FAILED")
-  const identity = await inspectOwnedServer(
-    pid,
-    expected,
-    input.inspection ?? linuxProcessInspection,
-  )
-  return { child, expected, identity, exited, stdoutLines }
+  if (pid === undefined)
+    return {
+      kind: "UNVERIFIED",
+      unverified: { child, exited, reason: "SPAWN_FAILED" },
+    }
+  try {
+    const identity = await inspectOwnedServer(
+      pid,
+      expected,
+      input.inspection ?? linuxProcessInspection,
+    )
+    return {
+      kind: "OWNED",
+      server: { child, expected, identity, exited, stdoutLines },
+    }
+  } catch (error) {
+    return {
+      kind: "UNVERIFIED",
+      unverified: {
+        child,
+        exited,
+        reason:
+          error instanceof ServerOwnershipError ? error.reason : "OWNERSHIP",
+      },
+    }
+  }
 }
 
 export function newServerNonce(): string {
@@ -381,6 +414,22 @@ export async function crashOwnedServer(
   )
 }
 
+/** Normal stop of an owned server: re-verify, then SIGTERM. Not gated
+ * (it is the ordinary shutdown path) and never evidence of a crash. Returns
+ * the exit, or null on timeout; an unprovable identity sends nothing. */
+export async function stopOwnedServer(
+  server: OwnedServer,
+  inspection: ProcessInspection = linuxProcessInspection,
+  timeoutMs = 120_000,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null } | null> {
+  await reverifyOwnedServer(server, inspection)
+  server.child.kill("SIGTERM")
+  return Promise.race([
+    server.exited,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+  ])
+}
+
 export function classifyExit(
   exit: { code: number | null; signal: NodeJS.Signals | null } | null,
 ): CrashOutcome {
@@ -397,42 +446,37 @@ export function classifyExit(
 
 export type B2Verdict = "PASS" | "FAIL" | "INCONCLUSIVE"
 
-const IN_PROGRESS = new Set([
-  "building_frontend",
-  "starting_backend",
-  "awaiting_activation",
-])
-
 export interface BoundaryObservation {
   frozen: boolean
   /** A: the running preview (H2). */
   aStatus: string | null
   /** HTTP status of A's route through the artifact host just before freezing. */
   aRouteStatus: number | null
-  /** B: admitted, waiting before START (H1). */
+  /** A's queue row. While A is ready the single FullStackPreviewWorkerLoop is
+   * still inside `worker.run()` (monitorLifecycle), so it stays `leased`. */
+  aQueueStatus: string | null
+  /** B: admitted after A, waiting before START (H1). */
   bStatus: string | null
   bQueueStatus: string | null
-  /** C: occupies the single orchestration slot (auxiliary). */
-  cStatus: string | null
 }
 
-/** H1 and H2 proceed only when the frozen durable state proves both
- * boundaries; the auxiliary C check is reported separately. */
+/** Each boundary is judged from the frozen durable state. H2 needs A ready,
+ * served (200) and holding the only orchestration slot; H1 needs B's parent
+ * and queue row both still `queued` (never leased, so START never ran). */
 export function classifyBoundary(observation: BoundaryObservation): {
   h1: boolean
   h2: boolean
-  auxiliary: boolean
 } {
   return {
     h2:
       observation.frozen &&
       observation.aStatus === "ready" &&
-      observation.aRouteStatus === 200,
+      observation.aRouteStatus === 200 &&
+      observation.aQueueStatus === "leased",
     h1:
       observation.frozen &&
       observation.bStatus === "queued" &&
       observation.bQueueStatus === "queued",
-    auxiliary: observation.frozen && IN_PROGRESS.has(observation.cStatus ?? ""),
   }
 }
 
@@ -718,7 +762,7 @@ export function loopbackRequest(input: {
 
 export interface B2Evidence {
   schema: "peephole-b2-server-crash/v1"
-  scenario: "H1" | "H2" | "AUXILIARY" | "R0"
+  scenario: "H1" | "H2" | "R0"
   verdict: B2Verdict | "NOT_RUN"
   code: string
   sourceSha: string

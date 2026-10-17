@@ -8,6 +8,12 @@
  * test roots, a dedicated empty loopback test database and a public fixture
  * repository. It never touches Production, a systemd service or a real
  * credential. See docs/M12_REAL_GVISOR_VERIFICATION.md (R5-3A).
+ *
+ * Boundary: the production server runs ONE FullStackPreviewWorkerLoop, which
+ * awaits `worker.run()`; FullStackPreviewSupervisor.monitorLifecycle() keeps
+ * that run alive while a preview is ready. So once A is ready it holds the
+ * only orchestration slot (queue row `leased`), and B, admitted afterwards,
+ * stays `queued` with its M12 values only in the in-memory broker.
  */
 import { execFile, execFileSync } from "node:child_process"
 import { mkdir, readFile, readdir } from "node:fs/promises"
@@ -50,6 +56,7 @@ import {
   formatB2Evidence,
   freeLoopbackPort,
   freezeOwnedServer,
+  linuxProcessInspection,
   loopbackAccepts,
   loopbackRequest,
   newServerNonce,
@@ -59,21 +66,25 @@ import {
   reverifyOwnedServer,
   SERVER_LISTENING_MARKER,
   spawnOwnedServer,
+  stopOwnedServer,
   syntheticEnvironment,
   syntheticServerSecrets,
   thawOwnedServer,
-  linuxProcessInspection,
+  type B2Evidence,
   type B2Fixture,
   type BoundaryObservation,
   type OwnedResourceCounts,
   type OwnedServer,
   type ServerPorts,
   type ServerRoots,
+  type UnverifiedChild,
 } from "./support/serverCrashHarness"
 
 const ENTRY = path.resolve("services/production/server.ts")
 const PREVIEW_TIMEOUT_MS = 15 * 60_000
 
+/** Resolves the probe's value, or `undefined` on timeout -- callers MUST
+ * treat `undefined` as an unreached boundary. */
 async function waitFor<T>(
   probe: () => Promise<T | undefined>,
   timeoutMs: number,
@@ -117,43 +128,60 @@ function runscContainers(runscRoot: string): Promise<number | null> {
   })
 }
 
+class B2Inconclusive extends Error {
+  constructor(readonly code: string) {
+    super(`B2_INCONCLUSIVE_${code}`)
+  }
+}
+
 describe.skipIf(!realServerCrashEnabled(process.env))(
   "B2 real server crash and startup recovery (Linux opt-in, test-owned server child)",
   () => {
     const servers: OwnedServer[] = []
+    const unverified: UnverifiedChild[] = []
     let runs: M12RunDirectories | undefined
     let database: PgPoolDatabase | undefined
 
     afterAll(async () => {
-      // Graceful stop of any still-running owned child; a frozen child is
-      // thawed first. Nothing outside the owned handles is ever signalled.
+      // Every signal below is preceded by a full identity re-verification
+      // (PID, PPID, start time, executable, argv, nonce). A child whose
+      // identity cannot be proven is never signalled; it, or any child that
+      // did not stop, keeps the test roots for manual inspection.
+      let manualInspection = false
       for (const server of servers) {
         if (server.child.exitCode !== null || server.child.signalCode !== null)
           continue
         try {
-          await reverifyOwnedServer(server, linuxProcessInspection)
-          server.child.kill("SIGCONT")
-          server.child.kill("SIGTERM")
-          await Promise.race([
-            server.exited,
-            new Promise((resolve) => setTimeout(resolve, 60_000)),
-          ])
+          const identity = await reverifyOwnedServer(
+            server,
+            linuxProcessInspection,
+          )
+          if (identity.state === "T") await thawOwnedServer(server, process.env)
+          if ((await stopOwnedServer(server)) === null) manualInspection = true
         } catch {
-          // Ownership no longer provable: never signal it.
+          manualInspection = true
         }
       }
+      for (const child of unverified)
+        if (child.child.exitCode === null && child.child.signalCode === null)
+          manualInspection = true
       await database?.close()
-      if (runs) {
-        const preserved = await releaseOwnedRunDirectories([
-          runs.workspace,
-          runs.runsc,
-          runs.tmpfs,
-        ])
-        if (preserved.length > 0)
-          process.stdout.write(
-            `[b2-server-crash-preserved] ${String(preserved.length)} run directories kept for inspection\n`,
-          )
+      if (!runs) return
+      if (manualInspection) {
+        process.stdout.write(
+          "[b2-server-crash-manual-inspection] a server child could not be proven stopped; test roots preserved\n",
+        )
+        return
       }
+      const preserved = await releaseOwnedRunDirectories([
+        runs.workspace,
+        runs.runsc,
+        runs.tmpfs,
+      ])
+      if (preserved.length > 0)
+        process.stdout.write(
+          `[b2-server-crash-preserved] ${String(preserved.length)} run directories kept for inspection\n`,
+        )
     })
 
     it(
@@ -175,7 +203,7 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
         database = new PgPoolDatabase(
           readPostgresConfig({ PEEPHOLE_DATABASE_URL: databaseUrl }).pool,
         )
-        const existing = await database.query<{ rows: string }>(
+        const existing = await database.query<{ rows: string | null }>(
           "SELECT to_regclass('peephole_fullstack_previews')::text AS rows",
         )
         if (existing.rows[0]?.rows) {
@@ -231,9 +259,12 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
             .sort()
         }
         const baselineMounts = await mountBaseline()
-        const baselineNetwork = await networkState(linuxResourceAuditOperations)
         // Every Peephole-shaped network object must be attributable to this run.
-        expect(baselineNetwork).toEqual({ namespaces: 0, links: 0, rules: 0 })
+        expect(await networkState(linuxResourceAuditOperations)).toEqual({
+          namespaces: 0,
+          links: 0,
+          rules: 0,
+        })
 
         const ports: ServerPorts = {
           api: await freeLoopbackPort(),
@@ -251,7 +282,6 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
         const tokens = {
           a: (await issuer.issue(`b2-${runTag}-a`)).token,
           b: (await issuer.issue(`b2-${runTag}-b`)).token,
-          c: (await issuer.issue(`b2-${runTag}-c`)).token,
         }
         const forbidden = [
           databaseUrl,
@@ -260,18 +290,32 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
           secrets.oauthStateSecret,
           tokens.a,
           tokens.b,
-          tokens.c,
           ...userEnvironment.map((entry) => entry.value),
         ]
-        const evidence = (record: Parameters<typeof formatB2Evidence>[0]) =>
+        const evidence = (
+          record: Omit<B2Evidence, "schema" | "sourceSha">,
+        ): void => {
           process.stdout.write(
-            `${formatB2Evidence(record, [...forbidden, ...nonces])}\n`,
+            `${formatB2Evidence(
+              { schema: "peephole-b2-server-crash/v1", sourceSha, ...record },
+              [...forbidden, ...nonces],
+            )}\n`,
           )
+        }
+        /** Records H1 and H2 as INCONCLUSIVE and stops the run. */
+        const inconclusive = (code: string, stages: string[]): never => {
+          for (const scenario of ["H1", "H2"] as const)
+            evidence({ scenario, verdict: "INCONCLUSIVE", code, stages })
+          throw new B2Inconclusive(code)
+        }
 
-        const start = async (overrides?: Partial<Record<string, string>>) => {
+        const start = async (
+          stage: string,
+          overrides?: Partial<Record<string, string>>,
+        ): Promise<OwnedServer> => {
           const nonce = newServerNonce()
           nonces.push(nonce)
-          const server = await spawnOwnedServer({
+          const result = await spawnOwnedServer({
             repository: process.cwd(),
             entry: ENTRY,
             environment: buildServerEnvironment({
@@ -284,8 +328,13 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
             }),
             nonce,
           })
-          servers.push(server)
-          return server
+          if (result.kind === "UNVERIFIED") {
+            // Never signalled; roots are preserved by afterAll while it lives.
+            unverified.push(result.unverified)
+            return inconclusive(`IDENTITY_${result.unverified.reason}`, [stage])
+          }
+          servers.push(result.server)
+          return result.server
         }
         const healthy = async () =>
           (
@@ -308,7 +357,7 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
             ? (response.json as FullStackPreview)
             : undefined
         }
-        const admit = async (token: string, key: string) => {
+        const admit = async (token: string, key: string, stage: string) => {
           const response = await loopbackRequest({
             port: ports.api,
             method: "POST",
@@ -330,8 +379,11 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
               userEnvironment,
             },
           })
-          expect(response?.status).toBe(202)
-          return (response?.json as { preview: FullStackPreview }).preview.id
+          const id = (response?.json as { preview?: { id?: unknown } } | null)
+            ?.preview?.id
+          if (response?.status !== 202 || typeof id !== "string")
+            return inconclusive("ADMISSION_REJECTED", [stage])
+          return id
         }
         const routeStatus = async (previewUrl: string | null) => {
           if (!previewUrl) return null
@@ -363,7 +415,9 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
         // capability gate after the physical reapers and before reconciliation.
         const notTmpfs = path.join(runs.workspace.path, "r0-not-tmpfs")
         await mkdir(notTmpfs, { mode: 0o700 })
-        const r0 = await start({ PEEPHOLE_GENERATED_SECRET_ROOT: notTmpfs })
+        const r0 = await start("r0-spawn", {
+          PEEPHOLE_GENERATED_SECRET_ROOT: notTmpfs,
+        })
         let r0Listened = false
         const r0Exit = await waitFor(
           async () => {
@@ -375,6 +429,7 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
           120_000,
           100,
         )
+        if (r0Exit === undefined) await stopOwnedServer(r0)
         const listenerGatedOnFailedRecovery =
           r0Exit === undefined
             ? null
@@ -385,7 +440,6 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
                 line.includes(SERVER_LISTENING_MARKER),
               )
         evidence({
-          schema: "peephole-b2-server-crash/v1",
           scenario: "R0",
           verdict:
             listenerGatedOnFailedRecovery === null
@@ -394,87 +448,87 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
                 ? "PASS"
                 : "FAIL",
           code: "STARTUP_FAILURE_LISTENER_GATE",
-          sourceSha,
           stages: ["spawn", "capability-failure", "exit-observed"],
         })
-        expect(listenerGatedOnFailedRecovery).toBe(true)
 
-        // ------------------------------------------- first server and A ready
-        const first = await start()
-        expect(await waitFor(healthy, 180_000)).toBe(true)
-        const a = await admit(tokens.a, `b2-${runTag}-a`)
+        // -------------------- first server: A ready and holding the only slot
+        const first = await start("first-spawn")
+        if ((await waitFor(healthy, 180_000)) === undefined)
+          inconclusive("FIRST_SERVER_NOT_HEALTHY", ["first-spawn"])
+        const a = await admit(tokens.a, `b2-${runTag}-a`, "admit-a")
         const aReady = await waitFor(
           async () => {
             const preview = await getPreview(a, tokens.a)
-            if (preview?.status === "failed") return preview
-            return preview?.status === "ready" ? preview : undefined
+            if (!preview) return undefined
+            if (preview.status === "ready") return preview
+            return [
+              "failed",
+              "stopped",
+              "cancelled",
+              "expired",
+              "stopping",
+            ].includes(preview.status)
+              ? null
+              : undefined
           },
           PREVIEW_TIMEOUT_MS,
           2_000,
         )
-        expect(aReady?.status).toBe("ready")
+        if (!aReady) inconclusive("A_NOT_READY", ["admit-a", "await-ready"])
 
-        // C occupies the single orchestration slot; B is then admitted and waits.
-        const c = await admit(tokens.c, `b2-${runTag}-c`)
-        await waitFor(
+        // B is admitted only after A is ready, so the single loop is busy.
+        const b = await admit(tokens.b, `b2-${runTag}-b`, "admit-b")
+        const settled = await waitFor(
           async () => {
-            const preview = await getPreview(c, tokens.c)
-            return preview &&
-              [
-                "building_frontend",
-                "starting_backend",
-                "awaiting_activation",
-              ].includes(preview.status)
+            const [aRow, bRow] = [await durable(a), await durable(b)]
+            return aRow?.queue_status === "leased" &&
+              bRow?.status === "queued" &&
+              bRow.queue_status === "queued"
               ? true
               : undefined
           },
-          PREVIEW_TIMEOUT_MS,
+          30_000,
           500,
         )
-        const b = await admit(tokens.b, `b2-${runTag}-b`)
+        if (settled === undefined)
+          inconclusive("B_NOT_QUEUED_BEHIND_A", ["admit-b", "await-queued"])
         const aRouteStatus = await routeStatus(aReady?.url ?? null)
 
         // ------------------------------------- freeze, observe, then SIGKILL
         expect(await findProductionHostMarkers()).toEqual([])
         await freezeOwnedServer(first, process.env)
-        const [aRow, bRow, cRow] = [
-          await durable(a),
-          await durable(b),
-          await durable(c),
-        ]
+        const [aRow, bRow] = [await durable(a), await durable(b)]
         const observation: BoundaryObservation = {
           frozen: true,
           aStatus: aRow?.status ?? null,
           aRouteStatus,
+          aQueueStatus: aRow?.queue_status ?? null,
           bStatus: bRow?.status ?? null,
           bQueueStatus: bRow?.queue_status ?? null,
-          cStatus: cRow?.status ?? null,
         }
         const boundary = classifyBoundary(observation)
         if (!boundary.h1 || !boundary.h2) {
           // No crash without proven boundaries: resume and stop normally.
           await thawOwnedServer(first, process.env)
-          evidence({
-            schema: "peephole-b2-server-crash/v1",
-            scenario: "H2",
-            verdict: "INCONCLUSIVE",
-            code: "BOUNDARY_NOT_REACHED",
-            sourceSha,
-            stages: ["frozen", "boundary-rejected", "thawed"],
-          })
+          await stopOwnedServer(first)
+          inconclusive("BOUNDARY_NOT_REACHED", [
+            "frozen",
+            "boundary-rejected",
+            "thawed",
+            "graceful-stop",
+          ])
         }
-        expect(boundary).toMatchObject({ h1: true, h2: true })
         const crash = await crashOwnedServer(first, process.env)
 
         // ---------------------------------------------- fresh server process
-        const second = await start()
+        const second = await start("fresh-spawn")
         const freshProcess =
           second.identity.pid !== first.identity.pid ||
           second.identity.startTime !== first.identity.startTime
-        expect(await waitFor(healthy, 180_000, 100)).toBe(true)
+        if ((await waitFor(healthy, 180_000, 100)) === undefined)
+          inconclusive("RESTART_NOT_HEALTHY", ["sigkill", "fresh-spawn"])
         // Probed immediately at the first answer: recovery must already be done.
         const aFirst = await getPreview(a, tokens.a)
-        const cFirst = await getPreview(c, tokens.c)
         const aRouteStatusAfter = await routeStatus(aReady?.url ?? null)
         const aDurable = await durable(a)
 
@@ -499,15 +553,8 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
           1_000,
         )
 
-        // Normal stop of the recovered server; its own stop is not a crash.
-        second.child.kill("SIGTERM")
-        const secondExit = await Promise.race([
-          second.exited,
-          new Promise<null>((resolve) =>
-            setTimeout(() => resolve(null), 120_000),
-          ),
-        ])
-        expect(secondExit).toEqual({ code: 0, signal: null })
+        // Normal, re-verified stop of the recovered server; never a crash.
+        const secondExit = await stopOwnedServer(second)
 
         // --------------------------- owned-resource inventory after recovery
         const diskManager = new LoopbackSandboxDiskManager({
@@ -541,40 +588,53 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
                 : mounts.filter((m) => !baselineMounts.includes(m)).length,
           }
         }
-        const resources = await inventory()
+        // Only after a proven normal stop; otherwise the inventory could race a
+        // live server and is not evidence.
+        const stoppedCleanly =
+          secondExit !== null && secondExit.code === 0 && !secondExit.signal
+        const resources = stoppedCleanly
+          ? await inventory()
+          : (Object.fromEntries(
+              OWNED_RESOURCE_KINDS.map((kind) => [kind, null]),
+            ) as OwnedResourceCounts)
 
         // Fresh startup reapers again: they must find nothing left to change.
-        let repeatedReap: { changed: number; failed: boolean }
-        try {
-          const reaped = [
-            ...(await new GVisorOrphanReaper({
-              runscRootDir: roots.runscRoot,
-              diskManager,
-            }).reapAll()),
-            ...(await new GeneratedSecretOrphanReaper({
-              rootDir: roots.generatedSecretRoot,
-            }).reapAll()),
-            ...(await new UserEnvironmentOrphanReaper({
-              rootDir: roots.userEnvironmentRoot,
-            }).reapAll()),
-          ]
-          await new NetworkOrphanReaper({
-            leaseManager: new NetworkLeaseManager({
-              leaseDir: roots.networkLeaseDir,
-            }),
-          }).reapAll()
-          const after = await inventory()
-          const changed =
-            reaped.length +
-            OWNED_RESOURCE_KINDS.filter(
-              (kind) => after[kind] !== resources[kind],
-            ).length
-          repeatedReap = { changed, failed: false }
-        } catch {
-          repeatedReap = { changed: 0, failed: true }
+        let repeatedReap: { changed: number; failed: boolean } | null = null
+        if (stoppedCleanly) {
+          try {
+            const reaped = [
+              ...(await new GVisorOrphanReaper({
+                runscRootDir: roots.runscRoot,
+                diskManager,
+              }).reapAll()),
+              ...(await new GeneratedSecretOrphanReaper({
+                rootDir: roots.generatedSecretRoot,
+              }).reapAll()),
+              ...(await new UserEnvironmentOrphanReaper({
+                rootDir: roots.userEnvironmentRoot,
+              }).reapAll()),
+            ]
+            await new NetworkOrphanReaper({
+              leaseManager: new NetworkLeaseManager({
+                leaseDir: roots.networkLeaseDir,
+              }),
+            }).reapAll()
+            const after = await inventory()
+            repeatedReap = {
+              changed:
+                reaped.length +
+                OWNED_RESOURCE_KINDS.filter(
+                  (kind) => after[kind] !== resources[kind],
+                ).length,
+              failed: false,
+            }
+          } catch {
+            repeatedReap = { changed: 0, failed: true }
+          }
         }
 
         const restart = { crash, freshProcess }
+        // Each scenario is judged on its own boundary and its own result.
         const h1 = classifyH1({
           ...restart,
           boundaryReached: boundary.h1,
@@ -594,11 +654,9 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
           repeatedReap,
           listenerGatedOnFailedRecovery,
         })
-        const auxiliary =
-          boundary.auxiliary &&
-          cFirst?.status === "failed" &&
-          cFirst.errorCode === "ORCHESTRATION_UNAVAILABLE"
         const stages = [
+          "a-ready-leased",
+          "b-queued",
           "frozen",
           "boundary-proven",
           "sigkill",
@@ -608,36 +666,19 @@ describe.skipIf(!realServerCrashEnabled(process.env))(
           "inventory",
           "repeat-reap",
         ]
+        evidence({ scenario: "H1", verdict: h1.verdict, code: h1.code, stages })
         evidence({
-          schema: "peephole-b2-server-crash/v1",
-          scenario: "H1",
-          verdict: h1.verdict,
-          code: h1.code,
-          sourceSha,
-          stages,
-        })
-        evidence({
-          schema: "peephole-b2-server-crash/v1",
           scenario: "H2",
           verdict: h2.verdict,
           code: h2.code,
-          sourceSha,
           stages,
-          counts: { ...resources, repeatReapChanged: repeatedReap.changed },
-        })
-        evidence({
-          schema: "peephole-b2-server-crash/v1",
-          scenario: "AUXILIARY",
-          verdict: boundary.auxiliary
-            ? auxiliary
-              ? "PASS"
-              : "FAIL"
-            : "NOT_RUN",
-          code: "IN_PROGRESS_ORCHESTRATION_UNAVAILABLE",
-          sourceSha,
-          stages,
+          counts: {
+            ...resources,
+            repeatReapChanged: repeatedReap?.changed ?? null,
+          },
         })
 
+        expect(listenerGatedOnFailedRecovery).toBe(true)
         expect(h1).toEqual({
           verdict: "PASS",
           code: "CONFIGURATION_UNAVAILABLE",
