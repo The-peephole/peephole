@@ -247,7 +247,226 @@ unreadable inventory or cleanup failure never closes B1. G6 uses synthetic
 M11-shaped material only; it does not establish SQL connectivity or B2's
 actual-server SIGKILL/startup recovery.
 
-The log contains only safe codes, booleans, statuses, and paths:
+### R5-1B isolated journal adapter (portable verification only)
+
+`tests/support/runM12JournalVerification.ts` is a test-only controller for
+**a separately provisioned, credential-free Linux VM**. It does not provision
+the VM, edit configuration, or create/start/stop any service. It was not run
+against Linux/journald/gVisor in R5-1B. **B1 remains OPEN**; the actual journal
+result is **NOT_RUN**, regardless of Portable/CI results.
+
+This controller reuses the existing Vitest file, selecting `G[1-6]:|H2/H3:`:
+six G1-G5 cases, G6's pending-signal boundary, and H2/H3 (eight selected cases).
+It awaits the complete child, including Vitest error/reporting output and
+`withEnvironment`'s independent stop/destroy/remove cleanup. Only then does it
+write the end marker, synchronize the namespace and inspect its complete
+record set. A failed child is still scanned and remains a failed lifecycle
+run even if its journal scan passes. This does not add H1 or actual SIGKILL.
+
+The isolation boundary requires all of the following; a directory name or
+an operator boolean alone is not accepted as proof:
+
+- Linux/root and both opt-in gates, plus the existing harness's Production-host
+  marker refusal and explicit non-Production test-root preflight, before any
+  control is written or journal namespace is read.
+- A fresh, root-owned namespace `peephole-m12-<32 lowercase hex run id>` and
+  identically named `.service`, used exclusively for this one invocation.
+  The unit must be a `systemd-run` transient unit: live `Transient=yes`,
+  `FragmentPath=/run/systemd/transient/<unit>` (root-owned, canonical, not
+  group/world writable) and empty `DropInPaths`. Anything else is refused.
+- The unit's live `LogNamespace`, `InvocationID`, `MainPID`, `ActiveState`,
+  `StandardOutput=journal`, `StandardError=journal`, and both zero unit log-rate
+  limits match the running controller. No `Environment` property is read.
+- `/run/log/journal/<machine id>.<namespace>` and every ancestor are canonical,
+  root-owned, non-symlink and not group/world writable. The source directory's
+  device/inode is unchanged after collection.
+- The root-owned namespace config is exactly `M12_JOURNAL_CONFIG` in the
+  controller. `systemd-analyze cat-config` must show those same settings without
+  overriding/unknown drop-ins: volatile storage, debug-level storage, disabled
+  rate limits, no kernel reads, unchanged audit policy, no syslog/kernel/console/
+  wall forwarding. Configuration is checked before and after the run.
+- Every read record has the expected trusted `_NAMESPACE`, `_MACHINE_ID` and
+  `_BOOT_ID`. The begin/control/end records additionally match the test unit,
+  invocation and controller PID, appear exactly once and in order, and enclose
+  at least one scenario record. The positive control is a distinct non-secret
+  synthetic message deliberately written only to this isolated journal; M12
+  material values are never deliberately logged.
+
+The collector uses only `journalctl --namespace=<exact name> --sync`, followed
+by `--namespace=<exact name> --no-pager --output=json --all`. There is no host
+namespace fallback, wildcard/merged namespace, time/unit filter, tail count or
+field projection. Commands are bounded to 10 seconds/4 MiB; parsing/scanning
+has a 30-second budget and a 10,000-record bound. Nonzero exit, stderr warnings,
+overflow, missing trailing record delimiter, malformed/null fields, split
+`line-max` records, unreadable sources, source changes, absent controls or
+empty scope prevent PASS. The tool decodes JSON escapes, repeated fields and
+binary byte arrays before reusing `scanFileForRawValueStatus`; no journal
+export is written to disk. `combineScanStatuses` retains FAIL over INCOMPLETE.
+
+| Result | Required meaning |
+| --- | --- |
+| PASS | Proven source, observed working positive control, nonempty bounded scope, all records/fields inspected, neither M12 synthetic value found |
+| FAIL | An M12 synthetic value was found, including when another field is incomplete |
+| INCOMPLETE | Collection/isolation/coverage/control/completion cannot be proven; never a clean result |
+| NOT_RUN | No native isolated journal execution (the R5-1B implementation result) |
+
+Only status, run id, fixed scenario scope, counts, completion, lifecycle
+success booleans and resource-audit statuses are emitted as
+`[m12-journal-evidence]`. Require scan PASS, `scenarioPassed=true`,
+`resourceAudit=PASS` and controller exit 0 (see the live resource audit below),
+eight actual selected test passes, existing per-scenario evidence and readable
+clean parent status within the scope that status can still observe. Keep
+the safe evidence and test/source/tool-version identities; do not copy raw
+journal records, assertion output, environment values or credentials into
+release evidence. The deliberate control message stays in the isolated input.
+
+**R5-2 approval/preparation, not performed here:** approve the dedicated VM,
+existing test roots/rootfs/tmpfs/network prerequisites and one namespace-specific
+config/test unit. The operator must establish that the config was installed
+before the fresh namespace daemon started, that the namespace is not reused,
+that no forwarding/log agents or other workloads/credentials are present, and
+that its supported systemd version honors these settings. File checks cannot
+prove an already running daemon reloaded a changed config, or reconstruct
+discarded/vacuumed records. Preserve those bootstrap facts and stop if unknown.
+Do not modify host-global journald settings or any Production unit. Unit setup
+and lifecycle execution need the separate R5-2 approval; this PR supplies no
+service installation/start/stop script.
+
+**Test unit preparation (R5-2 only; transient unit required).** The
+unchanged Production-host guard treats any `peephole*` entry in
+`/etc/systemd/system`, `/run/systemd/system`, `/usr/local/lib/systemd/system`,
+`/usr/lib/systemd/system` or `/lib/systemd/system` (including `.d` drop-ins
+and `*.wants`/`*.requires` links) as a Production marker. A persistent unit file
+such as `/etc/systemd/system/peephole-m12-<run id>.service` would therefore make
+both this controller (`ISOLATED_JOURNAL_HOST_REFUSED`) and the G/H harness
+preflight refuse the host. That refusal is intended and is not overridden.
+Instead, start the unit with `systemd-run`, whose unit PID 1 writes under
+`/run/systemd/transient/`, a directory the guard does not list. Do not write any
+unit file, drop-in, enablement link or `systemctl set-property` change for it,
+and do not rename it to avoid the guard. The controller re-checks `Transient`,
+`FragmentPath` and `DropInPaths` before and after the run, so a persistent,
+drop-in-modified or mismatched unit stays INCOMPLETE. A host with any real
+Production marker is still refused even while a transient unit is running.
+
+After approval, the operator writes a root-owned, mode `0600` environment file
+outside every test root (for example `/root/m12-journal-<run id>.env`) holding
+only the two gates set to `1`, the four `PEEPHOLE_M12_TEST_*` roots and
+`PEEPHOLE_M12_TEST_JOURNAL_RUN_ID=<run id>` (no credential, token or Production
+path), then starts the unit from the repository root, as root:
+
+```sh
+RUN_ID=<fresh 32 lowercase hex>
+systemd-run --wait --collect \
+  --unit="peephole-m12-${RUN_ID}.service" \
+  --property=Type=exec \
+  --property=LogNamespace="peephole-m12-${RUN_ID}" \
+  --property=StandardOutput=journal --property=StandardError=journal \
+  --property=LogRateLimitIntervalSec=0 --property=LogRateLimitBurst=0 \
+  --property=EnvironmentFile="/root/m12-journal-${RUN_ID}.env" \
+  --working-directory="$PWD" \
+  <absolute Node 24 path> --import tsx tests/support/runM12JournalVerification.ts
+```
+
+The roots must come from the environment file, not `--setenv`: the live
+resource audit below counts any other process whose argv names a test root,
+and `systemd-run --setenv=..._ROOT=<root>` would be such a process (a
+fail-closed FAIL, not a bypass). The exact namespace config
+`/etc/systemd/journald@peephole-m12-<run id>.conf` must already exist (it is
+not a unit directory entry). Before starting, confirm
+`findProductionHostMarkers()` is empty on the VM and the transient directory
+holds no other `peephole*` unit. Let systemd supply `INVOCATION_ID`; never
+hand-forge it. `Type=exec` keeps the unit active while the command runs and
+the controller rejects a wrapper PID in place of MainPID. Read the result from
+the unit's `[m12-journal-evidence]` line and its exit status. Do not run this
+entry point in a shell, on a general host or against Production. The
+transient-path layout, `systemd-run` property support and `--collect` cleanup
+are systemd behavior not exercised by the Portable mocks and must be confirmed
+on the R5-2 VM.
+
+**Mount namespace consequence and live resource audit.** `LogNamespace=` is
+implemented with a unit mount namespace; systemd.exec(5) states it "disconnects
+propagation of mounts from the unit's processes to the host" and that journal
+namespaces "may hence not be used for services that need to establish mount
+points on the host". In Production the preview runtime is not run this way, so
+here its loop workspace mounts, credential tmpfs mounts, runsc `null-netns`
+binds and `ip netns add` binds exist only inside the unit's namespace (host
+mounts still propagate in). The harness and runtime then see one consistent
+namespace, but the host does not see those mounts at all. When the unit stops,
+systemd kills its cgroup and the namespace is released, which can silently
+detach leaked mounts, kill leaked processes and free leaked network namespaces
+together with their veth pairs. A clean host view after the unit exits is
+therefore **not** evidence that the test cleaned up.
+
+The controller therefore audits owned resources inside the still-running unit
+(`tests/support/m12ResourceAudit.ts`; read-only, never deletes):
+
+1. After the source/ownership checks and before the begin marker, a baseline
+   records `/proc/self/mountinfo` mount points at or below the four test roots
+   and strictly below `/run/netns`/`/var/run/netns`, and **requires zero**
+   Peephole-shaped network state: `peephole-<n>` netns names, `veph<n>`/
+   `vpph<n>` links, and `pp[eir]<n>` chains or `peephole-` comments in
+   `iptables-save`/`ip6tables-save`. Lease files are deleted with the run
+   directories, so this empty baseline is what attributes later matches to the
+   run. An unreadable or non-empty baseline means the child is **not run**.
+2. After the child (and its awaited cleanup) exits, even when it failed, and
+   before the end marker:
+   - mounts: the same set must equal the baseline exactly (new, stacked or
+     vanished mounts FAIL). `ip`'s own `/run/netns` self-bind is tolerated.
+   - processes: `/proc/self/cgroup` must be a single cgroup v2 `0::` entry
+     ending in the exact unit, `/sys/fs/cgroup` must be cgroup2, and
+     `cgroup.procs` of the unit cgroup **and every descendant cgroup**
+     (bounded: 256 cgroups, depth 16) may contain only processes recorded at
+     the baseline, matched by PID **and** `/proc/<pid>/stat` start time: the
+     controller and its then-existing direct children (such as tsx's esbuild
+     service). A baseline with any other process refuses the run; a new or
+     PID-reused process afterwards is FAIL.
+     Separately, every `/proc/<pid>/cmdline` except the controller's ancestry
+     is compared (never emitted) against the four roots, which catches runsc
+     processes that left the unit cgroup (runsc always gets `--root`).
+   - network: the unit must share PID 1's network namespace (so link/rule
+     inventories are the host's), and no Peephole-shaped netns name, veth or
+     iptables/ip6tables entry may remain.
+3. Each area is `PASS`/`FAIL`/`INCOMPLETE` independently; any unreadable,
+   unparsable, oversized or failed inventory is `INCOMPLETE`, and
+   `combineScanStatuses` keeps FAIL over INCOMPLETE. An audit failure or error
+   never skips the end marker, journal collection or sentinel scan.
+
+Evidence adds `scenarioRan`, `resourceAudit` (`PASS`/`FAIL`/`INCOMPLETE`/
+`NOT_RUN`) and the three per-area statuses; `status` remains the journal scan
+alone. The controller exits 0 only when `journalRunPassed` holds: journal
+`PASS`, complete, positive control detected, child ran and exited 0, and
+`resourceAudit=PASS`.
+
+Limits of this audit, to be confirmed on the R5-2 VM: the cgroup check relies
+on the unit's cgroup being the boundary of its processes (the current OCI
+config sets no `cgroupsPath`; runsc placement is unverified on this host); a
+process outside the unit cgroup whose argv names no test root, or an anonymous
+network namespace not held by any remaining process, is not separately
+enumerated; name patterns are shared with Production, which is why a non-empty
+baseline is refused rather than diffed. External `m12-test-host.sh status` and
+teardown remain required, but after the unit exits they prove only what
+survives it: run directories, loop devices, iptables state, files and processes
+outside the unit cgroup. They do not prove the absence of in-unit mounts,
+in-cgroup processes or netns/veth leaks.
+
+Coverage is the two fixed M12 synthetic values and the captured test invocation,
+including its ProcessRunner/error/cleanup output. It does not prove M10's random
+secrets, M11 credentials, arbitrary values, host memory, unallocated blocks,
+unrelated units, future output after the boundary, or B2 startup recovery.
+Outer host teardown/status is separate evidence and is not inside this scan;
+under `LogNamespace=` it cannot replace the in-unit resource audit. **B1
+remains OPEN** and the journal result stays **NOT_RUN** until R5-2 runs this on
+a real host.
+The old direct Vitest commands do not collect journal evidence. Reuse the
+2026-10-16 Canary functional/normal Stop/cleanup/rollback evidence for its
+original scope; it cannot fill these journal or pending-signal gaps.
+
+API references: [journalctl namespace/JSON output/sync](https://www.freedesktop.org/software/systemd/man/latest/journalctl.html),
+[trusted journal fields](https://www.freedesktop.org/software/systemd/man/latest/systemd.journal-fields.html),
+and [namespace-specific journald configuration](https://www.freedesktop.org/software/systemd/man/latest/journald.conf.html).
+Native version compatibility and actual collection remain R5-2 checks.
+
+The existing direct-test log contains only safe codes, booleans, statuses, and paths:
 
 - `[m12-real-preflight]` — gate booleans, the four roots, and the protected
   roots.

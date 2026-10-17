@@ -87,6 +87,7 @@ import {
   scanRunscStateForRawValue,
 } from "./support/realRunscStateInspection"
 import { PendingSignalProcessRunner } from "./support/pendingSignalProcessRunner"
+import { M12_JOURNAL_SENTINELS } from "./support/isolatedJournalVerification"
 import { safeRealTest } from "./support/safeRealTest"
 
 /**
@@ -100,8 +101,7 @@ import { safeRealTest } from "./support/safeRealTest"
  * its SHA-256 digest; no assertion message, log line, or evidence record
  * contains a raw value.
  */
-const SYNTHETIC_VALUE = "PEEPHOLE_E2E_SYNTHETIC_VALUE_2026"
-const SECOND_SYNTHETIC_VALUE = "PEEPHOLE_E2E_SYNTHETIC_MODE_2026"
+const [SYNTHETIC_VALUE, SECOND_SYNTHETIC_VALUE] = M12_JOURNAL_SENTINELS
 const ENTRYPOINT = "m12-digest-server.cjs"
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
