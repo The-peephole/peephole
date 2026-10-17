@@ -16,6 +16,7 @@ import type {
 } from "../../types/analysis"
 import type { RepositoryLiveDeploymentLoader } from "../../types/deployment"
 import type { FullStackPreview } from "../../types/fullstackPreview"
+import type { RetainedFullStackControl } from "../../core/sidepanel/fullStackRetention"
 import type {
   RepositoryBranchesLoader,
   RepositoryIdentity,
@@ -39,11 +40,12 @@ interface SidePanelAppProps {
   /** Separate from backend-v1. Kept build-time opt-in until production E2E
    * has been explicitly approved and completed for the extension build. */
   fullStackPreviewEnabled?: boolean
-}
-
-interface RetainedFullStackControl {
-  analysis: BuildTargetAnalysis & RepositoryAnalysis
-  preview: FullStackPreview
+  initialFullStackControl?: RetainedFullStackControl | null
+  persistFullStackControl?: (
+    control: RetainedFullStackControl | null,
+  ) => Promise<void>
+  fullStackRecoveryError?: string | null
+  onCreatePendingChange?: (pending: boolean) => void
 }
 
 type FullStackAnalysis = BuildTargetAnalysis & RepositoryAnalysis
@@ -78,12 +80,32 @@ export function SidePanelApp({
   backendRuntimeEnabled = false,
   fullStackPreviewApi = null,
   fullStackPreviewEnabled = false,
+  initialFullStackControl = null,
+  persistFullStackControl,
+  fullStackRecoveryError = null,
+  onCreatePendingChange,
 }: SidePanelAppProps) {
   const [retainedFullStackControl, setRetainedFullStackControl] =
-    useState<RetainedFullStackControl | null>(null)
+    useState<RetainedFullStackControl | null>(initialFullStackControl)
+  const [restoringFullStack, setRestoringFullStack] = useState(
+    Boolean(
+      initialFullStackControl &&
+      !["stopped", "failed", "cancelled", "expired"].includes(
+        initialFullStackControl.preview.status,
+      ),
+    ),
+  )
+  const [retentionError, setRetentionError] = useState(fullStackRecoveryError)
   const [selectedFullStackAnalysis, selectFullStackAnalysis] =
     useState<FullStackAnalysis | null>(null)
   const [fullStackCreatePending, setFullStackCreatePending] = useState(false)
+  const handleCreatePendingChange = useCallback(
+    (pending: boolean) => {
+      setFullStackCreatePending(pending)
+      onCreatePendingChange?.(pending)
+    },
+    [onCreatePendingChange],
+  )
   const [detailsHost, setDetailsHost] = useState<HTMLDivElement | null>(null)
   const fullStackAnalysis =
     retainedFullStackControl?.analysis ?? selectedFullStackAnalysis
@@ -96,13 +118,22 @@ export function SidePanelApp({
   )
   const updateRetainedFullStackPreview = useCallback(
     (preview: FullStackPreview | null) => {
-      setRetainedFullStackControl((current) =>
+      const next =
         preview && fullStackAnalysis
-          ? { analysis: current?.analysis ?? fullStackAnalysis, preview }
-          : null,
-      )
+          ? { analysis: fullStackAnalysis, preview }
+          : null
+      setRetainedFullStackControl(next)
+      setRestoringFullStack(false)
+      if (persistFullStackControl)
+        void persistFullStackControl(next).then(
+          () => setRetentionError(null),
+          () =>
+            setRetentionError(
+              "Preview controls could not be saved. Keep this panel open until you stop the preview.",
+            ),
+        )
     },
-    [fullStackAnalysis],
+    [fullStackAnalysis, persistFullStackControl],
   )
 
   return (
@@ -113,6 +144,17 @@ export function SidePanelApp({
           <h1 className="peephole__title">Peephole</h1>
         </div>
       </header>
+
+      <p className="peephole__action-note">
+        This panel belongs to the repository opened with Peephole in this tab.
+        Use the repository's Peephole button to switch context.
+      </p>
+      {retentionError && <p role="alert">{retentionError}</p>}
+      {fullStackCreatePending && (
+        <p role="status">
+          Keep this panel open until the preview job ID is received.
+        </p>
+      )}
 
       {repository ? (
         <RepositoryAnalysisView
@@ -167,17 +209,25 @@ export function SidePanelApp({
         </section>
       )}
       {fullStackPreviewEnabled && fullStackAnalysis && (
-        <FullStackPreviewPanel
-          analysis={fullStackAnalysis}
-          configurationError={previewConfigurationError}
-          connectGitHub={connectGitHub}
-          fullStackPreviewApi={fullStackPreviewApi}
-          key={`fullstack:${fullStackAnalysis.repository.repositoryId}:${fullStackAnalysis.repository.commitSha}:${fullStackAnalysis.target.sourceRoot}`}
-          onCreatePendingChange={setFullStackCreatePending}
-          onRetainedPreviewChange={updateRetainedFullStackPreview}
-          previewArtifactBaseDomain={previewArtifactBaseDomain}
-          retainedPreview={retainedFullStackControl?.preview ?? null}
-        />
+        <>
+          <p className="peephole__action-note">
+            Full-stack controls: {fullStackAnalysis.repository.owner}/
+            {fullStackAnalysis.repository.repo} at{" "}
+            {fullStackAnalysis.repository.commitSha.slice(0, 7)}.
+          </p>
+          <FullStackPreviewPanel
+            analysis={fullStackAnalysis}
+            configurationError={previewConfigurationError}
+            connectGitHub={connectGitHub}
+            fullStackPreviewApi={fullStackPreviewApi}
+            key={`fullstack:${fullStackAnalysis.repository.repositoryId}:${fullStackAnalysis.repository.commitSha}:${fullStackAnalysis.target.sourceRoot}`}
+            onCreatePendingChange={handleCreatePendingChange}
+            onRetainedPreviewChange={updateRetainedFullStackPreview}
+            previewArtifactBaseDomain={previewArtifactBaseDomain}
+            retainedPreview={retainedFullStackControl?.preview ?? null}
+            restoringPreview={restoringFullStack}
+          />
+        </>
       )}
       <div className="peephole__analysis-details" ref={setDetailsHost} />
     </main>

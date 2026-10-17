@@ -3,6 +3,8 @@ import { createGitHubThemeMessageClient } from "../../core/sidepanel/themeMessag
 import { GitHubPageController } from "./GitHubPageController"
 import { GitHubThemeObserver } from "./githubTheme"
 import { mountPeepholeUi } from "./mountPeepholeUi"
+import { getRepositoryFromGitHubPage } from "./githubDom"
+import { subscribeToRepositoryReturn } from "../../core/sidepanel/contentLifecycle"
 
 export default defineContentScript({
   matches: ["https://github.com/*/*"],
@@ -29,7 +31,13 @@ export default defineContentScript({
 
     controller.start()
     themeObserver.start()
+    const unsubscribeReturn = subscribeToRepositoryReturn(window, () => {
+      void sidePanel
+        .sync(getRepositoryFromGitHubPage(document, window.location.href))
+        .catch(() => undefined)
+    })
     context.onInvalidated(() => {
+      unsubscribeReturn()
       themeObserver.stop()
       controller.stop()
     })

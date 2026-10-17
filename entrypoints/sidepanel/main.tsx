@@ -26,6 +26,14 @@ import {
   subscribeToGitHubThemeUpdates,
 } from "../../core/sidepanel/themeMessages"
 import { SidePanelApp } from "./App"
+import {
+  createTabFullStackControlStore,
+  type RetainedFullStackControl,
+} from "../../core/sidepanel/fullStackRetention"
+import {
+  createNavigationBarrier,
+  PREPARE_SIDE_PANEL_NAVIGATION,
+} from "../../core/sidepanel/navigationBarrier"
 import { UserEnvironmentEnabledContext } from "../../components/userEnvironmentContext"
 import { SidePanelThemeController } from "./SidePanelThemeController"
 import "./style.css"
@@ -133,24 +141,57 @@ if (sourceTabId !== null) {
   })
 }
 
-createRoot(root).render(
-  <StrictMode>
-    <UserEnvironmentEnabledContext.Provider value={userEnvironmentEnabled}>
-      <SidePanelApp
-        loadRepositoryAnalysis={loadRepositoryAnalysis}
-        loadBuildTargetAnalysis={loadBuildTargetAnalysis}
-        loadRepositoryBranches={loadRepositoryBranches}
-        loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
-        backendRuntimeApi={backendRuntimeApi}
-        backendRuntimeEnabled={backendRuntimeEnabled}
-        fullStackPreviewApi={fullStackPreviewApi}
-        fullStackPreviewEnabled={fullStackPreviewEnabled}
-        connectGitHub={reconnectGitHub}
-        previewApi={previewApi}
-        previewArtifactBaseDomain={previewArtifactBaseDomain}
-        previewConfigurationError={previewConfigurationError}
-        repository={repository}
-      />
-    </UserEnvironmentEnabledContext.Provider>
-  </StrictMode>,
-)
+const store =
+  sourceTabId !== null ? createTabFullStackControlStore(sourceTabId) : null
+const navigationBarrier = createNavigationBarrier(store)
+browser.runtime.onMessage.addListener((message) => {
+  if (
+    message?.type !== PREPARE_SIDE_PANEL_NAVIGATION ||
+    sourceTabId === null ||
+    message.tabId !== sourceTabId
+  )
+    return undefined
+  return navigationBarrier.wait().then(() => ({ ok: true }))
+})
+async function renderPanel() {
+  let initialFullStackControl: RetainedFullStackControl | null = null
+  let recoveryError: string | null = null
+  if (fullStackPreviewEnabled && store) {
+    try {
+      initialFullStackControl = await store.load()
+    } catch {
+      navigationBarrier.fail()
+      recoveryError =
+        "Previous preview controls could not be restored. Reload this panel before starting another full-stack preview."
+    }
+  }
+  navigationBarrier.ready()
+  createRoot(root!).render(
+    <StrictMode>
+      <UserEnvironmentEnabledContext.Provider value={userEnvironmentEnabled}>
+        <SidePanelApp
+          loadRepositoryAnalysis={loadRepositoryAnalysis}
+          loadBuildTargetAnalysis={loadBuildTargetAnalysis}
+          loadRepositoryBranches={loadRepositoryBranches}
+          loadRepositoryLiveDeployment={loadRepositoryLiveDeployment}
+          backendRuntimeApi={backendRuntimeApi}
+          backendRuntimeEnabled={backendRuntimeEnabled}
+          fullStackPreviewApi={fullStackPreviewApi}
+          fullStackPreviewEnabled={fullStackPreviewEnabled && !recoveryError}
+          initialFullStackControl={initialFullStackControl}
+          persistFullStackControl={
+            !recoveryError ? navigationBarrier.save : undefined
+          }
+          onCreatePendingChange={navigationBarrier.setCreating}
+          fullStackRecoveryError={recoveryError}
+          connectGitHub={reconnectGitHub}
+          previewApi={previewApi}
+          previewArtifactBaseDomain={previewArtifactBaseDomain}
+          previewConfigurationError={previewConfigurationError}
+          repository={repository}
+        />
+      </UserEnvironmentEnabledContext.Provider>
+    </StrictMode>,
+  )
+}
+void renderPanel()
