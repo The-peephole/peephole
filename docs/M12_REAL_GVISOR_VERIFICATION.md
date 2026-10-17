@@ -266,6 +266,9 @@ run even if its journal scan passes. This does not add H1 or actual SIGKILL.
 The isolation boundary requires all of the following; a directory name or
 an operator boolean alone is not accepted as proof:
 
+- Linux/root and both opt-in gates, plus the existing harness's Production-host
+  marker refusal and explicit non-Production test-root preflight, before any
+  control is written or journal namespace is read.
 - A fresh, root-owned namespace `peephole-m12-<32 lowercase hex run id>` and
   identically named `.service`, used exclusively for this one invocation.
 - The unit's live `LogNamespace`, `InvocationID`, `MainPID`, `ActiveState`,

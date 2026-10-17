@@ -13,7 +13,11 @@ import {
   type JournalScope,
   type JournalSource,
 } from "./isolatedJournalVerification"
-import { m12RealSuiteEnabled } from "./m12RealGvisorHarness"
+import {
+  findProductionHostMarkers,
+  m12RealSuiteEnabled,
+  readM12HarnessConfig,
+} from "./m12RealGvisorHarness"
 
 // An exact, namespace-specific config is deliberately required rather than
 // assuming the host's effective defaults. Provisioning needs separate approval.
@@ -195,6 +199,11 @@ async function main(): Promise<void> {
       !m12RealSuiteEnabled(process.env)
     )
       throw new Error("ISOLATED_JOURNAL_NOT_APPROVED")
+    // Reuse the real harness's host/root refusal before even writing controls
+    // or reading a namespace, not only later inside the Vitest child.
+    if ((await findProductionHostMarkers()).length > 0)
+      throw new Error("ISOLATED_JOURNAL_HOST_REFUSED")
+    await readM12HarnessConfig(process.env)
     const scope: JournalScope = {
       runId: process.env.PEEPHOLE_M12_TEST_JOURNAL_RUN_ID ?? "",
       invocationId: process.env.INVOCATION_ID ?? "",
