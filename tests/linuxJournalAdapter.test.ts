@@ -23,6 +23,11 @@ import {
   type JournalScope,
 } from "./support/isolatedJournalVerification"
 import {
+  findProductionHostMarkers,
+  SYSTEMD_UNIT_DIRECTORIES,
+  type HostMarkerInspection,
+} from "./support/m12RealGvisorHarness"
+import {
   collectLinuxJournal,
   inspectLinuxJournalSource,
   inspectOwnedJournalPath,
@@ -37,6 +42,7 @@ const scope: JournalScope = {
   pid: 42,
 }
 const identity = journalIdentity(scope)
+const transientFragment = `/run/systemd/transient/${identity.unit}`
 const stats = {
   uid: 0,
   mode: 0o700,
@@ -68,6 +74,9 @@ beforeEach(() => {
           "StandardError=journal",
           "LogRateLimitIntervalUSec=0",
           "LogRateLimitBurst=0",
+          "Transient=yes",
+          `FragmentPath=${transientFragment}`,
+          "DropInPaths=",
           "",
         ].join("\n"),
       )
@@ -191,4 +200,167 @@ describe("Linux journal command adapter (mocked, NO native commands)", () => {
       "EFFECTIVE_CONFIG_INVALID",
     )
   })
+})
+
+function systemctlShow(overrides: Record<string, string>) {
+  const values: Record<string, string> = {
+    LogNamespace: identity.namespace,
+    InvocationID: scope.invocationId,
+    MainPID: "42",
+    ActiveState: "active",
+    StandardOutput: "journal",
+    StandardError: "journal",
+    LogRateLimitIntervalUSec: "0",
+    LogRateLimitBurst: "0",
+    Transient: "yes",
+    FragmentPath: transientFragment,
+    DropInPaths: "",
+    ...overrides,
+  }
+  mocks.execFile.mockImplementation((binary, args, options, callback) => {
+    let output = Buffer.alloc(0)
+    if (binary === "/usr/bin/systemd-analyze")
+      output = Buffer.from(M12_JOURNAL_CONFIG)
+    if (binary === "/usr/bin/systemctl")
+      output = Buffer.from(
+        Object.entries(values)
+          .map(([key, value]) => `${key}=${value}`)
+          .join("\n") + "\n",
+      )
+    callback(null, output, Buffer.alloc(0))
+  })
+}
+
+describe("journal test unit vs the unchanged Production-host guard", () => {
+  function listing(
+    entries: Record<string, string[] | undefined>,
+  ): HostMarkerInspection {
+    const missing = () =>
+      Promise.reject(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
+    return {
+      lstat: missing,
+      readdir: (candidate: string) => {
+        const found = entries[candidate]
+        return found ? Promise.resolve(found) : missing()
+      },
+    }
+  }
+
+  it.each(SYSTEMD_UNIT_DIRECTORIES)(
+    "a persistent test unit file in %s is still refused as a Production marker",
+    async (directory) => {
+      expect(
+        await findProductionHostMarkers(
+          listing({ [directory]: [identity.unit] }),
+        ),
+      ).toEqual([`${directory}/${identity.unit}`])
+    },
+  )
+
+  it("a persistent drop-in or enablement link for the test unit is still refused", async () => {
+    expect(
+      await findProductionHostMarkers(
+        listing({
+          "/etc/systemd/system": [
+            `${identity.unit}.d`,
+            "multi-user.target.wants",
+          ],
+          "/etc/systemd/system/multi-user.target.wants": [identity.unit],
+        }),
+      ),
+    ).toEqual([
+      `/etc/systemd/system/${identity.unit}.d`,
+      `/etc/systemd/system/multi-user.target.wants/${identity.unit}`,
+    ])
+  })
+
+  it("the guard never lists systemd's transient or runtime control directories", () => {
+    for (const directory of [
+      "/run/systemd/transient",
+      "/run/systemd/system.control",
+      "/etc/systemd/system.control",
+    ])
+      expect(SYSTEMD_UNIT_DIRECTORIES).not.toContain(directory)
+  })
+
+  it("a transient test unit alone does not trip the guard", async () => {
+    expect(
+      await findProductionHostMarkers(
+        listing({
+          "/run/systemd/transient": [identity.unit],
+          "/etc/systemd/system": ["sshd.service"],
+        }),
+      ),
+    ).toEqual([])
+  })
+
+  it("a transient test unit does not mask a real Production unit or state", async () => {
+    const inspection = listing({
+      "/run/systemd/transient": [identity.unit],
+      "/etc/systemd/system": ["peephole.service"],
+    })
+    expect(await findProductionHostMarkers(inspection)).toEqual([
+      "/etc/systemd/system/peephole.service",
+    ])
+    expect(
+      await findProductionHostMarkers({
+        ...inspection,
+        lstat: (candidate: string) =>
+          candidate === "/var/lib/peephole"
+            ? Promise.resolve({})
+            : inspection.lstat(candidate),
+      }),
+    ).toContain("/var/lib/peephole")
+  })
+
+  it("accepts only the root-owned systemd-run fragment for the exact unit", async () => {
+    systemctlShow({})
+    await expect(inspectLinuxJournalSource(scope)).resolves.toMatchObject({
+      unit: identity.unit,
+    })
+    expect(mocks.lstat).toHaveBeenCalledWith(transientFragment)
+  })
+
+  it.each([
+    ["not transient", { Transient: "no" }],
+    ["unknown transient", { Transient: "" }],
+    [
+      "persistent fragment",
+      { FragmentPath: `/etc/systemd/system/${identity.unit}` },
+    ],
+    [
+      "other transient unit",
+      { FragmentPath: "/run/systemd/transient/run-u1.service" },
+    ],
+    ["no fragment", { FragmentPath: "" }],
+    [
+      "drop-in",
+      { DropInPaths: `/run/systemd/system.control/${identity.unit}.d/x.conf` },
+    ],
+  ])("refuses a %s test unit", async (_kind, overrides) => {
+    systemctlShow(overrides)
+    await expect(inspectLinuxJournalSource(scope)).rejects.toThrow(
+      "ISOLATED_JOURNAL_UNIT_NOT_TRANSIENT",
+    )
+  })
+
+  it.each(["not root", "writable", "symlink"])(
+    "refuses a %s transient fragment",
+    async (kind) => {
+      systemctlShow({})
+      mocks.lstat.mockImplementation(async (candidate: string) =>
+        candidate === transientFragment
+          ? {
+              ...stats,
+              uid: kind === "not root" ? 1000 : 0,
+              mode: kind === "writable" ? 0o666 : 0o644,
+              isSymbolicLink: () => kind === "symlink",
+            }
+          : stats,
+      )
+      await expect(inspectLinuxJournalSource(scope)).rejects.toThrow(
+        "ISOLATED_JOURNAL_OWNERSHIP_INVALID",
+      )
+    },
+  )
 })

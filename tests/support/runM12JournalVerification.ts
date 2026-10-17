@@ -1,5 +1,6 @@
 /** R5-2 entry point ONLY: run inside the separately approved, credential-free
- * test unit. This file never creates/configures/starts/stops a systemd unit. */
+ * transient (systemd-run) test unit. This file never creates/configures/
+ * starts/stops a systemd unit. */
 import { execFile, spawn } from "node:child_process"
 import { lstat, readFile, realpath } from "node:fs/promises"
 import path from "node:path/posix"
@@ -122,6 +123,9 @@ export async function inspectLinuxJournalSource(
     "StandardError",
     "LogRateLimitIntervalUSec",
     "LogRateLimitBurst",
+    "Transient",
+    "FragmentPath",
+    "DropInPaths",
   ]
   const output = await command("/usr/bin/systemctl", [
     "show",
@@ -139,6 +143,18 @@ export async function inspectLinuxJournalSource(
         return [line.slice(0, i), line.slice(i + 1)]
       }),
   )
+  // The test unit must be a systemd-run transient unit: PID 1 writes it under
+  // /run/systemd/transient, outside the unchanged Production-host guard's unit
+  // directories. A persistent peephole* unit file stays a Production marker,
+  // and unknown drop-ins could alter the unit, so both are refused.
+  const fragmentPath = `/run/systemd/transient/${identity.unit}`
+  if (
+    values.Transient !== "yes" ||
+    values.FragmentPath !== fragmentPath ||
+    values.DropInPaths !== ""
+  )
+    throw new Error("ISOLATED_JOURNAL_UNIT_NOT_TRANSIENT")
+  await inspectOwnedJournalPath(fragmentPath, false)
   return {
     directory: identity.directory,
     namespace: values.LogNamespace ?? "",

@@ -271,6 +271,9 @@ an operator boolean alone is not accepted as proof:
   control is written or journal namespace is read.
 - A fresh, root-owned namespace `peephole-m12-<32 lowercase hex run id>` and
   identically named `.service`, used exclusively for this one invocation.
+  The unit must be a `systemd-run` transient unit: live `Transient=yes`,
+  `FragmentPath=/run/systemd/transient/<unit>` (root-owned, canonical, not
+  group/world writable) and empty `DropInPaths`. Anything else is refused.
 - The unit's live `LogNamespace`, `InvocationID`, `MainPID`, `ActiveState`,
   `StandardOutput=journal`, `StandardError=journal`, and both zero unit log-rate
   limits match the running controller. No `Environment` property is read.
@@ -327,14 +330,42 @@ Do not modify host-global journald settings or any Production unit. Unit setup
 and lifecycle execution need the separate R5-2 approval; this PR supplies no
 service installation/start/stop script.
 
-After that approval, the test unit's direct entry point is
-`node --import tsx tests/support/runM12JournalVerification.ts`, with repository
-working directory, root, `Type=exec` (active while the command runs),
-`LogNamespace`/unit name as above, both existing real
-gates exactly `1`, the four explicit existing test roots, and
-`PEEPHOLE_M12_TEST_JOURNAL_RUN_ID=<run id>`. Let systemd supply `INVOCATION_ID`;
-never hand-forge it. The controller rejects a wrapper PID in place of MainPID.
-Do not run this entry point in a shell, on a general host or against Production.
+**Test unit preparation (R5-2 only; transient unit required).** The
+unchanged Production-host guard treats any `peephole*` entry in
+`/etc/systemd/system`, `/run/systemd/system`, `/usr/local/lib/systemd/system`,
+`/usr/lib/systemd/system` or `/lib/systemd/system` (including `.d` drop-ins
+and `*.wants`/`*.requires` links) as a Production marker. A persistent unit file
+such as `/etc/systemd/system/peephole-m12-<run id>.service` would therefore make
+both this controller (`ISOLATED_JOURNAL_HOST_REFUSED`) and the G/H harness
+preflight refuse the host. That refusal is intended and is not overridden.
+Instead, start the unit with `systemd-run`, whose unit PID 1 writes under
+`/run/systemd/transient/`, a directory the guard does not list. Do not write any
+unit file, drop-in, enablement link or `systemctl set-property` change for it,
+and do not rename it to avoid the guard. The controller re-checks `Transient`,
+`FragmentPath` and `DropInPaths` before and after the run, so a persistent,
+drop-in-modified or mismatched unit stays INCOMPLETE. A host with any real
+Production marker is still refused even while a transient unit is running.
+
+After approval, the operator starts it from the repository root, as root, with
+only non-sensitive values (no credential, token or Production path):
+
+```sh
+RUN_ID=<fresh 32 lowercase hex>
+systemd-run --wait --collect   --unit="peephole-m12-${RUN_ID}.service"   --property=Type=exec   --property=LogNamespace="peephole-m12-${RUN_ID}"   --property=StandardOutput=journal --property=StandardError=journal   --property=LogRateLimitIntervalSec=0 --property=LogRateLimitBurst=0   --working-directory="$PWD"   --setenv=PEEPHOLE_REAL_GVISOR_TESTS=1   --setenv=PEEPHOLE_M12_REAL_GVISOR_TESTS=1   --setenv=PEEPHOLE_M12_TEST_WORKSPACE_ROOT=<test root>   --setenv=PEEPHOLE_M12_TEST_RUNSC_ROOT=<test root>   --setenv=PEEPHOLE_M12_TEST_BASE_ROOTFS=<test rootfs>   --setenv=PEEPHOLE_M12_TEST_TMPFS_ROOT=<test root>   --setenv=PEEPHOLE_M12_TEST_JOURNAL_RUN_ID="${RUN_ID}"   <absolute Node 24 path> --import tsx tests/support/runM12JournalVerification.ts
+```
+
+The exact namespace config `/etc/systemd/journald@peephole-m12-<run id>.conf`
+must already exist (it is not a unit directory entry). Before starting, confirm
+`findProductionHostMarkers()` is empty on the VM and the transient directory
+holds no other `peephole*` unit. Let systemd supply `INVOCATION_ID`; never
+hand-forge it. `Type=exec` keeps the unit active while the command runs and
+the controller rejects a wrapper PID in place of MainPID. `--setenv` values are
+stored in the transient unit file, which is why only the gates, the four test
+roots and the run id may be passed. Read the result from the unit's
+`[m12-journal-evidence]` line and its exit status. Do not run this entry point
+in a shell, on a general host or against Production. The transient-path layout,
+`systemd-run` property support and `--collect` cleanup are systemd behavior
+not exercised by the Portable mocks and must be confirmed on the R5-2 VM.
 
 Coverage is the two fixed M12 synthetic values and the captured test invocation,
 including its ProcessRunner/error/cleanup output. It does not prove M10's random
