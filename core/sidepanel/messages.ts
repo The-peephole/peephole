@@ -43,6 +43,7 @@ export interface SidePanelMessageResponse {
 }
 
 export interface SidePanelNavigationGuard {
+  run<T>(tabId: number, operation: () => Promise<T>): Promise<T>
   version(tabId: number): number
   invalidate(tabId: number): void
   markBound(tabId: number, repository: RepositoryIdentity): void
@@ -108,13 +109,15 @@ export function createSidePanelMessageHandler(
     if (message.type === SET_SIDE_PANEL_CONTEXT) {
       navigation?.invalidate(tabId)
       const version = navigation?.version(tabId)
-      return setContext(
-        sidePanel,
-        tabId,
-        message.repository,
-        () => version === navigation?.version(tabId),
-        (bound) => navigation?.markBound(tabId, bound),
-      )
+      const update = () =>
+        setContext(
+          sidePanel,
+          tabId,
+          message.repository,
+          () => version === navigation?.version(tabId),
+          (bound) => navigation?.markBound(tabId, bound),
+        )
+      return navigation ? navigation.run(tabId, update) : update()
     }
 
     const path = createSidePanelPath(message.repository, tabId)
@@ -122,19 +125,29 @@ export function createSidePanelMessageHandler(
     if (navigation && !navigation.canOpen(tabId, message.repository)) {
       return navigation.prepareOpen(tabId, message.repository)
     }
-    const configure = sidePanel.setOptions(
-      navigation
-        ? { tabId, enabled: true }
-        : {
-            tabId,
-            path,
-            enabled: true,
-          },
-    )
+    const version = navigation?.version(tabId)
+    const configureOptions = () =>
+      sidePanel.setOptions(
+        navigation
+          ? { tabId, enabled: true }
+          : {
+              tabId,
+              path,
+              enabled: true,
+            },
+      )
+    const configure = navigation
+      ? navigation.run(tabId, configureOptions)
+      : configureOptions()
+    // A warm tab is already bound and has no outstanding option operations.
+    // Keep open in this gesture's synchronous stack, never inside the queue.
     const open = sidePanel.open({ tabId })
 
     return Promise.all([configure, open]).then(
-      () => ({ ok: true }),
+      () =>
+        version === navigation?.version(tabId)
+          ? { ok: true }
+          : { ok: false, error: "The repository navigation changed." },
       () => ({ ok: false, error: "Chrome could not open the side panel." }),
     )
   }
@@ -184,6 +197,8 @@ async function setContext(
   onBound: (repository: RepositoryIdentity) => void,
 ): Promise<SidePanelMessageResponse> {
   try {
+    if (!isCurrent())
+      return { ok: false, error: "The repository navigation changed." }
     const current = repository ? await sidePanel.getOptions?.({ tabId }) : null
     if (!isCurrent())
       return { ok: false, error: "The repository navigation changed." }
@@ -207,7 +222,9 @@ async function setContext(
             }
         : { tabId, enabled: false },
     )
-    if (repository && isCurrent())
+    if (!isCurrent())
+      return { ok: false, error: "The repository navigation changed." }
+    if (repository)
       onBound(
         hasBoundRepository && boundUrl
           ? parseSidePanelRepository(boundUrl)!
