@@ -776,6 +776,52 @@ describe("operator-supplied B2 inputs", () => {
       "B2_TEST_DATABASE_INVALID",
     )
   })
+
+  // node-postgres applies these parameters over the URL's own host/port.
+  it.each([
+    ["a remote host override", "?host=10.0.0.5"],
+    ["a Unix-socket host override", "?host=/var/run/postgresql"],
+    ["a port override", "?port=6543"],
+    ["a database override", "?db=postgres"],
+    ["an sslmode parameter", "?sslmode=disable"],
+    ["an options parameter", "?options=-c%20search_path%3Dother"],
+    ["several parameters", "?application_name=x&host=10.0.0.5"],
+    ["an empty query", "?"],
+    ["a fragment", "#host=10.0.0.5"],
+    ["an empty fragment", "#"],
+    ["a query and fragment", "?a=1#b"],
+  ])("refuses a loopback test URL with %s", (_kind, suffix) => {
+    const secretUrl = `postgresql://b2:synthetic-password@127.0.0.1:5432/peephole_b2_test${suffix}`
+    let message = ""
+    try {
+      assertDedicatedTestDatabaseUrl(secretUrl)
+    } catch (error) {
+      message = String(error)
+    }
+    expect(message).toContain("B2_TEST_DATABASE_INVALID")
+    expect(message).not.toContain("synthetic-password")
+    expect(message).not.toContain("127.0.0.1")
+  })
+
+  it.each([" ", "\n", "\t"])("refuses surrounding whitespace %j", (space) => {
+    expect(() =>
+      assertDedicatedTestDatabaseUrl(
+        `${space}postgresql://u:p@127.0.0.1/peephole_b2_test`,
+      ),
+    ).toThrow("B2_TEST_DATABASE_INVALID")
+  })
+
+  it("returns a URL whose effective node-postgres target stays the loopback test database", async () => {
+    const { parse } = await import("pg-connection-string")
+    const accepted = assertDedicatedTestDatabaseUrl(
+      "postgresql://b2:synthetic@127.0.0.1:5432/peephole_b2_test",
+    )
+    expect(parse(accepted)).toMatchObject({
+      host: "127.0.0.1",
+      port: "5432",
+      database: "peephole_b2_test",
+    })
+  })
 })
 
 describe("B2 boundary and verdict classification", () => {

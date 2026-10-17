@@ -520,6 +520,9 @@ unmodified `services/production/server.ts` as `node --import tsx <entry>`
 operator environment is not inherited): every resource root inside the M12
 test run directories, M12 on, M11 off, synthetic session/OAuth secrets, a
 dedicated empty loopback `peephole_b2_test*` database, and a per-run nonce.
+The database URL may carry no query string or fragment at all (not even an
+empty `?` or `#`): node-postgres would let `?host=`/`?port=` and similar
+parameters override the loopback host, so they are refused.
 Ownership is proven from the ChildProcess handle plus `/proc`: direct-child
 PPID, `/proc/<pid>/exe`, argv exactly `[node, --import, tsx, <entry>]`, the
 nonce as an exact environ entry, and the `/proc/<pid>/stat` start time, which
@@ -603,7 +606,7 @@ GitHub (unauthenticated, 60 requests/hour); and:
 ```bash
 export PEEPHOLE_REAL_GVISOR_TESTS=1 PEEPHOLE_M12_REAL_GVISOR_TESTS=1 \
   PEEPHOLE_B2_REAL_SERVER_CRASH=1
-export PEEPHOLE_B2_TEST_DATABASE_URL=<loopback peephole_b2_test* URL>
+export PEEPHOLE_B2_TEST_DATABASE_URL=<loopback peephole_b2_test* URL, no ?query or #fragment>
 export PEEPHOLE_B2_TEST_FIXTURE='{"repositoryId":<id>,"owner":"<owner>","name":"<repo>","commitSha":"<40 hex>","frontendSourceRoot":"<dir>","backendSourceRoot":"<dir>","environmentNames":["<NAME>"]}'
 node node_modules/vitest/vitest.mjs run tests/realServerCrashRecovery.test.ts
 ```

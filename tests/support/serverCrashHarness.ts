@@ -700,16 +700,24 @@ export function syntheticEnvironment(
 
 /** The startup reconciler acts on EVERY durable row, so the B2 database must
  * be a dedicated loopback test database named `peephole_b2_test*`. Remote hosts are refused
- * outright; emptiness is checked separately before the first start. */
+ * outright; emptiness is checked separately before the first start.
+ * node-postgres lets query parameters (`?host=`, `?port=`, `?sslmode=`, ...)
+ * override the URL's own host and port, so ANY query string or fragment --
+ * even an empty `?` or `#`, which URL parsing would normalize away -- is
+ * refused. Errors never echo the URL or its credentials. */
 export function assertDedicatedTestDatabaseUrl(
   raw: string | undefined,
 ): string {
+  if (raw === undefined || raw !== raw.trim() || /[?#]/.test(raw))
+    throw new Error("B2_TEST_DATABASE_INVALID")
   let url: URL
   try {
-    url = new URL(raw ?? "")
+    url = new URL(raw)
   } catch {
     throw new Error("B2_TEST_DATABASE_INVALID")
   }
+  if (url.search !== "" || url.hash !== "")
+    throw new Error("B2_TEST_DATABASE_INVALID")
   const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
   if (
     !["postgres:", "postgresql:"].includes(url.protocol) ||
