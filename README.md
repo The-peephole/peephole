@@ -183,7 +183,7 @@ Peephole's production path runs on AWS EC2 Ubuntu. The static preview has been e
 
 The four M9 rows were verified directly against the production API and host, because at that time the extension had no UI for `backend-v1`/`fullstack-v1`; the v0.3.0 candidate build includes the full-stack control. Environment-gated real gVisor tests are run separately on a production-like Linux host; they are intentionally not part of portable CI.
 
-Not yet complete: an end-to-end run of the final v0.3.0 extension against Production; the current-candidate Linux lifecycle and isolated-journal checks (B1) and an actual server-crash recovery check with M12 (B2), whose test harnesses exist but have not been run on a real host; the provisioning-credential incident (B3); and the general Production M12 rollout. See [M12 Canary closure and release gates](docs/M12_PRODUCTION_CANARY_20261016.md).
+Not yet complete: an end-to-end run of the final v0.3.0 extension against Production; the current-candidate Linux lifecycle and isolated-journal checks (B1) and an actual server-crash recovery check with M12 (B2), whose test harnesses exist but have not been run on a real host (the release owner accepted this residual risk for v0.3.0); a separate security approval (B3); and the general Production M12 rollout. See [M12 Canary closure and release gates](docs/M12_PRODUCTION_CANARY_20261016.md).
 
 On `main`, the manually dispatched
 [`Real golden-path build tests`](https://github.com/The-peephole/peephole/actions/runs/35069679620)
@@ -266,10 +266,10 @@ deployed-site Live Preview are implemented. Exact scope is listed in
     limited Production Canary on 2026-10-16 followed by rollback; general
     Production rollout (M12 ON) is not complete
 
-v0.3.0 is in release preparation. Its release gates for the current-candidate
-Linux lifecycle (B1), actual server-crash recovery (B2), and the
-provisioning-credential incident (B3) remain open, and none is recorded as
-passed; see [M12 Canary closure and release gates](docs/M12_PRODUCTION_CANARY_20261016.md).
+v0.3.0 is in release preparation. The current-candidate Linux lifecycle (B1)
+and actual server-crash recovery (B2) checks were not run; the release owner
+accepted that residual risk on 2026-10-18. A separate security approval (B3)
+remains open. None is recorded as passed; see [M12 Canary closure and release gates](docs/M12_PRODUCTION_CANARY_20261016.md).
 These capabilities are narrow; they are not support for arbitrary backends,
 databases, secrets, or environment variables (see D-033, D-035,
 docs/TEMPORARY_DATABASES.md, and docs/USER_PROVIDED_ENVIRONMENT.md). Separate

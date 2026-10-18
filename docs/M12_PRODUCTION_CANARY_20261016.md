@@ -181,24 +181,14 @@ ordinary Production Stop cannot substitute for that evidence.
   zero owned residue. Wrong PID, graceful shutdown or missing inventory means
   INVALID/INCONCLUSIVE, not PASS; no blind retries or broad cleanup.
 
-**B3 — Unclosed provisioning-credential incident.**
+**B3 — Security approval item.**
 
-- Evidence/gap: [D1 security status](BACKEND_FAILURE_DIAGNOSTICS.md) and
-  [D2A](M12_COMBINED_INTEGRATION.md) still record
-  `CREDENTIAL_EXPOSURE_UNREMEDIATED`. The reviewed handoff/Canary/rollback
-  packet contains no remediation/rotation closure. This is an unresolved
-  disposition, not a new claim about which credential is currently active.
-- Risk/minimum: an earlier exposed provisioning credential may retain
-  privileges. Obtain secret-free incident closure evidence; if still active,
-  separately plan remediation and invalidation with the owner. Never copy a
-  password, URL credential or session token into this record or test process.
-- Production: **not for the initial records review**; any real credential
-  replacement/confirmation needs separately scoped Production authorization.
-  Burden: **low** for evidence review, **medium** if coordinated remediation
-  is required.
-- Pass/stop: approved evidence that exposure was remediated or the affected
-  credential is no longer applicable. Missing/ambiguous disposition keeps
-  M12 ON blocked; success of a functional Canary cannot clear this incident.
+- Details are managed in a private operational record, not in this
+  repository (release owner decision, 2026-10-18).
+- Status: open. It is not passed, remediated or verified safe, and a
+  functional Canary cannot clear it.
+- Pass/stop: the release owner's separate security sign-off. Without it,
+  M12 ON stays blocked.
 
 **B4 — Explicit candidate, artifacts, deployment and rollback approval.**
 
@@ -309,20 +299,23 @@ the current non-sensitive contract without a new decision and evidence.
 
 ## Recommended next sequence
 
-1. Review this closure and resolve B3's incident-record disposition while
-   pinning the intended candidate. Confirm Stage3A browser handoff with the
+1. Review this closure and obtain the B3 security sign-off through the
+   private record while pinning the intended candidate. Confirm Stage3A browser handoff with the
    user; do not create another preview for that check.
-2. Before M12 ON, prepare one independently approved isolated Linux/gVisor
-   environment and execute B1, then B2. The WSL rootfs build from PR #60 is
-   useful image evidence, not a substitute for runsc/lifecycle verification.
-3. Reuse that environment for R1 and R2 if practical. A reviewed decision may
-   defer the separate SQL guarantee; its status must stay unverified. Do not
-   defer B1/B2 merely because ordinary Canary Stop passed.
+2. The original recommendation was to execute B1, then B2, in an isolated
+   Linux/gVisor environment before M12 ON. **Superseded for v0.3.0 only:** on
+   2026-10-18 the release owner accepted the residual risk of not running
+   them ([risk review](RELEASE_V0.3.0_RISK_REVIEW.md)). B1 and B2 remain
+   NOT_RUN, and the acceptance is not a PASS. Ordinary Canary Stop and the
+   PR #60 WSL rootfs build are still not substitutes for that verification.
+3. R1 and R2 stay unverified unless run separately; a reviewed decision may
+   defer the separate SQL guarantee.
 4. Close B4/B5, obtain separate Production approval, then perform only the
    necessary fresh prechecks and controlled activation/watch. Reuse existing
    successful Canary evidence; repeat a preview only for a specific changed
    contract or evidence gap with separate authorization.
 
-Release preparation can proceed now. Formal activation should wait for those
-gates. This documentation PR can be reviewed/merged independently of release
+Release preparation can proceed now. Formal activation still needs the B3
+security sign-off (a separate, private item that remains open), B4/B5 and its
+own separate Production approval. This documentation PR can be reviewed/merged independently of release
 approval; neither its merge nor PR #60's merge changes Production.

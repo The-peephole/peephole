@@ -7,7 +7,8 @@
 | Chrome Web Store public version | **UNKNOWN.** The last repository record ([RELEASE_V0.2.0.md](RELEASE_V0.2.0.md)) says v0.2.0 was submitted and under review while the public version was 0.1.0. No later observation of the public listing version is recorded here. |
 | Production backend | **Stable, M12 OFF.** Observed read-only on 2026-10-18: Stable `87d691e5f712f00022bceaea3986fbc64feb992b`, M12 OFF, the same service process as after the 2026-10-16 rollback (see [Production read-only preflight](#production-read-only-preflight-2026-10-18)). v0.3.0 is not deployed. |
 | Formal M12 activation | **PENDING.** Not performed. |
-| B1/B2/B3 risk acceptance | **RISK_ACCEPTANCE_PENDING.** See [RELEASE_V0.3.0_RISK_REVIEW.md](RELEASE_V0.3.0_RISK_REVIEW.md). |
+| B1/B2 risk acceptance | **RISK_ACCEPTED** by the release owner on 2026-10-18; B1/B2 remain NOT_RUN. See [RELEASE_V0.3.0_RISK_REVIEW.md](RELEASE_V0.3.0_RISK_REVIEW.md). |
+| B3 security approval | **OPEN.** Managed in a private operational record; not passed or remediated. |
 
 This record was written while v0.3.0 is a release candidate. The v0.1.0 and
 v0.2.0 records are kept unchanged in [RELEASE_V0.1.0.md](RELEASE_V0.1.0.md)
@@ -269,18 +270,17 @@ release fix.
 ## Remaining gates and approvals
 
 The Canary record lists B1–B5 as release blockers for formal M12 activation.
-The owner has decided not to run additional B1/B2 verification or a B3
-credential rotation for this release. That decision does not turn those
-gates into PASS. Because the Canary record states that a missing B3
-disposition keeps M12 ON blocked, skipping them requires a **written risk
-acceptance by the release owner** before M12 is activated.
+The owner has decided not to run additional B1/B2 verification for this
+release and accepted the residual risk on 2026-10-18. That decision does not turn those
+gates into PASS. B3 is a separate security approval item. Its details are managed in a private operational record, not in this repository. It is open: not passed, not remediated and not verified safe. Formal M12 activation still needs the release
+owner's separate security sign-off for B3.
 
 | Gate | State | Required before formal M12 ON |
 | --- | --- | --- |
-| B1 — current-candidate Linux lifecycle | NOT_RUN | Run it, or risk acceptance: see [risk review](RELEASE_V0.3.0_RISK_REVIEW.md#b1--real-linux-concurrent-exit-isolation-and-journal-verification). |
-| B2 — actual server crash and startup recovery | NOT_RUN | Run it, or risk acceptance: see [risk review](RELEASE_V0.3.0_RISK_REVIEW.md#b2--real-server-sigkill-and-startup-recovery). |
-| B3 — provisioning-credential incident | UNREMEDIATED | A security incident, not a missing test: see [risk review](RELEASE_V0.3.0_RISK_REVIEW.md#b3--historical-provisioning-credential-exposure). Never copy a credential value into any record. |
-| Risk acceptance (B1/B2/B3) | **RISK_ACCEPTANCE_PENDING** | Release owner decision recorded in the risk review form. Approvals for read-only inspections are not risk acceptance. |
+| B1 — current-candidate Linux lifecycle | NOT_RUN — risk accepted 2026-10-18 | See [risk review](RELEASE_V0.3.0_RISK_REVIEW.md#b1--real-linux-concurrent-exit-isolation-and-journal-verification). |
+| B2 — actual server crash and startup recovery | NOT_RUN — risk accepted 2026-10-18 | See [risk review](RELEASE_V0.3.0_RISK_REVIEW.md#b2--real-server-sigkill-and-startup-recovery). |
+| B3 — security approval item | OPEN | Managed in a private operational record. Release owner's separate security sign-off required before formal M12 ON. |
+| Risk acceptance (B1/B2) | **RISK_ACCEPTED** (2026-10-18) | Recorded in the risk review form. It does not approve activation; approvals for read-only inspections are not risk acceptance. |
 | B4 — candidate, artifacts, deployment and rollback approval | IN PROGRESS | Final build PASS; package pinned to `d6bd6c3` and tested; read-only preflight done (two FAILs explained above). Activation approval and, if needed, rollback approval are still PENDING. |
 | B5 — browser artifact confirmation | PENDING | Confirm the extension ID, version, flags and login of the artifact actually used. |
 | Final v0.3.0 Chrome E2E | NOT_RUN | Static and full-stack preview from the final artifact against the configured Production backend. |
@@ -290,7 +290,7 @@ acceptance by the release owner** before M12 is activated.
 | GitHub Release v0.3.0 | PENDING | Tag `d6bd6c39309233772465759dfb509ef91ff147ba` (the final-build and deploy-package commit), not the current `main` head, and attach the verified ZIP (`593d6212…3fe4`). Merging documentation PRs changes `main` but not the tag target or the package SHA. |
 | Chrome Web Store submission and publication | PENDING | Not performed. |
 
-The risk-acceptance form for B1/B2/B3 is in
+The risk-acceptance form for B1/B2 is in
 [RELEASE_V0.3.0_RISK_REVIEW.md](RELEASE_V0.3.0_RISK_REVIEW.md#release-owner-risk-acceptance-form).
 
 ## Deployment and rollback targets
@@ -310,7 +310,8 @@ change; the activation PRECHECK re-checks it at execution time.
 1. ~~Run the final release build and compare it with the candidate~~ (done
    2026-10-18, identical).
 2. Decide the M12 pairing option above.
-3. Record the release owner's B1/B2/B3 risk acceptance, or run the gates.
+3. ~~Record the release owner's B1/B2 risk acceptance~~ (2026-10-18). Obtain
+   the separate B3 security sign-off through the private record.
 4. ~~Pin the deploy/rollback package~~ (done) and obtain separate Production
    approval for activation and, if needed, rollback.
 5. Run the final v0.3.0 Chrome E2E.
@@ -323,6 +324,6 @@ change; the activation PRECHECK re-checks it at execution time.
    authenticated preview, and update this record without rewriting the
    candidate evidence.
 
-Release state: **final build verified and deploy package pinned; risk
-acceptance (RISK_ACCEPTANCE_PENDING), Production activation, final Chrome E2E,
-GitHub Release and Chrome Web Store submission all PENDING.**
+Release state: **final build verified and deploy package pinned; B1/B2 risk
+accepted (tests NOT_RUN); B3 security sign-off, Production activation, final
+Chrome E2E, GitHub Release and Chrome Web Store submission all PENDING.**

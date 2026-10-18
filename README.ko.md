@@ -183,7 +183,7 @@ Peephole의 프로덕션 경로는 AWS EC2 Ubuntu에서 운영됩니다. 정적 
 
 위의 M9 항목 네 개는 당시 확장 프로그램에 `backend-v1`/`fullstack-v1` UI가 없었기 때문에 프로덕션 API와 호스트에 직접 대고 검증한 결과입니다. v0.3.0 후보 빌드에는 풀스택 제어 UI가 포함되어 있습니다. 환경 의존적인 실제 gVisor 테스트는 프로덕션과 유사한 Linux 호스트에서 별도로 실행하며, 의도적으로 portable CI에 포함하지 않습니다.
 
-아직 완료되지 않은 항목: 최종 v0.3.0 확장 프로그램과 Production의 E2E 실행, 현재 후보 기준 Linux lifecycle 및 격리 journal 검증(B1)과 M12를 포함한 실제 서버 크래시 복구 검증(B2)(테스트 하네스는 있으나 실제 호스트에서 실행하지 않음), 프로비저닝 자격 증명 사안(B3), 그리고 Production M12 정식 적용입니다. 자세한 내용은 [M12 Canary 종료 및 릴리스 게이트](docs/M12_PRODUCTION_CANARY_20261016.md)를 참고하세요.
+아직 완료되지 않은 항목: 최종 v0.3.0 확장 프로그램과 Production의 E2E 실행, 현재 후보 기준 Linux lifecycle 및 격리 journal 검증(B1)과 M12를 포함한 실제 서버 크래시 복구 검증(B2)(테스트 하네스는 있으나 실제 호스트에서 실행하지 않았으며, 릴리스 책임자가 v0.3.0에 대해 이 잔여 위험을 수용함), 별도 보안 승인 항목(B3), 그리고 Production M12 정식 적용입니다. 자세한 내용은 [M12 Canary 종료 및 릴리스 게이트](docs/M12_PRODUCTION_CANARY_20261016.md)를 참고하세요.
 
 `main`에서 수동 실행한 [`Real golden-path build tests`](https://github.com/The-peephole/peephole/actions/runs/35069679620) 워크플로가 현재 퍼스트파티 픽스처로 머지 커밋 `dba47191bdd3600b3f451945653efab2363028c2`에서 성공했습니다. 이 워크플로는 실제 네트워크를 사용하는 CI이며, [Production smoke verification](docs/PRODUCTION_SMOKE.md)에 설명된 운영자 수행 프로덕션 스모크 테스트와는 다릅니다.
 
@@ -237,7 +237,7 @@ npm ci
 11. 임시 데이터베이스 지원, M11(2026-10-07)에서 구현 및 프로덕션 검증. 신뢰된 `fullstack-v1` 미리보기의 PostgreSQL + `pg` + `DATABASE_URL`로 제한
 12. 사용자 제공 비민감 설정(M12-A/B) 구현. 2026-10-16 제한적 Production Canary 후 롤백했으며, Production 정식 적용(M12 ON)은 완료되지 않음
 
-v0.3.0은 릴리스 준비 중입니다. 현재 후보 기준 Linux lifecycle(B1), 실제 서버 크래시 복구(B2), 프로비저닝 자격 증명 사안(B3) 릴리스 게이트는 아직 열려 있으며 통과로 기록되지 않았습니다. 자세한 내용은 [M12 Canary 종료 및 릴리스 게이트](docs/M12_PRODUCTION_CANARY_20261016.md)를 참고하세요. 이 기능들은 좁은 범위로 제한되며, 임의의 백엔드, 데이터베이스, 비밀 값, 환경변수를 지원한다는 뜻이 아닙니다(D-033, D-035, docs/TEMPORARY_DATABASES.md, docs/USER_PROVIDED_ENVIRONMENT.md 참고). 별도로 남아 있는 운영 과제로는 접근성 검토, 프로덕션 관측성, 프로덕션 스모크 테스트 자동화, 설치 단계 패키지 외부 접근의 추가 제한, 프로덕션 유사 환경에서의 악성 스크립트 테스트 실행이 있습니다.
+v0.3.0은 릴리스 준비 중입니다. 현재 후보 기준 Linux lifecycle(B1)과 실제 서버 크래시 복구(B2) 검증은 실행하지 않았으며, 릴리스 책임자가 2026-10-18에 이 잔여 위험을 수용했습니다. 별도 보안 승인 항목(B3)은 아직 열려 있습니다. 어느 항목도 통과로 기록되지 않았습니다. 자세한 내용은 [M12 Canary 종료 및 릴리스 게이트](docs/M12_PRODUCTION_CANARY_20261016.md)를 참고하세요. 이 기능들은 좁은 범위로 제한되며, 임의의 백엔드, 데이터베이스, 비밀 값, 환경변수를 지원한다는 뜻이 아닙니다(D-033, D-035, docs/TEMPORARY_DATABASES.md, docs/USER_PROVIDED_ENVIRONMENT.md 참고). 별도로 남아 있는 운영 과제로는 접근성 검토, 프로덕션 관측성, 프로덕션 스모크 테스트 자동화, 설치 단계 패키지 외부 접근의 추가 제한, 프로덕션 유사 환경에서의 악성 스크립트 테스트 실행이 있습니다.
 
 ## 문서
 
