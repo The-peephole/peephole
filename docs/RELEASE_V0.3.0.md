@@ -2,7 +2,7 @@
 
 | Channel | Status |
 | --- | --- |
-| GitHub release | **PENDING.** No `v0.3.0` tag or GitHub Release exists yet. The version metadata was merged by PR #69 as `d88219b2bd751ba064a8be28dffecefdc4b7432c`; the release commit is `d6bd6c39309233772465759dfb509ef91ff147ba` (PR #70, documentation only, on top of it). |
+| GitHub release | **PENDING.** No `v0.3.0` tag or GitHub Release exists yet. The version metadata was merged by PR #69 as `d88219b2bd751ba064a8be28dffecefdc4b7432c`; the release commit is `d6bd6c39309233772465759dfb509ef91ff147ba` (PR #70, documentation only, on top of it). The `v0.3.0` tag target is fixed to `d6bd6c3`, the commit the final extension build and the deploy package are pinned to; later `main` commits (including this record's own updates) do not move it. |
 | Chrome Web Store submission | **PENDING.** v0.3.0 has not been uploaded or submitted. |
 | Chrome Web Store public version | **UNKNOWN.** The last repository record ([RELEASE_V0.2.0.md](RELEASE_V0.2.0.md)) says v0.2.0 was submitted and under review while the public version was 0.1.0. No later observation of the public listing version is recorded here. |
 | Production backend | **Stable, M12 OFF.** Observed read-only on 2026-10-18: Stable `87d691e5f712f00022bceaea3986fbc64feb992b`, M12 OFF, the same service process as after the 2026-10-16 rollback (see [Production read-only preflight](#production-read-only-preflight-2026-10-18)). v0.3.0 is not deployed. |
@@ -287,7 +287,7 @@ acceptance by the release owner** before M12 is activated.
 | Formal M12 ON | PENDING | Only after the above and separate approval. |
 | `PRIVACY.md` coverage | PASS (repository) | Updated for full-stack preview, temporary PostgreSQL and M12 in PR #70, now on `main` (the policy URL tracks `main`). |
 | Chrome Web Store Dashboard answers | MANUAL | Re-check against [CHROME_WEB_STORE.md](CHROME_WEB_STORE.md#v030-submission-review). |
-| GitHub Release v0.3.0 | PENDING | Tag the merged commit and attach the ZIP from the final release build. |
+| GitHub Release v0.3.0 | PENDING | Tag `d6bd6c39309233772465759dfb509ef91ff147ba` (the final-build and deploy-package commit), not the current `main` head, and attach the verified ZIP (`593d6212…3fe4`). Merging documentation PRs changes `main` but not the tag target or the package SHA. |
 | Chrome Web Store submission and publication | PENDING | Not performed. |
 
 The risk-acceptance form for B1/B2/B3 is in
@@ -314,7 +314,9 @@ change; the activation PRECHECK re-checks it at execution time.
 4. ~~Pin the deploy/rollback package~~ (done) and obtain separate Production
    approval for activation and, if needed, rollback.
 5. Run the final v0.3.0 Chrome E2E.
-6. Create the `v0.3.0` tag and GitHub Release with the verified ZIP.
+6. Create the `v0.3.0` tag on `d6bd6c39309233772465759dfb509ef91ff147ba` and the
+   GitHub Release with the verified ZIP. Do not retarget it to a later `main`
+   commit; a different target would need a new build and package pin.
 7. Re-check the Dashboard privacy answers and screenshots, then submit to the
    Chrome Web Store.
 8. After publication, confirm the published version, Connect GitHub and an
