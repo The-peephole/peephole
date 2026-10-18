@@ -26,10 +26,12 @@ Dedicated preview origin --------------------+
 The extension integrates with GitHub and presents results. The control plane validates and schedules. The execution plane handles hostile repository code. The delivery plane serves only published artifacts.
 
 This architecture is implemented for commit-pinned static previews. The
-current execution targets are package-free root static HTML and root or
+current static execution targets are package-free root static HTML and root or
 explicitly selected, independently installable nested Vite + React with npm.
-Full-stack execution is a future architecture extension, not a property of the
-current system.
+A separate, narrow full-stack path (`fullstack-v1`, section 7a) reuses the
+same layers: the static build for its frontend, plus a separately supervised
+backend runtime in its own sandbox, routed through the delivery plane under
+`/api`. It is not general full-stack support.
 
 ## 2. Primary Design Rules
 
@@ -212,6 +214,18 @@ GET    /v1/preview-jobs/{jobId}
 DELETE /v1/preview-jobs/{jobId}
 ```
 
+The full-stack path uses a separate resource with the same authentication,
+ownership and idempotency rules (D-031):
+
+```text
+POST   /v1/fullstack-previews
+GET    /v1/fullstack-previews/{previewId}
+DELETE /v1/fullstack-previews/{previewId}
+```
+
+`/v1/backend-runtimes` exists for the standalone `backend-v1` resource and
+has no user path in the extension.
+
 ## 7. Execution Plane
 
 The production runner performs a static build:
@@ -227,6 +241,64 @@ The production runner performs a static build:
 8. destroy the writable job workspace.
 
 The runner is described in [Preview runtime](PREVIEW_RUNTIME.md).
+
+## 7a. Full-stack Execution (`fullstack-v1`)
+
+```text
+Side Panel: Run full-stack preview
+    |  repository, commit, frontend + backend sourceRoot, optional M12 values
+    v
+Full-stack control plane (durable parent row + queue; identity only)
+    |
+    +--> static build job (section 7) ---------> published frontend artifact
+    |
+    +--> backend runtime supervisor
+            | fetch -> npm ci (install sandbox) -> start
+            v
+         backend gVisor sandbox (ingress-only network)
+            ^  /run/secrets/env          M10 generated secrets
+            |  /run/secrets/database-url M11 temporary PostgreSQL URL
+            |  /run/secrets/user-env     M12 non-sensitive values
+            |
+Artifact host, full-stack origin: static files, and /api + /api/* proxied to
+the backend
+```
+
+- **Orchestration.** The parent resource pairs one frontend build with one
+  `express-node-npm-v1` backend runtime. The server re-derives both plans at
+  the exact commit; the client sends only identity, target paths and, for
+  M12, name/value pairs.
+- **Static frontend build.** The frontend is built by the unchanged static
+  pipeline. Its sandbox never receives backend material.
+- **Backend runtime.** A separate gVisor sandbox with its own network
+  namespace: ingress only, no default route, outbound traffic dropped. The
+  only exception is M11's single host route to the tenant PostgreSQL address.
+  Only a structurally derived `node <entrypoint>` is executed, never
+  `npm start`, a shell or a client-supplied command.
+- **Temporary PostgreSQL (M11).** One database and role per preview in a
+  separate host-local tenant cluster. Stop, expiry and failure revoke both
+  before the parent reports a terminal state; startup reconciliation removes
+  leftovers before listeners open (D-033).
+- **Separate value delivery.** M10 generated secrets, M11's database URL and
+  M12 user values each have their own broker or provisioner and their own
+  tmpfs file, bind-mounted read-only into the backend. None is placed in OCI
+  `config.json`, argv, the durable rows or the queue. The bootstrap merges
+  them into the child environment and refuses name collisions (D-032,
+  D-033, D-035).
+- **HTTPS `/api` routing.** The artifact host serves the frontend on a
+  full-stack origin and forwards only `/api` and `/api/*` to that preview's
+  backend through a bounded proxy. The origin is public to anyone with the
+  URL; it carries no extension privileges or control-plane credentials.
+- **Restart.** Broker values and backend runtime state are process memory
+  only. A server restart fails a running full-stack preview
+  (`ORCHESTRATION_UNAVAILABLE`) and a preview still waiting for its M12
+  values (`CONFIGURATION_UNAVAILABLE`); neither is reconstructed from memory.
+
+Trust boundaries: the backend is untrusted code and can read every value
+delivered to it, and public visitors can reach it through `/api`. M12 values
+are therefore public configuration, and secrets supplied by users are out of
+scope (M12-C). See [Preview runtime §13a-13c](PREVIEW_RUNTIME.md) and
+[User-provided environment](USER_PROVIDED_ENVIRONMENT.md).
 
 ## 8. Delivery Plane and Origins
 
@@ -298,7 +370,8 @@ Required controls include:
 - blocked private, loopback, link-local, and cloud-metadata networks,
 - public IPv4 egress only during installation, with DNS-only resolver
   exceptions and private/link-local/host/inter-job destinations denied,
-- no secret environment values,
+- no secret environment values in static build or install sandboxes; a
+  full-stack backend receives only its M10/M11/M12 tmpfs files (section 7a),
 - build and artifact TTLs,
 - cancellation and orphan cleanup,
 - audit logs without repository secrets.
@@ -315,9 +388,16 @@ components/                    presentation components
 core/github/                   GitHub data client and bounded known files
 core/analyzer/                 evidence detectors and eligibility inputs
 core/preview/                  Build Adapter registry, build plan, API/auth clients
+core/fullstack/                full-stack API client, candidate support, env rows
+core/userEnvironment/          M12 name/value policy
 services/preview-api/          control plane and PostgreSQL adapters
 services/preview-worker/local/ unsandboxed trusted-source development adapters
 services/preview-worker/gvisor/ production sandbox/network/disk adapters
+services/backend-runtime-*/    backend-v1 control plane and supervisor
+services/fullstack-preview-*/  fullstack-v1 control plane and orchestration worker
+services/fullstack-routing/    /api routing to backend runtimes
+services/temporary-database/   M11 tenant provisioning and reconciliation
+services/user-environment/     M12 in-memory broker
 services/production/           deployed composition and artifact host
 types/                         shared domain contracts
 ```
@@ -342,7 +422,10 @@ or changes the build contract. Backend execution, frontend/backend routing
 (M9), ephemeral generated secrets for a narrow four-name allowlist (M10), and
 temporary PostgreSQL databases for trusted `fullstack-v1` previews declaring
 exactly `pg` + `DATABASE_URL` (M11, D-033/docs/TEMPORARY_DATABASES.md) are
-now implemented and production-verified.
+now implemented and production-verified. User-provided non-sensitive
+configuration (M12-A/B, D-035) is implemented behind default-off flags; a
+limited Production Canary succeeded on 2026-10-16 and was rolled back, and
+general activation is pending its release gates.
 
 The generalized Build Adapter boundary preserves the worker ports and adds no
 fixture-specific production branches; it is unchanged by backend detection

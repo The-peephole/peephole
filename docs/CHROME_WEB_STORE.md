@@ -4,14 +4,16 @@ This document is the operator source of truth for the Peephole Chrome Web
 Store listing. The listing is public at
 [`fieofkhijgngfoflgpkbghbkaidhdgel`](https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel).
 
-- **Chrome Web Store public version:** still 0.1.0, updated September 14,
-  2026.
-- **GitHub release:** v0.2.0 is published. See
+- **Chrome Web Store public version:** **UNKNOWN.** The last recorded
+  observation was 0.1.0 (updated September 14, 2026) while v0.2.0 was under
+  review. No later observation is recorded in this repository.
+- **GitHub release:** v0.2.0 is the latest published release. See
   [GitHub Release v0.2.0](https://github.com/The-peephole/peephole/releases/tag/v0.2.0)
-  and [RELEASE_V0.2.0.md](RELEASE_V0.2.0.md).
-- **Chrome Web Store submission:** v0.2.0 is submitted and under review,
-  with automatic publication after approval enabled. It is not yet confirmed
-  published.
+  and [RELEASE_V0.2.0.md](RELEASE_V0.2.0.md). v0.3.0 is not yet released;
+  see [RELEASE_V0.3.0.md](RELEASE_V0.3.0.md).
+- **Chrome Web Store submission:** v0.2.0 was submitted for review with
+  automatic publication after approval enabled (last record). Its review
+  outcome is not recorded here. v0.3.0 has **not** been submitted.
 - The extension ID stays the same.
 
 **v0.3.0 R2 candidate note (2026-10-17):** the Repository button is offered
@@ -32,6 +34,155 @@ recorded in this repository. Official references:
 - [User Data Policy](https://developer.chrome.com/docs/webstore/user_data)
 - [Manifest V3 remote-code requirements](https://developer.chrome.com/docs/webstore/program-policies/mv3-requirements)
 - [Store image requirements](https://developer.chrome.com/docs/webstore/images)
+
+## v0.3.0 submission review
+
+This section prepares a future v0.3.0 submission. Nothing here has been
+uploaded, submitted or published. The v0.1.0 and v0.2.0 material below is
+kept as the historical record.
+
+### What changes for the listing
+
+The candidate build adds user-visible features (see
+[RELEASE_V0.3.0.md](RELEASE_V0.3.0.md#user-facing-extension-changes-since-v020)):
+full-stack preview for a narrow shape, the temporary PostgreSQL database
+that comes with it, non-sensitive configuration input (M12-A/B), static
+preview Close/Show, Side Panel tab context across navigation, and the
+overview-only repository action. Permissions, host permissions, content
+script scope, web-accessible resources and CSP are unchanged from v0.2.0;
+only `version` differs.
+
+Which features the listing may claim depends on the published artifact and
+the Production configuration at publication time:
+
+| Feature | Claim it only if |
+| --- | --- |
+| Full-stack preview | The published build has `WXT_FULLSTACK_PREVIEW_ENABLED=true` and the final v0.3.0 Chrome E2E has passed. |
+| Temporary database | Same as full-stack preview; Production keeps `PEEPHOLE_TEMPORARY_DATABASES=1`. |
+| Non-sensitive configuration | The published build has `WXT_USER_ENVIRONMENT_ENABLED=true` **and** Production M12 is ON. Otherwise omit it. |
+
+### Proposed short summary (draft, not submitted)
+
+> Analyze public GitHub repositories and preview supported static and simple full-stack apps in an isolated Chrome Side Panel.
+
+If full-stack preview is not claimable at submission, keep the v0.2.0
+summary.
+
+### Proposed full description (draft, not submitted)
+
+> Peephole lets you inspect a public GitHub repository before you clone it.
+>
+> Open a public repository's overview page on GitHub and select Peephole next
+> to the Watch, Star, and Fork buttons. Peephole analyzes the repository's
+> public metadata and selected project files, then shows its detected
+> framework, package manager, runtime, repository structure, backend and
+> environment requirements, confirmed deployments, and preview compatibility
+> in a Chrome Side Panel that follows GitHub's Light, Dark, and Dark Dimmed
+> themes. The panel stays with the tab and repository you opened it for.
+>
+> Choose any public branch: Peephole resolves it to one exact commit before
+> analyzing or previewing it. When a repository contains more than one
+> project, Peephole lists the detected candidates so you can select a
+> supported target.
+>
+> For supported projects, connect GitHub and choose Build preview. Peephole
+> verifies your GitHub identity, sends the exact public commit (and the
+> target you selected) to its preview service, builds it in an isolated,
+> resource-limited gVisor sandbox, and displays the resulting static site
+> from a separate HTTPS artifact origin. You can close the preview frame and
+> show it again.
+>
+> For a narrow full-stack shape, a Vite + React frontend with an Express
+> backend using npm and a committed lockfile, Peephole can also run the
+> backend in its own sandbox and route the preview's /api requests to it.
+> If the backend needs PostgreSQL through pg and DATABASE_URL, Peephole
+> creates a temporary database for that preview and removes it when the
+> preview stops. [Include only if M12 is ON:] If the backend declares simple,
+> non-sensitive settings, you can enter values for them. These values are
+> visible to the repository's code and possibly to anyone with the preview
+> link, so never enter API keys, passwords, or tokens.
+>
+> Peephole supports public repositories only. Static preview supports static
+> HTML and root or selected nested Vite + React projects using npm with a
+> target-local lockfile. Other frameworks, package managers, backends,
+> secrets, Docker, and workspace setups are recognized where possible but not
+> run. A repository may be unsupported or fail to build if it needs anything
+> outside these contracts.
+>
+> Peephole does not ask you to create a GitHub personal access token. GitHub
+> App OAuth is used only to verify the requester identity for preview jobs;
+> public repository analysis uses GitHub's public API path. No analytics or
+> advertising SDK is included.
+>
+> Source code and security documentation:
+> https://github.com/The-peephole/peephole
+
+### Single purpose (review)
+
+The single purpose stays the same in substance. If full-stack preview is
+claimed, a suggested wording is:
+
+> Peephole analyzes the public GitHub repository currently open by the user and, on explicit request, creates an isolated preview of a supported public commit (a static site or a narrow supported frontend-plus-backend app) in the Chrome Side Panel.
+
+### Permission justification changes
+
+| Permission | Change for v0.3.0 |
+| --- | --- |
+| `storage` | Add: stores a per-tab snapshot of an accepted full-stack preview (selected analysis, preview ID, target paths, status, URL, error, timestamps) in `browser.storage.session` so Stop stays available after a panel reload. No configuration values, requests or sessions. Source: `core/sidepanel/fullStackRetention.ts`. |
+| `https://api.3.34.33.24.sslip.io/*` | Add: creates, reads and stops full-stack previews (`/v1/fullstack-previews`) on the same production API. Source: `core/fullstack/apiClient.ts`. |
+| Content script `https://github.com/*/*` | Add: the action is mounted only on a verified repository overview page next to Watch/Star/Fork; subpages only report repository context. |
+| Others | Unchanged. |
+
+### Data disclosure re-check (MANUAL, Dashboard)
+
+These are working notes, not Dashboard certification. Re-check every answer
+in the live Dashboard.
+
+| Item | Note for the owner |
+| --- | --- |
+| Website content | Unchanged in kind. Full-stack requests add the selected backend path, which is public repository target metadata. |
+| User-entered configuration values (M12) | New behavior if M12 UI is shipped. Free text typed by the user is sent to the Peephole server, held in memory, and given to the repository's backend; it is not stored in extension storage or the Peephole database. Peephole asks for non-sensitive values only, but cannot prevent a user from typing personal data. Decide which live Dashboard category, if any, encompasses user-provided content, and keep `PRIVACY.md` consistent with that choice. |
+| Temporary database contents | Created and used by the repository's backend during the preview, dropped on Stop/expiry/failure. Not read by Peephole for any other purpose. |
+| Authentication, user identifier, location, user activity | No change from v0.2.0. |
+| Remote code | Still "No". Full-stack backend code runs only on the Peephole server; frontend output still loads in the cross-origin artifact iframe without extension API access. |
+| Privacy policy | `PRIVACY.md` (effective October 18, 2026 once merged) covers full-stack preview, temporary databases and configuration values. The URL tracks `main`. |
+
+### Screenshots
+
+The repository copy `store-assets/peephole-screenshot-01-1280x800.png` shows
+the v0.1.0 UI. A v0.3.0 submission needs fresh captures of the real UI:
+
+- the overview-page action next to Watch/Star/Fork;
+- the Side Panel analysis with target selection;
+- if claimed, the Full-stack preview section (backend selection and a ready
+  preview);
+- if M12 is claimed, the Environment variables list with a harmless example
+  value and the confirmation checkbox. Never show a value that looks like a
+  secret.
+
+Use exactly 1280×800 or 640×400, full bleed, with no session token, OAuth
+URL, DevTools or personal data. Light, Dark and Dark Dimmed variants are
+recommended but optional.
+
+### OAuth and extension ID
+
+The extension ID `fieofkhijgngfoflgpkbghbkaidhdgel` and the production
+`PEEPHOLE_ALLOWED_EXTENSION_IDS` entry for it are unchanged. Full-stack
+preview uses the same Peephole session. Connect GitHub from the published
+v0.3.0 package can be tested only after publication (see the OAuth section
+below).
+
+### Before submitting v0.3.0
+
+1. Final release build from the merged commit matches the recorded hash (or
+   a new build record exists for a different flag set).
+2. M12 pairing decided: Production M12 ON with the M12 UI, or a build without
+   the M12 UI.
+3. Final v0.3.0 Chrome E2E recorded for every claimed feature.
+4. `PRIVACY.md` merged and consistent with the Dashboard answers.
+5. Listing text and screenshots match the claimable features.
+6. Dashboard privacy answers, remote-code answer, category, account 2FA and
+   distribution settings re-checked by the owner.
 
 ## Listing
 

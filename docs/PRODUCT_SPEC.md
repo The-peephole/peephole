@@ -2,7 +2,7 @@
 
 ## 1. Product
 
-Peephole is a Chrome extension and isolated preview service that lets a developer inspect and preview supported public GitHub frontend repositories before cloning them.
+Peephole is a Chrome extension and isolated preview service that lets a developer inspect and preview supported public GitHub frontend repositories before cloning them. For one narrow frontend-plus-backend shape it can also run a full-stack preview.
 
 ## 2. User Problem
 
@@ -50,8 +50,11 @@ Popularity, stars, and GitHub visibility do not reduce the runtime threat model.
 ## 6. Current User Flow
 
 1. The user opens a public GitHub repository.
-2. Peephole inserts one action in the current repository header.
-3. Clicking it opens the Peephole side panel.
+2. On a verified repository overview page (`/owner/repo`), Peephole inserts
+   one action next to GitHub's Watch/Star/Fork actions. It is omitted when
+   that area is unavailable; repository subpages still supply Side Panel
+   context.
+3. Clicking it opens the Peephole side panel for that tab and repository.
 4. Peephole resolves repository identity and an immutable commit SHA.
 5. Bounded static analysis reports framework, package manager, commands, environment declarations, deployment evidence, repository structure, and blockers.
 6. A separate, bounded GitHub Deployments API lookup reports the repository's
@@ -60,9 +63,37 @@ Popularity, stars, and GitHub visibility do not reduce the runtime threat model.
 7. If the native static contract resolves to exactly one current Build Adapter,
    the user starts an isolated preview job.
 8. The panel shows job phases and then the static artifact from a dedicated
-   origin.
+   origin. A ready frame can be closed and shown again without a new job;
+   **Build again** starts a new one.
 9. If unsupported or failed, the panel shows a specific reason and never
    attempts hidden fallback execution.
+
+### Full-stack flow (feature-gated)
+
+When the extension is built with `WXT_FULLSTACK_PREVIEW_ENABLED=true` (the
+v0.3.0 candidate build), a separate **Full-stack preview** section is shown
+beside Build Preview; it never replaces it:
+
+1. The user selects a frontend target whose static analysis is eligible.
+   When the frontend and backend live in separate directories, candidates
+   can also be discovered from the repository root.
+2. The user chooses one detected backend. Candidates outside the narrow
+   `fullstack-v1` shape are listed as not eligible.
+3. The **Environment variables** list shows each declared name with its
+   source: Peephole (platform, generated secret, temporary database), the
+   user, or unsupported.
+4. With `WXT_USER_ENVIRONMENT_ENABLED=true`, text inputs appear only for
+   M12 user-configurable names. Every value plus an explicit acknowledgement
+   ("not kept secret from the preview") is required before Run.
+5. **Run full-stack preview** creates the preview. The server re-derives
+   both plans at the exact commit and remains authoritative for admission.
+6. The panel shows progress, then the full-stack preview from its own HTTPS
+   origin, with **Stop full-stack preview**.
+
+An admitted full-stack preview's controls are kept per tab in
+`browser.storage.session`, so a panel or page reload can restore status and
+Stop. Navigating away hides the panel without creating, stopping or
+reopening anything (see [Side Panel navigation lifecycle](sidepanel-navigation-lifecycle.md)).
 
 The Side Panel initially selects the repository's default branch. The user may
 choose another branch from a bounded list; Peephole resolves the selection to
@@ -105,8 +136,8 @@ branch name.
   (Express/NestJS/Fastify/Koa/Hapi framework evidence, database/server
   dependency evidence, a textually-derived and network-unverified
   entrypoint) for the repository root and a bounded set of nested
-  structure candidates; never offered as a preview target regardless of
-  execution support
+  structure candidates; never offered as a static Build Preview target; a
+  backend can only be chosen as the backend half of a full-stack preview
 - read-only environment requirement analysis: declared `.env.example`-family
   variable *names* (never values) classified as auto-configurable,
   preview-generated-secret-candidate, database-requirement,
@@ -126,8 +157,9 @@ branch name.
 - frontend ↔ backend routing (`fullstack-v1`, production-verified M9): a
   separate resource pairs one `backend-v1` runtime with one static build
   behind a single same-origin HTTPS preview, routing only `/api`/`/api/*`;
-  not the same resource as Build Preview and not offered in the extension
-  UI yet
+  not the same resource as Build Preview. At M9 it had no extension UI; the
+  feature-gated Full-stack preview section (above) is the user path in the
+  v0.3.0 candidate build
 - ephemeral generated-secret injection (M10, production-verified
   2026-09-28): within the same narrow `backend-v1`/`fullstack-v1` contract,
   Peephole may *generate* and inject values for exactly four server-only
@@ -141,6 +173,16 @@ branch name.
   separate host-local tenant cluster and delivers `DATABASE_URL` through a
   dedicated tmpfs file; never for standalone `backend-v1`, other engines or
   clients, or user-supplied database credentials
+- user-provided non-sensitive configuration (M12-A/B, D-035): for a trusted
+  `fullstack-v1` backend, values for declared names that pass the M12 policy
+  (not secret-like, database, endpoint, client-public or reserved), at most
+  16 names and 6,144 bytes; treated as public configuration because the
+  repository code and preview visitors may see them. Implemented behind
+  default-off flags (`PEEPHOLE_USER_ENVIRONMENT`,
+  `WXT_USER_ENVIRONMENT_ENABLED`); a limited Production Canary succeeded on
+  2026-10-16 and was rolled back. Not generally enabled in Production
+- static preview Close/Show, per-tab Side Panel context across navigation,
+  and overview-only repository action placement
 
 ### Recognized but not executable
 
@@ -162,8 +204,9 @@ branch name.
 - embedded remote deployed-site iframe or a proxy/fetch of a deployment URL
 - a public backend URL, hostname, or reverse proxy for the standalone
   `backend-v1` resource itself (routing is `fullstack-v1`'s job, above)
-- arbitrary or user-supplied secret/environment injection (only the four
-  M10 canonical generated-secret names above are supported)
+- arbitrary environment injection or user-supplied secrets/API keys (M12-C
+  is design-only); users may supply only M12 non-sensitive configuration,
+  and generated secrets are limited to the four M10 names
 - temporary database provisioning beyond M11's narrow PostgreSQL + `pg` +
   `DATABASE_URL` trusted-FullStack slice above
 - private repositories, Docker/Compose, or arbitrary language execution
@@ -231,7 +274,7 @@ exposes `/api/secret-check`; see docs/EPHEMERAL_SECRETS.md).
 ## 11. Product Boundary
 
 Peephole is not a universal cloud IDE. It is currently an analyzer plus a
-constrained static preview system. Broader execution is allowed only through
+constrained static preview system, with one narrow full-stack contract. Broader execution is allowed only through
 explicit later compatibility contracts, never by relaxing isolation or
 silently guessing how a repository should run.
 
@@ -250,6 +293,9 @@ silently guessing how a repository should run.
     2026-09-28, narrow four-name allowlist)
 11. temporary database support (implemented, production-verified M11,
     2026-10-07, narrow PostgreSQL + `pg` + `DATABASE_URL` slice)
+12. user-provided preview configuration (M12-A/B implemented behind
+    default-off flags; limited Production Canary 2026-10-16, then rollback;
+    general rollout not complete; M12-C design-only)
 
 Stage 8's "narrow"
 qualifier is load-bearing: it supports exactly one backend shape (Express +

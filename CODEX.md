@@ -189,6 +189,9 @@ changes it:
 11. temporary database support -- implemented; production-verified in M11,
     narrowly (PostgreSQL + `pg` + `DATABASE_URL`, trusted `fullstack-v1`
     only; see D-033)
+12. user-provided non-sensitive configuration (M12-A/B) -- implemented
+    behind default-off flags; limited Production Canary, general rollout
+    pending (see D-035); M12-C secrets are design-only
 
 Each stage must expose a reviewed contract and preserve earlier security
 boundaries. In particular, do not jump from a full-stack fixture to backend
@@ -437,10 +440,11 @@ commit: eae411a288b212201933cebb206126dd5bb0d93e
 Its `frontend`/`backend` layout is exercised as a real repository structure
 detection target (both surface as bounded project candidates), and its
 `backend` directory (Express, npm, `/health` and `/api/hello`) is the
-reference fixture for `backend-v1` execution. It is not evidence of
-full-stack routing, secrets, or database support: the frontend and backend
-are never connected to each other, and there is still no runnable
-full-stack path.
+reference fixture for `backend-v1` execution. This commit by itself is
+not evidence of full-stack routing, secrets, or database support. The
+`fullstack-v1` contract that connects a frontend to a backend is a separate,
+production-verified path (M9-M11) with its own pinned fixture commits; see
+docs/PREVIEW_RUNTIME.md and docs/TEST_PLAN.md.
 
 ## Change Procedure
 

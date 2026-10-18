@@ -1,10 +1,12 @@
 # Peephole Privacy Policy
 
-Effective date: October 7, 2026
+Effective date: October 18, 2026
 
 Peephole is a Chrome extension that analyzes public GitHub repositories and,
 when requested, builds supported static frontends in an isolated Peephole
-preview service so that you can inspect them before cloning.
+preview service so that you can inspect them before cloning. Newer versions
+can also run a narrow, supported frontend-plus-backend combination as a
+full-stack preview, described below.
 
 This policy covers the data handled by the published Peephole extension
 versions and the Peephole preview service. Some features described below exist
@@ -120,6 +122,94 @@ public-repository build output. Artifacts are made available through a
 time-limited HTTPS URL. Anyone who receives a valid artifact URL may be able to
 view it until it expires, so do not share the URL unnecessarily.
 
+## Full-stack preview
+
+Newer versions may offer a full-stack preview for a narrow supported shape: a
+Vite + React frontend and an Express backend using npm in the same public
+repository. It runs only when you choose **Run full-stack preview**, and it
+requires the same **Connect GitHub** session as a static preview.
+
+**What the extension sends.** The request contains the public repository ID,
+owner, name, exact commit SHA, the selected frontend and backend repository
+paths, and, if you entered any, the configuration name/value pairs described
+below. As for static previews, the extension never sends a command or plan;
+the server re-derives the plan from the public repository at that commit.
+
+**How it runs.** The server builds the frontend and starts the backend
+process in a separate gVisor sandbox. The backend cannot open outbound
+network connections, except to its own temporary database when one is
+provided. Requests to `/api` on the preview's HTTPS address are forwarded to
+that backend. The full-stack preview record stores the requester identifier,
+repository, commit, target paths, status, preview URL, timing, idempotency,
+and error information, like a static preview job.
+
+**Who can reach it.** Like a static artifact, the full-stack preview address
+is not limited to you. Anyone who has a valid preview URL can load the
+frontend and call the backend's `/api` routes until the preview stops or
+expires. The backend is the repository's own code, so what it returns is
+controlled by that code.
+
+**Server-generated values.** For a backend that declares them, the server may
+generate random values for exactly four names (`JWT_SECRET`,
+`SESSION_SECRET`, `COOKIE_SECRET`, `CSRF_SECRET`) and give them to that
+backend process. They are created by Peephole, not taken from you, and are
+not shown to you.
+
+**Temporary PostgreSQL database.** If the backend declares a PostgreSQL `pg`
+dependency and `DATABASE_URL`, the server creates one temporary database and
+database user for that preview on the Peephole host and gives the connection
+details only to that backend process. You never enter database credentials.
+Anything the backend, or a visitor using the preview, stores in that database
+belongs to that preview. Stopping the preview, expiry, or failure drops the
+database and its user. After a server crash, leftover temporary databases are
+removed during startup before the service accepts requests.
+
+### Configuration values you enter
+
+When a backend declares environment-variable names in a public
+`.env.example`-style template, newer versions may show text fields for some of
+those names so that you can supply **non-sensitive** configuration, such as a
+display message or a feature mode. Peephole accepts input only for names that
+do not look like secrets, credentials, database settings, network addresses,
+or browser-public build variables. Names such as API keys, passwords, tokens,
+and URLs are never given an input field. Each value is limited to 1,024 bytes
+and all values together to 6,144 bytes.
+
+These values are **not kept confidential from the preview**:
+
+- they are given to the repository's own backend code, which can read them
+  and may return them to anyone who opens the preview URL;
+- before you can run the preview, the Side Panel asks you to confirm that you
+  understand this; and
+- Peephole cannot tell whether text you type into an allowed field is a
+  secret. Do not enter API keys, passwords, tokens, or personal information.
+
+How the current implementation handles them:
+
+- **In the browser**, values stay in the Side Panel page's memory while you
+  type. They are not written to extension storage. They are cleared when the
+  server accepts the preview, and when you change the repository, commit, or
+  selected target.
+- **In transit**, they are sent over HTTPS in the full-stack preview request.
+- **On the server**, they are held in the Peephole service's process memory
+  until the backend starts. They are not written to Peephole's database, job
+  queue, or idempotency record. When the backend starts, they are written to a
+  memory-backed (tmpfs) file and passed to that backend process only. The
+  file is removed when the backend stops, and leftover files are removed by
+  periodic and startup cleanup.
+- **Unused values** are discarded when the preview is cancelled or fails, and
+  otherwise expire after the provisioning period. A server restart before the
+  backend starts discards them; the preview then fails and asks you to enter
+  them again.
+- **Logs.** Peephole's code does not write these values to its application
+  logs or error messages; errors name the variable, not its value. Peephole
+  does not record the backend process's own output.
+
+These describe the current implementation; they are not a guarantee that a
+value can never be exposed. In particular, the repository's code, anyone with
+the preview URL, and your own browser profile (including other extensions or
+developer tools with access to the page) may be able to see what you enter.
+
 ## Local and server-side storage
 
 The extension keeps repository analysis, branch, deployment, and metadata
@@ -129,9 +219,15 @@ short-lived Peephole session in `browser.storage.session`. Newer versions also
 store the GitHub theme snapshot described above in `browser.storage.session`,
 keyed by browser tab. That snapshot is user-interface state, not a credential,
 and the browser clears session storage when the browser session ends.
+Versions with full-stack preview also keep, per browser tab, a snapshot of an
+accepted full-stack preview in `browser.storage.session`: the analysis of the
+selected public repository target and the preview's ID, target paths, status,
+URL, error, and timestamps. This lets you stop or reopen the preview after the
+panel reloads. It does not include configuration values, the request, or the
+Peephole session.
 
-The production service stores preview job, queue, cache, quota, and artifact
-authorization metadata in PostgreSQL. It stores generated static artifacts on
+The production service stores preview job, full-stack preview, queue, cache,
+quota, and artifact authorization metadata in PostgreSQL. It stores generated static artifacts on
 the production host. Temporary source archives, workspaces, containers, and
 network resources are job resources and are cleaned up after execution, with
 ownership-aware recovery for interrupted jobs.
@@ -143,6 +239,9 @@ The implementation provides the following operational expiration boundaries:
 - signed OAuth state normally expires after 10 minutes;
 - Peephole access sessions normally expire after 30 minutes;
 - active preview jobs initially have a 15-minute execution expiry; and
+- full-stack previews are time-limited; stopping or expiry ends the backend
+  and removes its temporary database, configuration file, and sandbox
+  resources;
 - ready preview artifacts and their artifact authorization are normally valid for up to
   60 minutes. Expired artifact files and authorization metadata are processed
   by periodic maintenance; unsigned orphan artifact directories use a two-hour
