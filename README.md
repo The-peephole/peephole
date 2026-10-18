@@ -13,15 +13,13 @@
 </p>
 
 <p align="center">
-  <a href="https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel">Install Peephole 0.1.0 from the Chrome Web Store</a>
+  <a href="https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel">Chrome Web Store</a>
+  ·
+  <a href="https://github.com/The-peephole/peephole/releases/latest">Latest GitHub Release</a>
 </p>
 
 <p align="center">
-  <sub>The Chrome Web Store currently publishes 0.1.0. Peephole <a href="https://github.com/The-peephole/peephole/releases/tag/v0.2.0">v0.2.0 is released on GitHub</a> and has been submitted to the Chrome Web Store for review; it is not yet available from the Store. See the <a href="docs/RELEASE_V0.2.0.md">v0.2.0 release record</a>.</sub>
-</p>
-
-<p align="center">
-  Peephole analyzes supported public repositories, builds eligible static frontends in an isolated production sandbox, and renders the HTTPS artifact in a Chrome Side Panel.
+  Peephole analyzes supported public GitHub repositories before you clone them, previews eligible static frontends, and runs full-stack previews for a narrow supported frontend + backend shape. Untrusted code runs only in isolated gVisor sandboxes, and the result opens over HTTPS in a Chrome Side Panel.
 </p>
 
 <p align="center">
@@ -34,42 +32,68 @@
   <img
     src="image/peephole-demo.gif"
     width="960"
-    alt="Peephole analyzing a GitHub repository and displaying its production preview in the Side Panel"
+    alt="Peephole analyzing a GitHub repository and displaying a static production preview in the Side Panel"
   />
 </p>
 
 <p align="center">
-  <em>Analyze the repository, build its exact commit in an isolated gVisor sandbox, and preview the result directly from GitHub.</em>
+  <em>Static preview demo: analyze the repository, build its exact commit in an isolated gVisor sandbox, and preview the result directly from GitHub. Full-stack preview is not shown in this recording.</em>
 </p>
 
 ## Why Peephole?
 
-Understanding a frontend repository often starts with cloning it, inspecting `package.json`, installing dependencies, finding the right command, and then discovering that it needs secrets, a backend, or unsupported tooling.
+Understanding a repository often starts with cloning it, inspecting `package.json`, installing dependencies, finding the right command, and then discovering that it needs secrets, a backend, or unsupported tooling.
 
-Peephole performs bounded repository analysis first. It identifies the framework, package manager, build plan, preview eligibility, and any blockers or warnings. Only repositories that satisfy the supported static-preview contract proceed to an isolated build; everything else remains analysis-only with a clear explanation.
+Peephole performs bounded repository analysis first. It identifies the framework, package manager, build plan, preview eligibility, and any blockers or warnings. Only targets that satisfy a supported preview contract -- a static frontend, or the narrow full-stack shape -- proceed to isolated execution; everything else remains analysis-only with a clear explanation.
 
 ## Features
 
 | Capability | What Peephole does |
 | --- | --- |
 | Repository analysis | Detects framework, package manager, build plan, blockers, and warnings from known repository files. |
-| Repository structure detection | Describes layout and bounded project candidates; explicit frontend selection triggers separate target analysis before any build. |
+| Structure and target detection | Analyzes the repository root and bounded nested directories, lists frontend and backend candidates, lets you choose a supported one, and explains why other candidates are not eligible. |
 | Branch selection | Lets you pick any branch from a bounded list; the selection is resolved to its exact commit SHA before analysis. |
 | Commit-pinned previews | Resolves and builds an exact Git commit instead of trusting a mutable branch tip. |
-| Clear eligibility | Distinguishes previewable repositories from unsupported projects before execution. |
+| Static preview | Builds a supported static frontend in isolation and shows it from an isolated HTTPS origin in the Side Panel; a ready preview can be closed and shown again, and an expired one offers **Build again**. |
+| Full-stack preview | Runs a supported Vite + React frontend and Express + npm backend behind one HTTPS preview origin, routing only `/api` to the backend; start with **Run full-stack preview** and end with **Stop full-stack preview**. |
+| Temporary PostgreSQL | For a supported full-stack backend that declares exactly `pg` and `DATABASE_URL`, provisions a preview-only database and role and removes them on stop or after a crash. |
+| Non-sensitive configuration (M12) | Reads configuration *names* from `.env.example`-family files, lets you enter non-sensitive values before the run, and delivers them only to that preview's runtime. Secrets and API keys are not accepted. |
+| Preview continuity | Keeps a running full-stack preview's workspace and controls while you switch targets or branches, and restores the Side Panel context and saved previews as you move between supported GitHub pages. |
+| GitHub integration | Opens from the repository overview's action area, follows your GitHub navigation, and matches GitHub Light, Dark, Dark Dimmed, or compatible Primer themes. |
 | GitHub identity | Uses GitHub App OAuth; the extension stores only a short-lived Peephole session. |
-| GitHub-aware theme | Matches the current GitHub Light, Dark, Dark Dimmed, or compatible Primer semantic theme in both the repository action and Side Panel. |
-| Isolated builds | Runs untrusted install and build work as a non-root user inside gVisor with resource and network controls. |
-| Side Panel delivery | Publishes static output over an isolated HTTPS origin and embeds it in Chrome's Side Panel. |
+| Isolated execution | Runs untrusted install, build, and backend work as a non-root user inside gVisor with resource and network controls. |
+
+## Version History
+
+| Version | Key Features |
+| --- | --- |
+| v0.1.0 | GitHub repository analysis, static frontend preview, Chrome Side Panel |
+| v0.2.0 | Branch selection, repository structure detection, frontend target selection, GitHub theme synchronization, deployment evidence |
+| v0.3.0 | Fullstack Preview, temporary PostgreSQL integration, non-sensitive environment configuration (M12), Side Panel navigation and preview restoration, workspace and UI/UX improvements |
+
+The latest published version can differ between distribution channels; check each link above for the version you would install.
 
 ## How it works
 
-1. Open a public GitHub repository.
-2. Open Peephole from the repository page.
-3. Review the detected stack, build plan, blockers, and preview eligibility.
-4. Connect GitHub and start a preview build when the repository is supported.
-5. Peephole verifies and builds the exact commit inside an isolated gVisor sandbox.
-6. The generated static app appears in the Side Panel over HTTPS.
+### Static preview
+
+1. Open a public GitHub repository and choose Peephole in the repository's action area.
+2. Review the detected stack, structure, build plan, blockers, and eligibility in the Side Panel.
+3. Connect GitHub, then select **Build preview** for a supported target.
+4. Peephole verifies the exact commit and builds it inside an isolated gVisor sandbox.
+5. The static app appears in the Side Panel over HTTPS; you can close it and show it again.
+
+### Full-stack preview
+
+Available only for repositories that match the supported full-stack shape (see [Supported projects](#supported-projects)).
+
+1. Open the repository and the Peephole Side Panel.
+2. Review the frontend and backend candidates detected from the repository root or nested directories.
+3. Choose a supported frontend and backend.
+4. If the backend declares non-sensitive configuration names, enter their values under **Environment variables**.
+5. Connect GitHub if prompted, then select **Run full-stack preview**.
+6. Use the frontend and its `/api` backend on one HTTPS preview origin.
+7. Select **Stop full-stack preview** when you are done.
 
 ## Architecture
 
@@ -86,14 +110,19 @@ flowchart LR
     subgraph Control["Control Plane"]
         API[Preview API]
         DB[(PostgreSQL)]
+        ORCH[Full-stack orchestration]
         API <--> DB
+        API --> ORCH
     end
 
-    subgraph Sandbox["Untrusted Build Sandbox"]
-        WORKER[gVisor worker]
+    subgraph Sandbox["Untrusted gVisor Sandboxes"]
+        WORKER[Static build worker]
+        BACKEND[Backend runtime]
     end
 
-    subgraph Delivery["Artifact Delivery"]
+    TENANT[(Temporary PostgreSQL)]
+
+    subgraph Delivery["Preview Delivery"]
         ART[Artifact host + Caddy]
     end
 
@@ -101,10 +130,14 @@ flowchart LR
     DB -->|Lease job| WORKER
     WORKER -->|Status and cache metadata| DB
     WORKER -->|Publish static files| ART
+    ORCH -->|Frontend build| WORKER
+    ORCH -->|Start backend| BACKEND
+    BACKEND -.->|Per-preview database| TENANT
+    ART -->|/api routes| BACKEND
     ART -->|Isolated HTTPS origin| PANEL
 ```
 
-The extension is a controller and presentation surface; repository source is executed only inside the untrusted build boundary. The server independently verifies repository identity, commit, and build eligibility before a job reaches the worker.
+The extension is a controller and presentation surface; repository source is executed only inside the untrusted sandbox boundary. The server independently verifies repository identity, commit, and eligibility before a job reaches a worker. A full-stack preview reuses the static build path for its frontend, starts its backend in a separate sandbox, and serves both from one origin where only `/api` reaches the backend. Server-generated secrets (M10), the temporary database URL (M11), and user-provided non-sensitive configuration (M12) are separate delivery paths, not one general secret-injection mechanism.
 
 ## Security model
 
@@ -118,15 +151,15 @@ The extension is a controller and presentation surface; repository source is exe
 - Build networking is disabled, while install networking blocks private, link-local, metadata, host, and inter-job destinations.
 - Preview artifacts are served from isolated origins without extension or control-plane privileges.
 - Disk, network, and sandbox ownership is durably recorded and reconciled after crashes.
+- Full-stack backends run in their own gVisor sandbox with outbound access denied (except the preview's own temporary database), and their runtime has no public URL.
+- M10, M11, and M12 material is delivered through separate memory-backed files at backend start, never through OCI `process.env`.
+- M12 values are treated as public configuration: repository code and preview visitors can read them, so only non-sensitive names are accepted.
 
 Implementation details and residual risks are documented in [Preview runtime](docs/PREVIEW_RUNTIME.md), [Sandbox disk security](docs/SANDBOX_DISK_SECURITY.md), and [Sandbox network security](docs/SANDBOX_NETWORK_SECURITY.md).
 
 ## Current verification
 
-Peephole's static-preview production path runs on AWS EC2 Ubuntu and has been
-exercised end to end through the Chrome extension. These are recorded
-environment-specific validations; they are not re-established by a
-documentation-only change.
+Peephole's production path runs on AWS EC2 Ubuntu. The static preview has been exercised end to end through the Chrome extension; the full-stack path through the extension has so far been exercised only in the limited M12 Canary below. These are recorded, environment-specific validations; they are not re-established by a documentation-only change.
 
 | Validation | Recorded result |
 | --- | --- |
@@ -143,12 +176,14 @@ documentation-only change.
 | `fullstack-v1` frontend ↔ backend routing (M9) | An authenticated preview reached `ready`; its HTTPS origin served the frontend and routed `/api/hello` to the real backend |
 | Restart fail-closed (M9) | A `peephole` restart while a preview was `ready` invalidated it and left zero runsc/network residue; backend coordinates were never reconstructed |
 | GitHub upstream availability / rate limit (PR #22, M9) | A server-owned `PEEPHOLE_GITHUB_TOKEN` was configured and verified at 5000 req/hour (from 60/hour unauthenticated) without printing the credential |
+| Generated secrets (M10, 2026-09-28) | Production-verified for the four-name allowlist |
+| Temporary PostgreSQL (M11, 2026-10-07) | Production-verified: a database-backed full-stack preview, a database and role per preview, and revocation on stop |
+| M12 real gVisor (2026-10-13, `5ed0f92`) | 12/12 lifecycle cases passed on a dedicated Linux host; later corrections are portable-verified only |
+| M12 limited Production Canary (2026-10-16, `aa26a11`) | Through the Chrome extension, a full-stack preview ran with a working frontend and backend, delivered and displayed the synthetic `APP_GREETING` value, and stopped normally; tenant and host residue was zero; the server was then rolled back to the Stable build with M12 OFF. The extension used was a pre-v0.3.0 test build, not the final v0.3.0 artifact. |
 
-The four M9 rows above were verified directly against the production API and
-host, not through the Chrome extension (there is no extension UI for
-`backend-v1`/`fullstack-v1` yet). Environment-gated real gVisor tests are run
-separately on the production-like Linux host; they are intentionally not
-part of portable CI.
+The four M9 rows were verified directly against the production API and host, because at that time the extension had no UI for `backend-v1`/`fullstack-v1`; the v0.3.0 candidate build includes the full-stack control. Environment-gated real gVisor tests are run separately on a production-like Linux host; they are intentionally not part of portable CI.
+
+Not yet complete: an end-to-end run of the final v0.3.0 extension against Production; the current-candidate Linux lifecycle and isolated-journal checks (B1) and an actual server-crash recovery check with M12 (B2), whose test harnesses exist but have not been run on a real host; the provisioning-credential incident (B3); and the general Production M12 rollout. See [M12 Canary closure and release gates](docs/M12_PRODUCTION_CANARY_20261016.md).
 
 On `main`, the manually dispatched
 [`Real golden-path build tests`](https://github.com/The-peephole/peephole/actions/runs/35069679620)
@@ -161,38 +196,24 @@ smoke described in [Production smoke verification](docs/PRODUCTION_SMOKE.md).
 
 | Level | Current scope |
 | --- | --- |
-| Production execution | Static HTML at the repository root; root or explicitly selected nested Vite + React targets using npm and a target-local `package-lock.json` |
-| Analysis recognition only | Vue/Svelte Vite, other package managers, backend hints, and monorepo ambiguity; these do not produce runnable plans |
-| Existing deployment handling | A bounded GitHub Deployments API lookup surfaces a repository's confirmed live deployment (if any) as an external link, separate from its declared homepage; neither is embedded, probed, or proxied |
-| Branch selection | Any branch from a bounded (up to 100) list can be selected; it is resolved to an exact commit SHA before analysis, build plan, and preview job creation |
-| Repository structure detection | Reports layout and bounded project-candidate paths; detected frontend candidates can be explicitly selected and receive a separate exact-SHA target analysis |
-| Backend detection | Bounded, read-only evidence (framework, database dependency, unverified entrypoint) for root and nested candidates; never offered as a preview target regardless of execution support |
-| Environment requirement analysis | Classifies declared `.env.example`-family variable *names* only (never a value) as auto-configurable/preview-generated/database/external-routing/user-required/unknown; analysis itself never generates, injects, or requests a value -- for the narrow `preview-generated-candidate` class, generation happens later and separately, at `backend-v1`/`fullstack-v1` runtime creation (see the M10 row below), never during analysis |
-| Backend execution (`backend-v1`) | The narrow Express + npm runtime is implemented, wired into production, and real-gVisor-verified; the extension UI is still disabled by default (no Build Preview option), and the runtime resource itself never gets a public URL |
-| Frontend ↔ backend routing (`fullstack-v1`) | Implemented and production-verified: a separate resource pairs one `backend-v1` runtime with one static build behind a single same-origin HTTPS preview, routing only `/api`/`/api/*`; the separate extension control is build-time opt-in with `WXT_FULLSTACK_PREVIEW_ENABLED=true` |
-| Ephemeral generated secrets (M10) | Implemented and production-verified (2026-09-28): within the same narrow `backend-v1`/`fullstack-v1` contract, Peephole may *generate* and inject values for exactly four server-only names -- `JWT_SECRET`, `SESSION_SECRET`, `COOKIE_SECRET`, `CSRF_SECRET` -- outside the OCI `process.env`/`config.json` path, via a tmpfs-backed bind mount and trusted bootstrap; available only through the feature-gated full-stack control |
-| Temporary PostgreSQL (M11) | Implemented and production-verified (2026-10-07): for a trusted `fullstack-v1` preview whose `express-node-npm-v1` backend declares exactly `pg` and `DATABASE_URL`, Peephole provisions one temporary PostgreSQL database and `pv_*` role in a separate host-local tenant cluster, delivers `DATABASE_URL` through a dedicated tmpfs file (never OCI `process.env`), allows network access to that one database endpoint only, and revokes the database and role on stop or after a crash; standalone `backend-v1` database admission stays denied; available only through the feature-gated full-stack control |
-| User-provided configuration (M12 A/B) | IMPLEMENTED / PORTABLE_VERIFIED; REAL_GVISOR_VERIFIED at `5ed0f92` (2026-10-13: 306 host checks, E 5/5 + G 6/6 + H2/H3 1/1 = 12/12 PASS). The later concurrent-exit fix is portable-verified only, pending Linux lifecycle recheck. Default-off; NOT DEPLOYED. Actual PostgreSQL connectivity, H1 SIGKILL and Chrome E2E remain NOT_VERIFIED. Non-sensitive, repository-declared names only, trusted `fullstack-v1`; secrets/API keys remain M12-C -- see docs/USER_PROVIDED_ENVIRONMENT.md |
-| Not implemented | Shared-root workspace orchestration, any backend outside that one narrow shape, arbitrary or user-supplied secret provisioning (including external API keys), any database engine/client/variable other than PostgreSQL + `pg` + `DATABASE_URL`, user-supplied database credentials, private repositories, and arbitrary Dockerfiles/languages |
+| Static preview | Static HTML at the repository root; root or explicitly selected nested Vite + React targets using npm and a target-local `package-lock.json` |
+| Full-stack preview (`fullstack-v1`) | One supported Vite + React + npm frontend and one Express + npm backend (`express-node-npm-v1`, target-local lockfile) in separate directories, detected from the repository root or nested directories; one same-origin HTTPS preview routes only `/api`/`/api/*` to the backend, whose own runtime has no public URL; platform variables are fixed to `PORT`/`HOST`/`NODE_ENV` |
+| Full-stack additions | Each has its own delivery path. M10: the server generates values for exactly `JWT_SECRET`, `SESSION_SECRET`, `COOKIE_SECRET`, `CSRF_SECRET`. M11: a temporary PostgreSQL database when the backend declares exactly `pg` and `DATABASE_URL`. M12: values you enter for non-sensitive, repository-declared names, when both the server and the extension build enable it -- see [User-provided environment](docs/USER_PROVIDED_ENVIRONMENT.md) |
+| Analysis and selection | Branch selection from a bounded list (up to 100), resolved to an exact commit; structure and frontend/backend candidate detection; backend evidence (framework, database dependency, unverified entrypoint); `.env.example`-family variable *names* classified without reading values; a confirmed GitHub Deployments link, shown separately from the declared homepage and never embedded or proxied |
+| Analysis only | Vue/Svelte Vite, other package managers, monorepo ambiguity, and backends outside the supported shape; these do not produce runnable plans |
+| Not supported | Shared-root workspace orchestration (separate frontend/backend directories found from the root are supported; one shared workspace is not), any other backend runtime, any database other than PostgreSQL + `pg` + `DATABASE_URL`, user-supplied database credentials, user-provided secrets or API keys (M12-C is design-only), private repositories, and arbitrary Dockerfiles/languages |
 
-Analysis support is broader than production execution support. The official
-Vite + React golden path is
+Analysis support is broader than execution support. The official Vite + React
+golden path is
 [`The-peephole/peephole-fixture-vite-react`](https://github.com/The-peephole/peephole-fixture-vite-react)
 at commit `4a2c3b78e15d90865ed565c3d38c4045b5a5235f` (repository id
-`1371620276`). The separate
+`1371620276`). The
 [`peephole-fixture-fullstack`](https://github.com/The-peephole/peephole-fixture-fullstack)
-at `eae411a288b212201933cebb206126dd5bb0d93e` proves the bounded
-frontend-only nested target path: its `frontend` directory is independently
-installable and buildable as a plain (static-only) Build Preview, and in
-that path its `backend` directory (Express, npm, `/health` and `/api/hello`
-routes) is not started and not routed, so a rendered `/api/hello` request
-under plain Build Preview still fails by design. The same `backend` directory
-is also the pinned fixture for the separate `backend-v1`/`fullstack-v1`
-production contract (see [Preview runtime](docs/PREVIEW_RUNTIME.md)), where
-it is production-verified: `/api/hello` does resolve to a real `backend-v1`
-runtime when created as a `fullstack-v1` preview, which is not the same
-resource as frontend Build Preview and is not yet offered in the extension
-UI.
+repository covers both paths: built as a plain static Build Preview of its
+`frontend` directory (commit `eae411a288b212201933cebb206126dd5bb0d93e`), the
+`backend` is neither started nor routed, so `/api/hello` fails by design; as a
+`fullstack-v1` preview, `/api` reaches the real backend. The M12 Canary used
+commit `90afaa0c3f650744300afc5d8fed00fd4a0ef5c8`.
 
 ## Local development
 
@@ -226,24 +247,9 @@ The local preview worker is deliberately unsandboxed and must only build source 
 
 The production static-preview foundation, GitHub theme synchronization,
 Branch Preview, repository/application structure detection, the explicit
-Build Adapter architecture, bounded frontend target selection, existing
-deployed-site Live Preview, backend detection + environment requirement
-analysis, the narrow backend execution (`backend-v1`) contract,
-frontend/backend routing (`fullstack-v1`), ephemeral generated secrets for
-a narrow four-name allowlist (M10), and narrow temporary PostgreSQL support
-(M11) are implemented and production-verified (M9 for stages 8-9,
-2026-09-28 for stage 10, 2026-10-07 for stage 11). Nested build execution
-remains limited to independently installable React + Vite + npm targets with
-a target-local lockfile. Backend execution is limited to one narrow adapter:
-Express + npm + lockfile, with `BackendRuntimePlan.platformEnvironment`
-fixed to exactly `PORT`/`HOST`/`NODE_ENV`. Separately, exactly four
-server-generated names are supported through M10's own
-`generatedSecretNames` path, and exactly one `pg` dependency plus
-`DATABASE_URL` is supported, for trusted `fullstack-v1` previews only,
-through M11's server-owned temporary database lifecycle -- see "Supported
-projects" above. The standalone `backend-v1` resource
-itself still has no public URL -- routing is the separate `fullstack-v1`
-resource's job. None of these has an extension-side Build Preview UI yet.
+Build Adapter architecture, bounded frontend target selection, and existing
+deployed-site Live Preview are implemented. Exact scope is listed in
+[Supported projects](#supported-projects).
 
 4. Build Adapter generalization (implemented)
 5. frontend target selection / bounded frontend monorepo support (implemented)
@@ -251,24 +257,25 @@ resource's job. None of these has an extension-side Build Preview UI yet.
 7. backend detection + environment requirement analysis (implemented)
 8. backend-v1 execution foundation implemented; production-verified in M9
 9. frontend ↔ backend routing; production-verified in M9
-10. ephemeral env / secrets; implemented and production-verified in M10-C4B
-    (2026-09-28), narrowly, for exactly four canonical generated-secret names
+10. ephemeral generated secrets; implemented and production-verified in M10-C4B
+    (2026-09-28), narrowly, for exactly four canonical names
 11. temporary database support; implemented and production-verified in M11
     (2026-10-07), narrowly, for PostgreSQL + `pg` + `DATABASE_URL` in trusted
     `fullstack-v1` previews
+12. user-provided non-sensitive configuration (M12-A/B); implemented, with a
+    limited Production Canary on 2026-10-16 followed by rollback; general
+    Production rollout (M12 ON) is not complete
 
-Stage 10 is implemented and production-verified, narrowly: Peephole may
-*generate* and inject values for exactly `JWT_SECRET`/`SESSION_SECRET`/
-`COOKIE_SECRET`/`CSRF_SECRET`; arbitrary/user-supplied secrets remain
-unsupported. Stage 11 is implemented and production-verified, narrowly:
-`fullstack-v1` only, `express-node-npm-v1` only, `pg` only, `DATABASE_URL`
-only, with a server-owned temporary database and role per preview -- see
-D-033 and docs/TEMPORARY_DATABASES.md. It is not support for arbitrary
-databases, backends, or environment variables. Separate operational debt
-includes
-accessibility review, production observability, automated production-smoke
-orchestration, tighter install-stage package egress, and the
-production-like malicious-script run.
+v0.3.0 is in release preparation. Its release gates for the current-candidate
+Linux lifecycle (B1), actual server-crash recovery (B2), and the
+provisioning-credential incident (B3) remain open, and none is recorded as
+passed; see [M12 Canary closure and release gates](docs/M12_PRODUCTION_CANARY_20261016.md).
+These capabilities are narrow; they are not support for arbitrary backends,
+databases, secrets, or environment variables (see D-033, D-035,
+docs/TEMPORARY_DATABASES.md, and docs/USER_PROVIDED_ENVIRONMENT.md). Separate
+operational debt includes accessibility review, production observability,
+automated production-smoke orchestration, tighter install-stage package
+egress, and the production-like malicious-script run.
 
 ## Documentation
 
