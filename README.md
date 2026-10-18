@@ -13,11 +13,9 @@
 </p>
 
 <p align="center">
-  <a href="https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel">Install Peephole 0.1.0 from the Chrome Web Store</a>
-</p>
-
-<p align="center">
-  <sub>The Chrome Web Store currently publishes 0.1.0. Peephole <a href="https://github.com/The-peephole/peephole/releases/tag/v0.2.0">v0.2.0 is released on GitHub</a> and has been submitted to the Chrome Web Store for review; it is not yet available from the Store. See the <a href="docs/RELEASE_V0.2.0.md">v0.2.0 release record</a>.</sub>
+  <a href="https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel">Chrome Web Store</a>
+  ·
+  <a href="https://github.com/The-peephole/peephole/releases/latest">Latest GitHub Release</a>
 </p>
 
 <p align="center">
@@ -61,6 +59,16 @@ Peephole performs bounded repository analysis first. It identifies the framework
 | GitHub-aware theme | Matches the current GitHub Light, Dark, Dark Dimmed, or compatible Primer semantic theme in both the repository action and Side Panel. |
 | Isolated builds | Runs untrusted install and build work as a non-root user inside gVisor with resource and network controls. |
 | Side Panel delivery | Publishes static output over an isolated HTTPS origin and embeds it in Chrome's Side Panel. |
+
+## Version History
+
+| Version | Key Features |
+| --- | --- |
+| v0.1.0 | GitHub repository analysis, static frontend preview, Chrome Side Panel |
+| v0.2.0 | Branch selection, repository structure detection, frontend target selection, GitHub theme synchronization, deployment evidence |
+| v0.3.0 | Fullstack Preview, temporary PostgreSQL integration, non-sensitive environment configuration (M12), Side Panel navigation and preview restoration, workspace and UI/UX improvements |
+
+The latest published version can differ between distribution channels; check each link above for the version you would install.
 
 ## How it works
 

@@ -13,11 +13,9 @@
 </p>
 
 <p align="center">
-  <a href="https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel">Chrome Web Store에서 Peephole 0.1.0 설치</a>
-</p>
-
-<p align="center">
-  <sub>Chrome Web Store에 현재 게시된 버전은 0.1.0입니다. Peephole <a href="https://github.com/The-peephole/peephole/releases/tag/v0.2.0">v0.2.0은 GitHub에 릴리스</a>되었고 Chrome Web Store 심사를 위해 제출된 상태이며, 아직 Store에서는 설치할 수 없습니다. 자세한 내용은 <a href="docs/RELEASE_V0.2.0.md">v0.2.0 릴리스 기록</a>을 참고하세요.</sub>
+  <a href="https://chromewebstore.google.com/detail/peephole/fieofkhijgngfoflgpkbghbkaidhdgel">Chrome Web Store에서 설치</a>
+  ·
+  <a href="https://github.com/The-peephole/peephole/releases/latest">최신 GitHub 릴리스</a>
 </p>
 
 <p align="center">
@@ -61,6 +59,16 @@ Peephole은 먼저 범위가 제한된 저장소 분석을 수행합니다. 프�
 | GitHub 테마 연동   | 저장소 페이지의 Peephole 버튼과 사이드 패널 모두 현재 GitHub Light, Dark, Dark Dimmed 또는 호환되는 Primer 시맨틱 테마에 맞춰집니다.   |
 | 격리 빌드          | 신뢰할 수 없는 설치·빌드 작업을 gVisor 안에서 non-root 사용자로, 리소스와 네트워크를 제한한 채 실행합니다.                             |
 | 사이드 패널 표시   | 정적 결과물을 격리된 HTTPS 오리진으로 게시하고 Chrome 사이드 패널에 표시합니다.                                                        |
+
+## 버전별 주요 기능
+
+| 버전   | 주요 기능                                                                                                                       |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| v0.1.0 | GitHub 저장소 분석, 정적 프론트엔드 미리보기, Chrome 사이드 패널                                                                |
+| v0.2.0 | 브랜치 선택, 저장소 구조 탐지, 프론트엔드 대상 선택, GitHub 테마 연동, 배포 기록 확인                                           |
+| v0.3.0 | 풀스택 미리보기, 임시 PostgreSQL 연동, 민감하지 않은 환경 설정(M12), 사이드 패널 탐색 및 미리보기 복원, 작업 공간 및 UI/UX 개선 |
+
+배포 채널마다 최신 공개 버전이 다를 수 있으니, 실제로 설치되는 버전은 위 각 링크에서 확인하세요.
 
 ## 동작 방식
 
