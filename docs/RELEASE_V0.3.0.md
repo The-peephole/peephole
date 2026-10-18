@@ -2,11 +2,12 @@
 
 | Channel | Status |
 | --- | --- |
-| GitHub release | **PENDING.** No `v0.3.0` tag or GitHub Release exists yet. The version metadata was merged by PR #69 as `d88219b2bd751ba064a8be28dffecefdc4b7432c`. |
+| GitHub release | **PENDING.** No `v0.3.0` tag or GitHub Release exists yet. The version metadata was merged by PR #69 as `d88219b2bd751ba064a8be28dffecefdc4b7432c`; the release commit is `d6bd6c39309233772465759dfb509ef91ff147ba` (PR #70, documentation only, on top of it). |
 | Chrome Web Store submission | **PENDING.** v0.3.0 has not been uploaded or submitted. |
 | Chrome Web Store public version | **UNKNOWN.** The last repository record ([RELEASE_V0.2.0.md](RELEASE_V0.2.0.md)) says v0.2.0 was submitted and under review while the public version was 0.1.0. No later observation of the public listing version is recorded here. |
-| Production backend | **Stable, M12 OFF (last recorded state).** The 2026-10-16 record is Stable `87d691e5f712f00022bceaea3986fbc64feb992b` with M12 OFF after the Canary rollback. No later Production observation was made for this record. |
+| Production backend | **Stable, M12 OFF.** Observed read-only on 2026-10-18: Stable `87d691e5f712f00022bceaea3986fbc64feb992b`, M12 OFF, the same service process as after the 2026-10-16 rollback (see [Production read-only preflight](#production-read-only-preflight-2026-10-18)). v0.3.0 is not deployed. |
 | Formal M12 activation | **PENDING.** Not performed. |
+| B1/B2/B3 risk acceptance | **RISK_ACCEPTANCE_PENDING.** See [RELEASE_V0.3.0_RISK_REVIEW.md](RELEASE_V0.3.0_RISK_REVIEW.md). |
 
 This record was written while v0.3.0 is a release candidate. The v0.1.0 and
 v0.2.0 records are kept unchanged in [RELEASE_V0.1.0.md](RELEASE_V0.1.0.md)
@@ -30,7 +31,8 @@ Status meanings:
 
 v0.2.0 (`c0de1208c9273b8123c44d329823437cbc1edabd`) to the merged release
 commit (`d88219b2bd751ba064a8be28dffecefdc4b7432c`) is 25 commits and 165
-changed files. Of those, 37 changed files are under the extension source
+changed files. The release commit `d6bd6c3` adds one more commit (PR #70) that
+changes documentation only. Of those, 37 changed files are under the extension source
 paths (`entrypoints/`, `components/`, `core/`, `types/`, `utils/`, `public/`
 and `wxt.config.ts`). The rest are server/runtime, tests, docs and tooling.
 
@@ -140,6 +142,7 @@ This record does not choose between them.
 | Item | Status | Evidence |
 | --- | --- | --- |
 | Release PR | PASS | PR #69 squash-merged as `d88219b2bd751ba064a8be28dffecefdc4b7432c` on 2026-10-18. |
+| Release commit | PASS | `d6bd6c39309233772465759dfb509ef91ff147ba` (main after PR #70). `git diff 1768d57 d6bd6c3` changes only Markdown files. |
 | Package version | PASS | `package.json` and the `package-lock.json` root package are `0.3.0` at the merged commit. |
 | Manifest version | PASS | `wxt.config.ts` is `0.3.0` at the merged commit. |
 | Candidate extension source | RECORDED | Built locally from release branch commit `1768d57` (base `dc2381f93ddb2ea4751ab2d73ef8b7eb13a0d50c` plus the version bump), on Windows 11, Node `v24.12.0`, npm `11.6.2`, WXT `0.21.4`. |
@@ -149,8 +152,9 @@ This record does not choose between them.
 | Candidate ZIP | RECORDED | `peephole-0.3.0-chrome.zip`, 234,353 bytes, SHA-256 `593d621292442ef7da11a02a8aa7fb4672d9166617130c39cc7e21ed09023fe4`. A clean rebuild from the same source reproduced the same tree digest and ZIP hash. The ZIP is kept outside the repository and is not committed. |
 | Bundle flag check | RECORDED | Full-stack endpoint paths and the M12/Close-preview UI strings are present; backend-runtime and gateway paths are absent. A flags-off build lacks the full-stack paths. |
 | Bundle secret scan | RECORDED | No secret-shaped strings were found in the candidate bundle. |
-| Final release build from `d88219b` | **PENDING** | Required before tagging, as in v0.2.0: a clean worktree at the merged commit, `npm ci`, format, lint, typecheck, tests, build and zip with the same variables. Expected result is the recorded tree digest and ZIP hash. Do not attach or submit the candidate ZIP until this matches. |
-| Production deploy/rollback package | **PENDING** | A local package exists with the release SHA unpinned (`PENDING_MERGE`). It must be pinned to `d88219b` with its own checks before any Production use. Not part of this repository. |
+| Final release build from `d6bd6c3` | PASS (2026-10-18) | Clean detached worktree with no `.env`, Node `v24.12.0`, npm `11.6.2`, the same public variables (`WXT_GITHUB_GATEWAY_ENABLED` unset, no `PEEPHOLE_*` variables). `npm ci` (lockfile unchanged), format, lint and typecheck PASS; portable tests 149 files passed / 17 skipped, 3,165 tests passed / 150 skipped; build and zip PASS. Tree digest `cf40511c…a730e` (14 files) and ZIP SHA-256 `593d6212…3fe4` (234,353 bytes) are **identical** to the candidate (`cmp` byte-identical, `diff -r` identical). The final ZIP is kept outside the repository and is not committed. |
+| Final manifest and bundle | PASS (static bundle evidence only) | MV3, version `0.3.0`; permissions, host permissions, CSP, content-script and web-accessible scope equal to the v0.2.0 record. Full-stack, M12, R2/R3/R4 strings present; backend-runtime, gateway and local API paths absent; 12 secret patterns 0 matches. This is not a Production E2E. |
+| Production deploy/rollback package | PINNED (local, not executed) | Pinned with `pin_release_sha.py` to `d6bd6c3`: `onMain: true`, dependency difference limited to root `version` metadata, Canary bootstrap byte-identical, version `0.3.0`; only the `SHA_NEW` line of the activate and rollback steps changed. Package tests 34/34 OK, 0 skipped. Step SHA-256: activate `86843afb2a5fc3b1e13be3ae512797dae1fa4d5dbb18f62b5aeca191951a88ae`, rollback `656183851994534745b903a7acf9069fcc422d2bf0cbbb9385d8ca21bd8eda70`; context, inventory and rootfs steps unchanged from the Canary. Not part of this repository. |
 
 ### Generated manifest comparison with v0.2.0
 
@@ -174,6 +178,7 @@ build.
 
 | Item | Status | Evidence |
 | --- | --- | --- |
+| CI on the release commit | PASS | `CI` run 39113885756 on `d6bd6c3`, success. |
 | CI on the merged commit | PASS | `CI` run 39111770451 on `d88219b`, success. |
 | CI on the PR #69 head | PASS | `CI` run 39111181844 on `5010e83`, both jobs success. |
 | Candidate format, lint, typecheck, build, zip, `git diff --check` | RECORDED | PASS on the release branch before merge. |
@@ -206,6 +211,61 @@ Full evidence, hashes and limits are in
 | Connect GitHub from the v0.3.0 package under the published ID | **NOT_RUN — PENDING (post-publication)**. An unpacked build has a different ID; Production allowlists were not widened. |
 | Production smoke for the deployed v0.3.0 backend | **NOT_RUN** |
 
+### Production read-only preflight (2026-10-18)
+
+Three read-only inspections, each a separately approved single SSH session
+run by the release owner. Nothing was written, restarted, cleaned up or
+activated. The JSONL outputs are kept locally outside the repository, like
+the Canary evidence, and are not modified.
+
+| Evidence | SHA-256 | Original result |
+| --- | --- | --- |
+| `preflight-20261018T095600Z.jsonl` (preflight script revision 2) | `cbdfe9c44378c357c64a8aa89e9fef6d815b29d3e9aa320fa98f0aafa5099b8c` | **PREFLIGHT_BLOCKED**: two FAILs, `runscStateEntries = 1` and `leftoverTotal = 1` |
+| `runsc-inspection-20261018T100735Z.jsonl` | `55e28689ed8f23ad54f8c5fb8fecd5f82d851051059d340b72509732a1339a3e` | `RESIDUE_OR_ANOMALY`: the only entry is `null-netns`, classified `present-non-nsfs` |
+| `null-netns-metadata-20261018T102458Z.jsonl` | `ea357b9232303c2979691a27e4bfe24b502f8743904baed8843dc33a0ca18214` | `NSFS_MOUNT_AT_CANONICAL_PATH`, `reasons: []` |
+
+Preflight facts other than the two FAILs:
+
+| Item | Result |
+| --- | --- |
+| Deployed source | `87d691e`, clean checkout; release commit `d6bd6c3` not yet present on the host (the pinned activation PRECHECK fetches git objects only) |
+| Flags | M12 OFF, `PEEPHOLE_TEMPORARY_DATABASES=1`, no `PEEPHOLE_NETWORK_LEASE_DIR`, Stable base rootfs, env and unit files equal to the Stage 4B baseline |
+| Service | active/running, MainPID 406935 since 2026-10-16 13:11:13 UTC, NRestarts 0, two node processes with Stable/M12-OFF flags; caddy, `postgresql@18-main`, `postgresql@18-tenant` active; tenant port 5433 listening |
+| Endpoints | `/healthz` and `/readyz` PASS |
+| Idle | active previews, preview queue, full-stack previews and queue, and non-revoked M11 ownership all 0 (10 historical revoked rows); netns, leases, job bundles and secret/credential/user-env material 0 |
+| Rootfs | Stable and M12 images present and root-owned; placeholders valid; bootstrap SHA-256 `3b69f061…a539`; M12 Node SHA-256 equals the Canary record; M12 `/usr/local` root-owned |
+| Prerequisites | 18.5 GiB free; `/var/backups/peephole/release-v0.3.0` absent; public extension ID in the allowlist |
+
+**Why the two FAILs are explained.** Production static builds run with
+`network: "none"`, for which runsc keeps a `null-netns` nsfs bind mount
+directly under its state root (`tests/support/realRunscStateInspection.ts`).
+Preflight revision 2 counted directory entries instead of running
+`runsc list`, so it counted that mount as residue. The first targeted
+inspection compared mountinfo with the literal `/var/run/...` path, but
+`/var/run` is a symlink to `/run` and the kernel records the resolved mount
+point, so that comparison could not match; a local mock reproduced its exact
+output. The metadata inspection then showed:
+
+- canonical path `/run/peephole/runsc/null-netns`;
+- an nsfs mount at exactly that path in both the host and the service
+  mountinfo;
+- `st_dev` different from the parent directory;
+- it is the only entry in the state root;
+- no runsc process is running;
+- the service shares the host mount namespace and has no mount-sandboxing
+  settings;
+- it was created on 2026-10-07 at 09:18:20Z, after the current boot at
+  07:14:48Z.
+
+**Release readiness reading.** Both FAILs come from this one structural
+mount, which is not evidence of a leftover container. This is a readiness
+judgement based on later evidence; the original preflight verdict remains
+PREFLIGHT_BLOCKED and its file is unchanged. It does not verify runtime
+isolation, cleanup under concurrent exits, or crash recovery (B1/B2). The
+literal-path comparison also exists in `classifyNullNetns`, which has only
+been used on dedicated, non-symlinked test roots; that is a follow-up, not a
+release fix.
+
 ## Remaining gates and approvals
 
 The Canary record lists B1–B5 as release blockers for formal M12 activation.
@@ -217,43 +277,42 @@ acceptance by the release owner** before M12 is activated.
 
 | Gate | State | Required before formal M12 ON |
 | --- | --- | --- |
-| B1 — current-candidate Linux lifecycle | NOT_RUN | Run it, or record risk acceptance: false stop failure or incomplete cleanup under concurrent-exit interleavings that only portable tests cover. |
-| B2 — actual server crash and startup recovery | NOT_RUN | Run it, or record risk acceptance: stale M12 material or resources after an ungraceful server exit. |
-| B3 — provisioning-credential incident | UNREMEDIATED | Record a secret-free disposition. If no rotation is done, the acceptance must state that an earlier exposed credential may keep its privileges. Never copy a credential value into any record. |
-| B4 — candidate, artifacts, deployment and rollback approval | PENDING | Pin `d88219b` (or the approved final SHA) in the deploy/rollback package; compare with the Canary; separate Production approval. |
+| B1 — current-candidate Linux lifecycle | NOT_RUN | Run it, or risk acceptance: see [risk review](RELEASE_V0.3.0_RISK_REVIEW.md#b1--real-linux-concurrent-exit-isolation-and-journal-verification). |
+| B2 — actual server crash and startup recovery | NOT_RUN | Run it, or risk acceptance: see [risk review](RELEASE_V0.3.0_RISK_REVIEW.md#b2--real-server-sigkill-and-startup-recovery). |
+| B3 — provisioning-credential incident | UNREMEDIATED | A security incident, not a missing test: see [risk review](RELEASE_V0.3.0_RISK_REVIEW.md#b3--historical-provisioning-credential-exposure). Never copy a credential value into any record. |
+| Risk acceptance (B1/B2/B3) | **RISK_ACCEPTANCE_PENDING** | Release owner decision recorded in the risk review form. Approvals for read-only inspections are not risk acceptance. |
+| B4 — candidate, artifacts, deployment and rollback approval | IN PROGRESS | Final build PASS; package pinned to `d6bd6c3` and tested; read-only preflight done (two FAILs explained above). Activation approval and, if needed, rollback approval are still PENDING. |
 | B5 — browser artifact confirmation | PENDING | Confirm the extension ID, version, flags and login of the artifact actually used. |
 | Final v0.3.0 Chrome E2E | NOT_RUN | Static and full-stack preview from the final artifact against the configured Production backend. |
 | Formal M12 ON | PENDING | Only after the above and separate approval. |
-| `PRIVACY.md` coverage | PASS (repository) | Updated for full-stack preview, temporary PostgreSQL and M12 in this documentation change. Goes live when merged, because the policy URL tracks `main`. |
+| `PRIVACY.md` coverage | PASS (repository) | Updated for full-stack preview, temporary PostgreSQL and M12 in PR #70, now on `main` (the policy URL tracks `main`). |
 | Chrome Web Store Dashboard answers | MANUAL | Re-check against [CHROME_WEB_STORE.md](CHROME_WEB_STORE.md#v030-submission-review). |
 | GitHub Release v0.3.0 | PENDING | Tag the merged commit and attach the ZIP from the final release build. |
 | Chrome Web Store submission and publication | PENDING | Not performed. |
 
-Suggested risk-acceptance record (fill in, do not store secrets): owner name,
-date, the gates accepted (B1/B2/B3), the accepted residual risk for each, the
-compensating controls relied on (Canary cleanup evidence, portable tests,
-rollback package), and whether M12 ON is approved.
+The risk-acceptance form for B1/B2/B3 is in
+[RELEASE_V0.3.0_RISK_REVIEW.md](RELEASE_V0.3.0_RISK_REVIEW.md#release-owner-risk-acceptance-form).
 
 ## Deployment and rollback targets
 
 | Target | Identity |
 | --- | --- |
-| Release source | `d88219b2bd751ba064a8be28dffecefdc4b7432c` (PENDING final build) |
+| Release source | `d6bd6c39309233772465759dfb509ef91ff147ba` (final build PASS; deploy package pinned) |
 | Production Stable (rollback target) | `87d691e5f712f00022bceaea3986fbc64feb992b`, Stable rootfs `/var/lib/peephole/base-rootfs-83f1d1b6392cfa04b36e087c6930ae5ab8ede25a`, M12 OFF |
-| M12-compatible rootfs (reuse candidate) | `/var/lib/peephole/base-rootfs-aa26a11f0f00d4e78dd8ccb199cc0d7280fcb082-m12`, bootstrap SHA-256 `3b69f061073e57fee41c32f7f8b96c2bdbef100778285862eadff4af0122a539` (kept after the Canary, last record) |
+| M12-compatible rootfs (reuse candidate) | `/var/lib/peephole/base-rootfs-aa26a11f0f00d4e78dd8ccb199cc0d7280fcb082-m12`, bootstrap SHA-256 `3b69f061073e57fee41c32f7f8b96c2bdbef100778285862eadff4af0122a539` (present and verified by the 2026-10-18 preflight) |
 | Extension ID | `fieofkhijgngfoflgpkbghbkaidhdgel` (unchanged) |
 
-Production state after 2026-10-16 is taken from the Canary record and was not
-re-observed for this document.
+Production state is taken from the 2026-10-18 read-only preflight. It can
+change; the activation PRECHECK re-checks it at execution time.
 
 ## Remaining controlled steps
 
-1. Run the final release build from `d88219b` and compare it with the
-   recorded tree digest and ZIP hash.
+1. ~~Run the final release build and compare it with the candidate~~ (done
+   2026-10-18, identical).
 2. Decide the M12 pairing option above.
 3. Record the release owner's B1/B2/B3 risk acceptance, or run the gates.
-4. Pin the deploy/rollback package and obtain separate Production approval
-   for any backend change or M12 activation.
+4. ~~Pin the deploy/rollback package~~ (done) and obtain separate Production
+   approval for activation and, if needed, rollback.
 5. Run the final v0.3.0 Chrome E2E.
 6. Create the `v0.3.0` tag and GitHub Release with the verified ZIP.
 7. Re-check the Dashboard privacy answers and screenshots, then submit to the
@@ -262,5 +321,6 @@ re-observed for this document.
    authenticated preview, and update this record without rewriting the
    candidate evidence.
 
-Release state: **release candidate merged; final build, Production
-activation, GitHub Release and Chrome Web Store submission all PENDING.**
+Release state: **final build verified and deploy package pinned; risk
+acceptance (RISK_ACCEPTANCE_PENDING), Production activation, final Chrome E2E,
+GitHub Release and Chrome Web Store submission all PENDING.**
