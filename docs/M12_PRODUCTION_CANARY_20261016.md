@@ -181,24 +181,14 @@ ordinary Production Stop cannot substitute for that evidence.
   zero owned residue. Wrong PID, graceful shutdown or missing inventory means
   INVALID/INCONCLUSIVE, not PASS; no blind retries or broad cleanup.
 
-**B3 — Unclosed provisioning-credential incident.**
+**B3 — Security approval item.**
 
-- Evidence/gap: [D1 security status](BACKEND_FAILURE_DIAGNOSTICS.md) and
-  [D2A](M12_COMBINED_INTEGRATION.md) still record
-  `CREDENTIAL_EXPOSURE_UNREMEDIATED`. The reviewed handoff/Canary/rollback
-  packet contains no remediation/rotation closure. This is an unresolved
-  disposition, not a new claim about which credential is currently active.
-- Risk/minimum: an earlier exposed provisioning credential may retain
-  privileges. Obtain secret-free incident closure evidence; if still active,
-  separately plan remediation and invalidation with the owner. Never copy a
-  password, URL credential or session token into this record or test process.
-- Production: **not for the initial records review**; any real credential
-  replacement/confirmation needs separately scoped Production authorization.
-  Burden: **low** for evidence review, **medium** if coordinated remediation
-  is required.
-- Pass/stop: approved evidence that exposure was remediated or the affected
-  credential is no longer applicable. Missing/ambiguous disposition keeps
-  M12 ON blocked; success of a functional Canary cannot clear this incident.
+- Details are managed in a private operational record, not in this
+  repository (release owner decision, 2026-10-18).
+- Status: open. It is not passed, remediated or verified safe, and a
+  functional Canary cannot clear it.
+- Pass/stop: the release owner's separate security sign-off. Without it,
+  M12 ON stays blocked.
 
 **B4 — Explicit candidate, artifacts, deployment and rollback approval.**
 
@@ -309,8 +299,8 @@ the current non-sensitive contract without a new decision and evidence.
 
 ## Recommended next sequence
 
-1. Review this closure and resolve B3's incident-record disposition while
-   pinning the intended candidate. Confirm Stage3A browser handoff with the
+1. Review this closure and obtain the B3 security sign-off through the
+   private record while pinning the intended candidate. Confirm Stage3A browser handoff with the
    user; do not create another preview for that check.
 2. Before M12 ON, prepare one independently approved isolated Linux/gVisor
    environment and execute B1, then B2. The WSL rootfs build from PR #60 is

@@ -7,8 +7,8 @@ receipt or a passing run of this combined harness. Keep its real SQL path
 NOT_RUN/UNVERIFIED; source code, readiness and zero tenant residue do not
 prove that assertion was observed. See
 [closure and release classification](M12_PRODUCTION_CANARY_20261016.md#release-readiness).
-The credential-exposure status recorded below has no closure evidence in the
-reviewed packet and is not cleared by the Canary or PR #60.
+The separately managed security approval item (B3) has no closure evidence
+in the reviewed packet and is not cleared by the Canary or PR #60.
 
 ## Baseline and verification gap
 
@@ -246,4 +246,5 @@ they are not real-root, PostgreSQL or gVisor execution evidence.
 Portable safety/ownership/D1 tests and existing PG18 CI are separate evidence.
 Their PASS must never be reported as real-gVisor or Chrome E2E PASS.
 Production's original failure is still unconfirmed until a genuine run yields
-usable evidence. Security remains `CREDENTIAL_EXPOSURE_UNREMEDIATED`.
+usable evidence. The separately managed security approval item (B3) remains
+open.

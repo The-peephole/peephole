@@ -109,5 +109,5 @@ production host for the dedicated M12 harness. Repeat current-SHA lifecycle
 and H2/H3 checks there. These integrations, production deployment and M12
 activation are outside D1 and require their own authorized step.
 
-Security status remains `CREDENTIAL_EXPOSURE_UNREMEDIATED`; D1 neither uses
-nor rotates the previously exposed provisioning credential.
+A separately managed security approval item (B3) remains open; D1 does not
+change it.

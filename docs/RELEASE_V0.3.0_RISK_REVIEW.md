@@ -1,10 +1,11 @@
-# Peephole v0.3.0 release risk review (B1/B2/B3)
+# Peephole v0.3.0 release risk review (B1/B2)
 
-**Status: RISK_ACCEPTANCE_PENDING.** This document helps the release owner
-decide whether to accept the residual risk of releasing v0.3.0 and turning
-M12 on without running B1/B2 or remediating B3. It is not an acceptance, a
-deployment approval or an M12 activation approval. Approvals given for the
-2026-10-18 read-only inspections are none of those either.
+**Status: B1/B2 RISK_ACCEPTED (release owner, 2026-10-18); B3 open and
+managed privately.** This document records the residual risk of releasing
+v0.3.0 without running the B1/B2 real-host tests, and the release owner's
+decision to accept it. B1 and B2 remain NOT_RUN. Accepting the risk is not a
+deployment approval or an M12 activation approval, and approvals given for
+the 2026-10-18 read-only inspections are none of those either.
 
 Context: [RELEASE_V0.3.0.md](RELEASE_V0.3.0.md) (build, package, preflight)
 and [M12_PRODUCTION_CANARY_20261016.md](M12_PRODUCTION_CANARY_20261016.md#release-readiness)
@@ -28,9 +29,8 @@ Control status labels:
 | M12 Canary reference | Backend `aa26a11`, 2026-10-16, one preview, then Stable rollback |
 
 B1 and B2 are **verification gaps**: tests that were designed but not run on
-a real host. B3 is a **security incident disposition**: an earlier
-credential exposure with no recorded remediation. They are different kinds
-of risk and are decided separately.
+a real host. B3 is a different kind of item, a security approval handled
+outside this document (see [B3](#b3--security-approval-item)).
 
 ## B1 — Real Linux concurrent exit, isolation and journal verification
 
@@ -161,94 +161,23 @@ including user-env material reaping and broker loss handling after a real
 kill, is known only from design and portable tests, plus the pre-M12 E6
 result.
 
-## B3 — Historical provisioning credential exposure
+## B3 — Security approval item
 
-**Status: UNREMEDIATED.** This is a security incident, not a missing test.
-
-**What is recorded.**
-
-- [Backend failure diagnostics](BACKEND_FAILURE_DIAGNOSTICS.md),
-  [M12 combined integration](M12_COMBINED_INTEGRATION.md) and the
-  [Canary closure](M12_PRODUCTION_CANARY_20261016.md) record
-  `CREDENTIAL_EXPOSURE_UNREMEDIATED` for a previously exposed provisioning
-  credential.
-- No remediation, rotation or closure evidence exists in the reviewed
-  records.
-- The repository does not record the exposure channel, its extent, or
-  whether the credential is still valid.
-- In the deployed M11 design (D-033), the static operator-managed provisioning
-  credential is the one for the tenant cluster's `m11_provisioner` role. The
-  release owner should confirm that this is the credential the incident
-  refers to.
-
-**Current unremediated scope (as far as recorded):**
-
-- the credential has not been rotated;
-- it is unknown whether it is still valid;
-- there is no secret-free closure record.
-
-**Potential misuse.** `m11_provisioner` is `LOGIN NOSUPERUSER CREATEDB
-CREATEROLE NOREPLICATION NOBYPASSRLS` on the separate `18-tenant` cluster
-(D-033). Someone who holds a still-valid credential **and** can reach an
-accepted authentication path could:
-
-- create or drop databases and `pv_*` roles in the tenant cluster;
-- through the admin membership the role holds over the roles it creates,
-  possibly reach other previews' temporary databases;
-- disrupt temporary-database previews.
-
-By design this does not reach the control-plane `18-main` cluster, which is a
-separate cluster. Which authentication paths accept this role is not
-verified in this record (see below).
-
-**Applicable controls.**
-
-| Control | Status |
-| --- | --- |
-| Least-privileged provisioning role, not superuser | IMPLEMENTED (D-033 acceptance record, 2026-10-07); not re-verified since |
-| Separate tenant cluster, distinct from the control-plane cluster | IMPLEMENTED; both services active (VERIFIED 2026-10-18 preflight) |
-| Tenant cluster bound only to host-only `192.168.253.1:5433` | IMPLEMENTED (D-033); port 5433 listening VERIFIED 2026-10-18; the bind-address restriction was not re-verified |
-| Provisioning only over the tenant cluster's Unix socket | IMPLEMENTED in the design; **whether `pg_hba` refuses this role over TCP is NOT VERIFIED** |
-| Sandbox egress dropped except one `/32` route to `5433` for a DB-backed preview | IMPLEMENTED (M11-E evidence). Such a backend can reach the tenant port over TCP, so the `pg_hba` question above matters |
-| Credential values never stored in the repository or the evidence | IMPLEMENTED (record discipline) |
-| Rotation of the provisioning credential | PROPOSED |
-| Secret-free verification that the old credential is rejected | PROPOSED |
-
-**Proposed remediation plan (needs its own Production approval).**
-
-1. Confirm which credential the incident refers to.
-2. Create a new credential through a controlled change, without displaying
-   it, and update only the server-side configuration.
-3. Restart only the Peephole service and check health and readiness.
-4. Confirm provisioning works: one DB-backed preview, or an approved
-   non-preview probe.
-5. Confirm the old credential is rejected, using a check that does not print
-   it.
-6. Record a secret-free closure.
-7. Independently, verify read-only that `pg_hba` restricts the role to the
-   local socket.
-
-**Security meaning of releasing unremediated.** The exposure already applies
-to the current Production Stable, because M11 is ON. Releasing v0.3.0 or
-turning M12 on does not widen the role's privileges. However:
-
-- the Canary closure states that a missing B3 disposition keeps M12 ON
-  blocked;
-- accepting it means continuing to operate with a possibly valid exposed
-  credential whose reachable authentication paths are not verified;
-- a functional success, such as the Canary, cannot clear it.
+B3 is a separate security approval item. Its details are managed in a private operational record, not in this repository. It is open: not passed, not remediated and not verified safe. Formal M12 activation still requires the release owner's separate
+security sign-off for B3. This document records no decision on it.
 
 ## Release owner risk acceptance form
 
-Fill in only by the release owner. Leave a row PENDING if not decided.
+Filled in from the release owner's decision. B3 is not part of this form.
 
 | Risk | Current status | Evidence | Remaining risk | Controls relied on | Acceptance | Release owner approval date | Release owner approval record |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| B1 — real Linux concurrent exit / isolation / journal | NOT_RUN | [B1](#b1--real-linux-concurrent-exit-isolation-and-journal-verification) | Missed cleanup or journal leak under unverified interleavings | Reapers, fail-closed broker, concurrency 1; proposed inventory and stop criteria | PENDING | | |
-| B2 — real server SIGKILL / startup recovery | NOT_RUN | [B2](#b2--real-server-sigkill-and-startup-recovery) | M12-specific crash recovery unobserved | Memory-only broker, startup reconciliation, auto-rollback package; proposed post-restart inventory | PENDING | | |
-| B3 — historical provisioning credential exposure | UNREMEDIATED | [B3](#b3--historical-provisioning-credential-exposure) | Possibly valid exposed credential; TCP authentication path unverified | Least privilege, separate cluster, host-only bind; proposed rotation and `pg_hba` check | PENDING | | |
+| B1 — real Linux concurrent exit / isolation / journal | NOT_RUN | [B1](#b1--real-linux-concurrent-exit-isolation-and-journal-verification) | Missed cleanup or journal leak under unverified interleavings | Reapers, fail-closed broker, concurrency 1; proposed inventory and stop criteria | ACCEPTED | 2026-10-18 | Release owner decision: B1 tests are skipped for v0.3.0 and the residual risk is accepted. |
+| B2 — real server SIGKILL / startup recovery | NOT_RUN | [B2](#b2--real-server-sigkill-and-startup-recovery) | M12-specific crash recovery unobserved | Memory-only broker, startup reconciliation, auto-rollback package; proposed post-restart inventory | ACCEPTED | 2026-10-18 | Release owner decision: B2 tests are skipped for v0.3.0 and the residual risk is accepted. |
 
-Overall: **RISK_ACCEPTANCE_PENDING**
+Overall: **B1/B2 RISK_ACCEPTED (2026-10-18)**. B1 and B2 stay NOT_RUN; the
+proposed controls above are not adopted by this record. B3 remains open and
+is managed privately.
 
 Accepting a risk does not approve activation. Activation and, if needed,
 rollback each still need their own explicit approval through the pinned
