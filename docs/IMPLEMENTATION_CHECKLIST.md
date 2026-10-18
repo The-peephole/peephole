@@ -21,6 +21,10 @@ later full-stack roadmap.
 11. [x] temporary database support; production-verified in M11 (2026-10-07),
     narrowly, for PostgreSQL + `pg` + `DATABASE_URL` in trusted
     `fullstack-v1` previews
+12. [ ] user-provided preview configuration (M12) -- M12-A/B **implemented**
+    behind default-off flags; limited Production Canary 2026-10-16, then
+    rollback. **Not deployed**: general activation waits for the release
+    gates in docs/M12_PRODUCTION_CANARY_20261016.md. M12-C is design-only
 
 The full-stack fixture proves only its independently installable frontend
 target under plain Build Preview; it is not itself evidence that stages 8-11
@@ -74,6 +78,15 @@ for the actual production verification record.
       production artifact base domain; the manifest `frame-src` and runtime URL
       validator enforce the same boundary
 - [x] Remove the transitional StackBlitz action and URL generator
+- [x] Close and show a ready static preview frame without a new job
+- [x] Feature-gated Full-stack preview section: backend selection, Run/Stop,
+      environment-variable sources, and M12 inputs behind
+      `WXT_USER_ENVIRONMENT_ENABLED`
+- [x] Keep Side Panel tab/repository context across navigation and restore
+      admitted full-stack controls from `browser.storage.session`
+- [x] Mount the repository action only on verified overview pages
+- [ ] Native Chrome QA of the Side Panel navigation scenarios
+      (docs/sidepanel-navigation-lifecycle.md)
 - [ ] Add keyboard, focus, contrast, and screen-reader checks
 
 ## GitHub Data Access

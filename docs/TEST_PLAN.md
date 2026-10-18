@@ -595,6 +595,16 @@ four explicit `PEEPHOLE_M12_TEST_*` roots) and its portable safety tests
 (`tests/m12RealGvisorHarness.test.ts`) exist; the operator procedure is
 docs/M12_REAL_GVISOR_VERIFICATION.md.
 
+The `NOT_RUN` statement above is the implementation-time record (PR #52/#53).
+Later evidence, kept in its own documents:
+
+| Date | Scope | Result |
+| --- | --- | --- |
+| 2026-10-13 | Real Linux/gVisor harness at `5ed0f92` | REAL_GVISOR_VERIFIED: 306 host checks, 12/12 cases ([runbook record](M12_REAL_GVISOR_VERIFICATION.md)). Later concurrent-exit corrections are portable-only. |
+| 2026-10-16 | Limited Production Chrome Fullstack Canary, backend `aa26a11`, pre-v0.3.0 test extension | Functional success, ordinary Stop, zero resource residue, Stable rollback ([Canary closure](M12_PRODUCTION_CANARY_20261016.md)) |
+| 2026-10-17 | B1/B2 harness additions (PR #66 pending-signal boundary, PR #67 isolated journal non-leakage, PR #68 owned server crash/startup recovery) | Merged with portable tests; real-host runs NOT_RUN |
+| — | Final v0.3.0 extension Chrome E2E against Production | NOT_RUN ([release record](RELEASE_V0.3.0.md)) |
+
 ## 4. Live-Network Golden Paths
 
 With `PEEPHOLE_REAL_NETWORK_TESTS=1`, exercise:
@@ -983,6 +993,10 @@ Add coverage in the same order as product development:
     M11-E4/E5/E6 passed as three independent production acceptance runs (see
     the M11 production acceptance record in section 5 and
     docs/TEMPORARY_DATABASES.md section 19)
+12. user-provided configuration (M12-A/B) -- portable coverage, real-gVisor
+    12/12 at `5ed0f92` and a limited Production Canary (see section 3);
+    B1/B2 real-host lifecycle and crash gates and the final v0.3.0 Chrome
+    E2E are NOT_RUN
 
 The full-stack fixture becomes eligible for these tests only as each required
 contract is actually implemented.

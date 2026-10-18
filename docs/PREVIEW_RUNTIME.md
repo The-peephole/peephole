@@ -23,7 +23,7 @@ Supported first:
 | Next.js SSR / Node server | Unsupported | Persistent server runner deferred |
 | Shared-root npm/pnpm/yarn workspace | Analysis only / unsupported | Workspace orchestration remains deferred |
 | One narrow backend shape (`express-node-npm-v1`) paired with its frontend | Production-verified server-side (`fullstack-v1`), feature-gated extension UI | See section 13a; offered through a separate `WXT_FULLSTACK_PREVIEW_ENABLED=true` control, never as the static Build Preview action |
-| User-provided non-sensitive configuration (M12) | Implemented behind default-off flags, not deployed | Declared, non-secret-like names only, trusted `fullstack-v1` only, delivered through `/run/secrets/user-env`; real-gVisor verification NOT_RUN. See docs/USER_PROVIDED_ENVIRONMENT.md |
+| User-provided non-sensitive configuration (M12) | Implemented behind default-off flags; not generally enabled in Production | Declared, non-secret-like names only, trusted `fullstack-v1` only, delivered through `/run/secrets/user-env`; real-gVisor verified at `5ed0f92` (2026-10-13); limited Production Canary 2026-10-16, then rollback. See docs/USER_PROVIDED_ENVIRONMENT.md |
 | Any other backend, DB, Docker, arbitrary/user-supplied secrets | Unsupported | Arbitrary Node backends remain unimplemented. Server-generated secrets are implemented only for exactly four canonical names (section 13b), and temporary databases only for PostgreSQL + `pg` + `DATABASE_URL` in a trusted `fullstack-v1` preview (section 13c), both alongside the one narrow backend shape above. Every other database shape is unsupported |
 | Library repository with no demo app | Analysis only | There may be nothing visual to run |
 
