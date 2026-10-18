@@ -174,8 +174,9 @@ below).
 
 ### Before submitting v0.3.0
 
-1. Final release build from the merged commit matches the recorded hash (or
-   a new build record exists for a different flag set).
+1. Final release build from the release commit `d6bd6c3` matches the recorded
+   hash (PASS on 2026-10-18; see RELEASE_V0.3.0.md), or a new build record
+   exists for a different flag set.
 2. M12 pairing decided: Production M12 ON with the M12 UI, or a build without
    the M12 UI.
 3. Final v0.3.0 Chrome E2E recorded for every claimed feature.
